@@ -20,6 +20,10 @@ proves the core message contract against the installed
 the planner logic out of ROS and only adds thin adapters around the stable
 planner API exposed in `/workspace/sbmpc/sbmpc/planner_api.py`.
 
+In the container build, the ROS package name `franka_description` is expected
+to be provided by the Agimus fork `agimus-project/agimus-franka-description`
+rather than the upstream Franka repository.
+
 This Git repository is not intended to be the colcon workspace root.
 
 Use this repository through the canonical ROS workspace path:
