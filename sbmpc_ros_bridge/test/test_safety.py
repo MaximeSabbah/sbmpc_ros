@@ -4,6 +4,10 @@ import numpy as np
 import pytest
 
 from sbmpc_ros_bridge.safety import (
+    AlwaysOnSafety,
+    BridgeSafetyProfile,
+    BringupLimits,
+    MonitoringOnly,
     SBMPC_TO_LFC_GAIN_SCALE,
     ControlSafetyLimits,
     PlanningDeadlineMonitor,
@@ -13,6 +17,8 @@ from sbmpc_ros_bridge.safety import (
     compute_lfc_control,
     compute_control_age_sec,
     compute_lfc_state_error,
+    make_conservative_bringup_profile,
+    make_default_safety_profile,
     sbmpc_gain_to_lfc_gain,
     validate_control_age,
     validate_planner_output,
@@ -208,3 +214,45 @@ def test_planning_deadline_monitor_rejects_invalid_durations() -> None:
 
     with pytest.raises(UnsafeControlError, match="must be non-negative"):
         monitor.observe(-0.01)
+
+
+def test_default_safety_profile_is_minimal_and_non_restrictive() -> None:
+    profile = make_default_safety_profile()
+
+    assert isinstance(profile.always_on, AlwaysOnSafety)
+    assert isinstance(profile.bringup_limits, BringupLimits)
+    assert isinstance(profile.monitoring_only, MonitoringOnly)
+    assert profile.always_on.gain_scale == -1.0
+    assert profile.bringup_limits.max_abs_torque is None
+    assert profile.bringup_limits.max_gain_norm is None
+    assert profile.make_deadline_monitor() is None
+
+
+def test_conservative_bringup_profile_enables_optional_limits_and_monitoring() -> None:
+    profile = make_conservative_bringup_profile(
+        max_control_age_sec=0.05,
+        max_planning_duration_sec=0.02,
+        max_abs_torque=3.0,
+        max_gain_norm=4.0,
+    )
+
+    assert profile.always_on.max_control_age_sec == 0.05
+    assert profile.bringup_limits.max_abs_torque == 3.0
+    assert profile.bringup_limits.torque_limit_mode == "clip"
+    assert profile.bringup_limits.max_gain_norm == 4.0
+    assert profile.bringup_limits.gain_limit_mode == "scale"
+
+    monitor = profile.make_deadline_monitor()
+    assert monitor is not None
+    assert monitor.fail_closed is False
+    assert np.isclose(monitor.max_planning_duration_sec, 0.02)
+
+
+def test_always_on_safety_can_validate_control_age_directly() -> None:
+    always_on = AlwaysOnSafety(max_control_age_sec=0.05)
+
+    age = always_on.validate_control_age(control_stamp_sec=10.0, now_sec=10.02)
+    assert np.isclose(age, 0.02)
+
+    with pytest.raises(UnsafeControlError, match="control is stale"):
+        always_on.validate_control_age(control_stamp_sec=10.0, now_sec=10.2)

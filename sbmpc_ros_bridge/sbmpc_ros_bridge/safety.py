@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -15,6 +15,37 @@ class UnsafeControlError(ValueError):
 SBMPC_TO_LFC_GAIN_SCALE = -1.0
 TorqueLimitMode = Literal["reject", "clip"]
 GainLimitMode = Literal["reject", "scale"]
+
+
+@dataclass(frozen=True, slots=True)
+class AlwaysOnSafety:
+    """Checks that should remain enabled in every deployment profile."""
+
+    gain_scale: float = SBMPC_TO_LFC_GAIN_SCALE
+    max_control_age_sec: float | None = None
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.gain_scale):
+            raise ValueError(f"gain_scale must be finite, got {self.gain_scale}.")
+        if self.max_control_age_sec is not None and self.max_control_age_sec < 0.0:
+            raise ValueError("max_control_age_sec must be non-negative.")
+
+    def validate_control_age(
+        self,
+        *,
+        control_stamp_sec: float,
+        now_sec: float,
+    ) -> float:
+        if self.max_control_age_sec is None:
+            return compute_control_age_sec(
+                control_stamp_sec=control_stamp_sec,
+                now_sec=now_sec,
+            )
+        return validate_control_age(
+            control_stamp_sec=control_stamp_sec,
+            now_sec=now_sec,
+            max_control_age_sec=self.max_control_age_sec,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +71,38 @@ class ControlSafetyLimits:
             raise ValueError(
                 "gain_limit_mode must be either 'reject' or 'scale'."
             )
+
+
+@dataclass(frozen=True, slots=True)
+class BringupLimits:
+    """Optional conservative limits used during early robot bringup."""
+
+    max_abs_torque: float | None = None
+    max_gain_norm: float | None = None
+    torque_limit_mode: TorqueLimitMode = "reject"
+    gain_limit_mode: GainLimitMode = "reject"
+
+    def __post_init__(self) -> None:
+        if self.max_abs_torque is not None and self.max_abs_torque < 0.0:
+            raise ValueError("max_abs_torque must be non-negative.")
+        if self.max_gain_norm is not None and self.max_gain_norm < 0.0:
+            raise ValueError("max_gain_norm must be non-negative.")
+        if self.torque_limit_mode not in ("reject", "clip"):
+            raise ValueError(
+                "torque_limit_mode must be either 'reject' or 'clip'."
+            )
+        if self.gain_limit_mode not in ("reject", "scale"):
+            raise ValueError(
+                "gain_limit_mode must be either 'reject' or 'scale'."
+            )
+
+    def as_control_safety_limits(self) -> ControlSafetyLimits:
+        return ControlSafetyLimits(
+            max_abs_torque=self.max_abs_torque,
+            max_gain_norm=self.max_gain_norm,
+            torque_limit_mode=self.torque_limit_mode,
+            gain_limit_mode=self.gain_limit_mode,
+        )
 
 
 @dataclass(slots=True)
@@ -72,6 +135,75 @@ class PlanningDeadlineMonitor:
                 f"{duration:.6f}s > {self.max_planning_duration_sec:.6f}s."
             )
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class MonitoringOnly:
+    """Signals worth observing even when they should not limit motion by default."""
+
+    max_planning_duration_sec: float | None = None
+    fail_closed_on_deadline_miss: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.max_planning_duration_sec is not None
+            and self.max_planning_duration_sec < 0.0
+        ):
+            raise ValueError("max_planning_duration_sec must be non-negative.")
+
+    def make_deadline_monitor(self) -> PlanningDeadlineMonitor | None:
+        if self.max_planning_duration_sec is None:
+            return None
+        return PlanningDeadlineMonitor(
+            max_planning_duration_sec=self.max_planning_duration_sec,
+            fail_closed=self.fail_closed_on_deadline_miss,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BridgeSafetyProfile:
+    """High-level safety split for the ROS bridge runtime."""
+
+    always_on: AlwaysOnSafety = field(default_factory=AlwaysOnSafety)
+    bringup_limits: BringupLimits = field(default_factory=BringupLimits)
+    monitoring_only: MonitoringOnly = field(default_factory=MonitoringOnly)
+
+    def planner_output_limits(self) -> ControlSafetyLimits:
+        return self.bringup_limits.as_control_safety_limits()
+
+    def make_deadline_monitor(self) -> PlanningDeadlineMonitor | None:
+        return self.monitoring_only.make_deadline_monitor()
+
+
+def make_default_safety_profile() -> BridgeSafetyProfile:
+    """Default runtime profile: always-on checks, no extra clipping, monitoring only."""
+
+    return BridgeSafetyProfile()
+
+
+def make_conservative_bringup_profile(
+    *,
+    max_control_age_sec: float | None = None,
+    max_planning_duration_sec: float | None = None,
+    max_abs_torque: float | None = None,
+    max_gain_norm: float | None = None,
+    torque_limit_mode: TorqueLimitMode = "clip",
+    gain_limit_mode: GainLimitMode = "scale",
+    fail_closed_on_deadline_miss: bool = False,
+) -> BridgeSafetyProfile:
+    return BridgeSafetyProfile(
+        always_on=AlwaysOnSafety(max_control_age_sec=max_control_age_sec),
+        bringup_limits=BringupLimits(
+            max_abs_torque=max_abs_torque,
+            max_gain_norm=max_gain_norm,
+            torque_limit_mode=torque_limit_mode,
+            gain_limit_mode=gain_limit_mode,
+        ),
+        monitoring_only=MonitoringOnly(
+            max_planning_duration_sec=max_planning_duration_sec,
+            fail_closed_on_deadline_miss=fail_closed_on_deadline_miss,
+        ),
+    )
 
 
 def validate_planner_output(

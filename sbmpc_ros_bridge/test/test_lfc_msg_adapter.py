@@ -13,7 +13,12 @@ from sbmpc_ros_bridge.lfc_msg_adapter import (
     planner_output_to_control,
     sensor_to_planner_input,
 )
-from sbmpc_ros_bridge.safety import UnsafeControlError
+from sbmpc_ros_bridge.safety import (
+    AlwaysOnSafety,
+    BridgeSafetyProfile,
+    BringupLimits,
+    UnsafeControlError,
+)
 
 
 @dataclass(frozen=True)
@@ -131,4 +136,33 @@ def test_planner_output_to_control_can_override_default_sign_flip() -> None:
     np.testing.assert_allclose(
         float64_multi_array_to_numpy(control.feedback_gain),
         planner_output.K,
+    )
+
+
+def test_planner_output_to_control_accepts_high_level_safety_profile() -> None:
+    planner_output = FakePlannerOutput(
+        tau_ff=np.asarray([2.0, -3.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        K=np.eye(7, 14, dtype=np.float64),
+    )
+    profile = BridgeSafetyProfile(
+        always_on=AlwaysOnSafety(gain_scale=-1.0),
+        bringup_limits=BringupLimits(
+            max_abs_torque=1.0,
+            torque_limit_mode="clip",
+        ),
+    )
+
+    control = planner_output_to_control(
+        planner_output,
+        make_sensor(),
+        safety_profile=profile,
+    )
+
+    np.testing.assert_allclose(
+        float64_multi_array_to_numpy(control.feedforward).reshape(-1),
+        np.asarray([1.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+    )
+    np.testing.assert_allclose(
+        float64_multi_array_to_numpy(control.feedback_gain),
+        -planner_output.K,
     )

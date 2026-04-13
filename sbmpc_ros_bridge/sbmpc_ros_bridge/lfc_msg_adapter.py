@@ -10,6 +10,7 @@ from std_msgs.msg import Float64MultiArray, MultiArrayDimension, MultiArrayLayou
 from sbmpc_ros_bridge.joint_mapping import JointMapper
 from sbmpc_ros_bridge.planner_adapter import PlannerInput
 from sbmpc_ros_bridge.safety import (
+    BridgeSafetyProfile,
     SBMPC_TO_LFC_GAIN_SCALE,
     ControlSafetyLimits,
     sbmpc_gain_to_lfc_gain,
@@ -41,22 +42,36 @@ def planner_output_to_control(
     planner_output: PlannerOutputLike,
     planned_state: PlannerInput | Sensor,
     *,
-    gain_scale: float = SBMPC_TO_LFC_GAIN_SCALE,
+    gain_scale: float | None = None,
     safety_limits: ControlSafetyLimits | None = None,
+    safety_profile: BridgeSafetyProfile | None = None,
 ) -> Control:
+    if safety_profile is None:
+        effective_gain_scale = (
+            SBMPC_TO_LFC_GAIN_SCALE if gain_scale is None else gain_scale
+        )
+        effective_limits = safety_limits
+    else:
+        effective_gain_scale = safety_profile.always_on.gain_scale
+        if gain_scale is not None:
+            effective_gain_scale = gain_scale
+        effective_limits = safety_profile.planner_output_limits()
+        if safety_limits is not None:
+            effective_limits = safety_limits
+
     sensor_snapshot = (
         planned_state.sensor if isinstance(planned_state, PlannerInput) else planned_state
     )
     tau_ff, feedback_gain = validate_planner_output(
         planner_output.tau_ff,
         planner_output.K,
-        limits=safety_limits,
+        limits=effective_limits,
     )
 
     control = Control()
     control.header = deepcopy(sensor_snapshot.header)
     control.feedback_gain = numpy_to_float64_multi_array(
-        sbmpc_gain_to_lfc_gain(feedback_gain, gain_scale=gain_scale)
+        sbmpc_gain_to_lfc_gain(feedback_gain, gain_scale=effective_gain_scale)
     )
     control.feedforward = numpy_to_float64_multi_array(tau_ff.reshape((-1, 1)))
     control.initial_state = deepcopy(sensor_snapshot)

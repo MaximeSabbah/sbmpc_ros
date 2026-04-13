@@ -31,6 +31,24 @@ Use this repository through the canonical ROS workspace path:
 `/workspace/ros2_ws` is the colcon workspace root. `build/`, `install/`, and
 `log/` belong there, not in this repository.
 
+## Safety Philosophy
+
+The bridge safety code is intentionally split into three layers:
+
+- `always_on`: checks that should remain enabled in every deployment. Today this
+  covers the gain sign convention, message validity, non-finite rejection, and
+  optional stale-control checks.
+- `bringup_limits`: optional conservative limits for early robot testing, such
+  as torque clipping or gain-norm scaling. These should stay tunable and should
+  not be confused with the permanent controller architecture.
+- `monitoring_only`: signals worth observing, such as planner deadline misses,
+  without automatically degrading controller authority in mature deployments.
+
+Franka hardware limits are necessary, but they are not a replacement for
+bridge-side validity checks. The bridge should catch integration mistakes and
+obviously invalid outputs before they reach the robot, while avoiding
+unnecessary long-term restrictions on the controller.
+
 ## Layout
 
 ```text
@@ -67,6 +85,10 @@ colcon test-result --verbose
 - The runtime planner adapter lazy-loads `sbmpc` so the bridge package can be
   imported even before the algorithm repo is path-installed into the same
   Python environment.
+- The high-level safety entry points live in
+  `/workspace/ros2_ws/src/sbmpc_ros/sbmpc_ros_bridge/sbmpc_ros_bridge/safety.py`
+  as `AlwaysOnSafety`, `BringupLimits`, `MonitoringOnly`, and
+  `BridgeSafetyProfile`.
 - When editing code in the container, open files from
   `/workspace/ros2_ws/src/sbmpc_ros`.
 - For host-side Git operations, the underlying checkout may still physically
