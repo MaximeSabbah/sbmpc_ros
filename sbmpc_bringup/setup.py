@@ -1,7 +1,8 @@
+from glob import glob
 from setuptools import find_packages, setup
 
 
-package_name = "sbmpc_ros_bridge"
+package_name = "sbmpc_bringup"
 
 
 setup(
@@ -14,21 +15,17 @@ setup(
             [f"resource/{package_name}"],
         ),
         (f"share/{package_name}", ["package.xml"]),
+        (f"share/{package_name}/launch", glob("launch/*.py")),
+        (f"share/{package_name}/config", glob("config/*.yaml")),
     ],
-    install_requires=["setuptools", "numpy"],
+    install_requires=["setuptools"],
     zip_safe=True,
     maintainer="sbmpc",
     maintainer_email="msabbah@laas.fr",
     description=(
-        "ROS 2 bridge adapters between linear_feedback_controller messages "
-        "and the sbmpc planner API."
+        "Launch and configuration assets for bringing up SB-MPC with Franka "
+        "and linear_feedback_controller."
     ),
     license="MIT",
     extras_require={"test": ["pytest"]},
-    entry_points={
-        "console_scripts": [
-            "sbmpc_lfc_bridge_node = sbmpc_ros_bridge.lfc_bridge_node:main",
-            "sbmpc_planner_smoke = sbmpc_ros_bridge.planner_smoke:main",
-        ],
-    },
 )

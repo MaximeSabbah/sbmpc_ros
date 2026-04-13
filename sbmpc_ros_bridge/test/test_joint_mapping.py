@@ -11,6 +11,9 @@ from sbmpc_ros_bridge.joint_mapping import (
 )
 
 
+FER_ARM_JOINT_NAMES = tuple(f"fer_joint{i}" for i in range(1, 8))
+
+
 def make_sensor(
     names: tuple[str, ...] = PANDA_ARM_JOINT_NAMES,
     *,
@@ -102,3 +105,12 @@ def test_joint_mapper_rejects_wrong_vector_lengths() -> None:
 
     with pytest.raises(JointMappingError, match="joint_state.velocity"):
         JointMapper.panda().reorder_joint_state(sensor.joint_state)
+
+
+def test_joint_mapper_accepts_runtime_fer_joint_names_when_configured() -> None:
+    reordered = JointMapper(expected_names=FER_ARM_JOINT_NAMES).reorder_joint_state(
+        make_sensor(FER_ARM_JOINT_NAMES).joint_state
+    )
+
+    assert tuple(reordered.name) == FER_ARM_JOINT_NAMES
+    assert list(reordered.position) == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]

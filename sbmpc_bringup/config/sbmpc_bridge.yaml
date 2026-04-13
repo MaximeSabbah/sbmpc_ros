@@ -1,0 +1,16 @@
+sbmpc_lfc_bridge_node:
+  ros__parameters:
+    sensor_topic: /linear_feedback_controller/sensor
+    control_topic: /linear_feedback_controller/control
+    diagnostics_topic: /sbmpc/diagnostics
+    publish_rate_hz: 50.0
+    planner_deadline_sec: 0.02
+    allow_joint_reordering: false
+    joint_names:
+      - fer_joint1
+      - fer_joint2
+      - fer_joint3
+      - fer_joint4
+      - fer_joint5
+      - fer_joint6
+      - fer_joint7

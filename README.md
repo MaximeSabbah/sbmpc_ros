@@ -49,6 +49,9 @@ bridge-side validity checks. The bridge should catch integration mistakes and
 obviously invalid outputs before they reach the robot, while avoiding
 unnecessary long-term restrictions on the controller.
 
+The current bringup defaults are adapted to the local `fer` robot description,
+which uses runtime joint names `fer_joint1 ... fer_joint7`.
+
 ## Layout
 
 ```text
@@ -68,14 +71,24 @@ sbmpc_ros/
       safety.py
       lfc_bridge_node.py
     test/
+  sbmpc_bringup/
+    package.xml
+    launch/
+      sbmpc_franka_lfc_sim.launch.py
+      sbmpc_franka_lfc_real.launch.py
+    config/
+      franka_controllers.yaml
+      franka_lfc_params.yaml
+      sbmpc_bridge.yaml
+    test/
 ```
 
-## Test Command
+## Build And Test
 
 ```bash
 cd /workspace/ros2_ws
-colcon build --symlink-install --packages-select sbmpc_ros_bridge
-colcon test --packages-select sbmpc_ros_bridge --event-handlers console_direct+
+colcon build --symlink-install --packages-select sbmpc_ros_bridge sbmpc_bringup
+colcon test --packages-select sbmpc_ros_bridge sbmpc_bringup --event-handlers console_direct+
 colcon test-result --verbose
 ```
 
@@ -91,6 +104,32 @@ It exercises a real `rclpy` timer loop with:
 - the `sbmpc_lfc_bridge_node` at 50 Hz
 - a fake `Control` subscriber
 - diagnostics publication
+
+## Runtime Checks
+
+Real planner smoke through the ROS bridge adapter:
+
+```bash
+/workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+  python -m sbmpc_ros_bridge.planner_smoke --joint-set fer
+```
+
+FER-adapted Gazebo bringup:
+
+```bash
+cd /workspace/ros2_ws
+source install/setup.bash
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py
+```
+
+Headless smoke version:
+
+```bash
+cd /workspace/ros2_ws
+source install/setup.bash
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
+  gz_args:='empty.sdf -r -s' use_rviz:=false
+```
 
 ## Notes
 
@@ -108,3 +147,13 @@ It exercises a real `rclpy` timer loop with:
 - For host-side Git operations, the underlying checkout may still physically
   live outside the workspace root, but there is only one repository; the
   workspace path is the canonical one to use during development.
+- The helper `/workspace/sbmpc_containers/scripts/pixi_ros_run.sh` now sources
+  `/workspace/ros2_ws/install/setup.bash` before entering the Pixi
+  environment, so planner smoke commands can see both ROS packages and the
+  `sbmpc` JAX stack.
+- Current Gazebo status with the installed FER model:
+  the robot entity spawns and `/joint_states` publishes the expected
+  `fer_joint*` names, but Gazebo reports `fer_link4` has invalid inertia and
+  the `/controller_manager/list_controllers` service never becomes contactable.
+  The current simulation blocker is therefore in the installed FER Gazebo
+  model/control-manager path, not in the SB-MPC bridge packaging.

@@ -24,7 +24,7 @@ from sbmpc_ros_bridge.safety import (
 
 
 class SbMpcLfcBridgeNode(Node):
-    """Fake-loop ready SB-MPC to LFC bridge node."""
+    """Timer-driven SB-MPC to LFC bridge node."""
 
     def __init__(
         self,
@@ -40,7 +40,28 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("diagnostics_topic", "diagnostics")
         self.declare_parameter("allow_joint_reordering", False)
         self.declare_parameter("publish_rate_hz", 1.0 / publish_period_sec)
+        self.declare_parameter(
+            "planner_deadline_sec",
+            0.0 if planner_deadline_sec is None else planner_deadline_sec,
+        )
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
+
+        publish_rate_hz = (
+            self.get_parameter("publish_rate_hz").get_parameter_value().double_value
+        )
+        if publish_rate_hz <= 0.0:
+            raise ValueError("publish_rate_hz must be strictly positive.")
+        publish_period_sec = 1.0 / publish_rate_hz
+
+        configured_planner_deadline_sec = (
+            self.get_parameter("planner_deadline_sec")
+            .get_parameter_value()
+            .double_value
+        )
+        if configured_planner_deadline_sec > 0.0:
+            planner_deadline_sec = configured_planner_deadline_sec
+        elif planner_deadline_sec is None:
+            planner_deadline_sec = publish_period_sec
 
         joint_names = tuple(
             self.get_parameter("joint_names").get_parameter_value().string_array_value
@@ -51,8 +72,6 @@ class SbMpcLfcBridgeNode(Node):
         self._safety_profile = (
             make_default_safety_profile() if safety_profile is None else safety_profile
         )
-        if planner_deadline_sec is None:
-            planner_deadline_sec = publish_period_sec
         self._deadline_monitor = PlanningDeadlineMonitor(
             max_planning_duration_sec=planner_deadline_sec,
             fail_closed=False,
@@ -88,8 +107,8 @@ class SbMpcLfcBridgeNode(Node):
         self._timer = self.create_timer(publish_period_sec, self._on_timer)
 
         self.get_logger().info(
-            "Milestone 3 fake loop active: waiting for valid sensors before "
-            "running planner warmup and 50 Hz control publication."
+            "SB-MPC LFC bridge active: waiting for valid sensors before warmup "
+            f"and {publish_rate_hz:.1f} Hz control publication."
         )
 
     def _on_sensor(self, message: Sensor) -> None:
