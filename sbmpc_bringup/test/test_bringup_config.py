@@ -75,6 +75,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 50.0
+    assert params["enable_nonzero_control"] is False
     assert params["force_zero_control"] is False
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_gains"] is True
@@ -104,3 +105,18 @@ def test_fer_sim_inertials_zero_only_the_problematic_link4_cross_terms() -> None
     # Keep the rest of the FER inertials unchanged for the narrowest possible workaround.
     link3 = config["link3"]["inertia"]
     assert link3["xy"] != 0.0
+
+
+def test_milestone5_bridge_presets_cover_feedforward_and_feedback_runs() -> None:
+    feedforward = load_yaml("sbmpc_bridge_milestone5_feedforward.yaml")
+    feedback = load_yaml("sbmpc_bridge_milestone5_feedback.yaml")
+
+    feedforward_params = feedforward["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    feedback_params = feedback["sbmpc_lfc_bridge_node"]["ros__parameters"]
+
+    assert feedforward_params["planner_phase"] == "PREGRASP"
+    assert feedback_params["planner_phase"] == "PREGRASP"
+    assert feedforward_params["enable_nonzero_control"] is False
+    assert feedback_params["enable_nonzero_control"] is False
+    assert feedforward_params["planner_gains"] is False
+    assert feedback_params["planner_gains"] is True

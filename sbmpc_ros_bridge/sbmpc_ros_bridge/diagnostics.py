@@ -7,6 +7,8 @@ import json
 @dataclass(frozen=True, slots=True)
 class BridgeDiagnostics:
     state: str
+    control_enabled: bool
+    force_zero_control: bool
     valid_sensor_count: int
     rejected_sensor_count: int
     published_control_count: int
@@ -15,6 +17,17 @@ class BridgeDiagnostics:
     planner_step_count: int
     deadline_miss_count: int
     last_planning_time_ms: float | None
+    last_phase: str | None
+    last_next_phase: str | None
+    last_running_cost: float | None
+    last_gain_norm: float | None
+    last_torque_norm: float | None
+    last_position_error: float | None
+    last_orientation_error: float | None
+    last_object_error: float | None
+    last_goal_position: list[float] | None
+    last_control_max_abs_feedforward: float | None
+    last_control_gain_norm: float | None
     last_error: str
 
     def to_json(self) -> str:

@@ -9,24 +9,16 @@ sbmpc_lfc_bridge_node:
     force_zero_control: false
     allow_joint_reordering: false
     planner_phase: PREGRASP
-    planner_gains: true
-    # MPPI rollout count: this is the number of Monte-Carlo samples / trajectories.
+    planner_gains: false
     planner_num_samples: 0
-    # Set numeric values > 0 to override the current sbmpc defaults.
     planner_horizon: 0
-    # Legacy alias for planner_num_samples.
     planner_num_parallel_computations: 0
     planner_num_control_points: 0
-    # MPPI temperature in the exp(-lambda * cost) weighting.
     planner_temperature: 0.0
     planner_dt: 0.0
-    # Legacy alias for planner_temperature.
     planner_lambda_mpc: 0.0
-    # MPPI exploration noise scale. The bridge maps this to std_dev_mppi = scale * torque_limits.
     planner_noise_scale: 0.0
-    # Legacy alias for planner_noise_scale.
     planner_std_dev_scale: 0.0
-    # Use "none" to disable smoothing explicitly.
     planner_smoothing: Spline
     planner_gain_method: finite_difference
     planner_gain_fd_epsilon: 0.001

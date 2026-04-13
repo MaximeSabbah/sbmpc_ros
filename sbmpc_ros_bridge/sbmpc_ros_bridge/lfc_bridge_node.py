@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from time import perf_counter
 
+import numpy as np
 from std_msgs.msg import String
 import rclpy
 from linear_feedback_controller_msgs.msg import Control, Sensor
+from rclpy._rclpy_pybind11 import RCLError
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import (
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 
 from sbmpc_ros_bridge.diagnostics import BridgeDiagnostics
 from sbmpc_ros_bridge.joint_mapping import JointMapper
@@ -34,6 +41,13 @@ class _NoopPlannerAdapter:
         del kwargs
 
 
+LFC_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+)
+
+
 class SbMpcLfcBridgeNode(Node):
     """Timer-driven SB-MPC to LFC bridge node."""
 
@@ -49,6 +63,7 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("sensor_topic", "sensor")
         self.declare_parameter("control_topic", "control")
         self.declare_parameter("diagnostics_topic", "diagnostics")
+        self.declare_parameter("enable_nonzero_control", False)
         self.declare_parameter("force_zero_control", False)
         self.declare_parameter("allow_joint_reordering", False)
         self.declare_parameter("publish_rate_hz", 1.0 / publish_period_sec)
@@ -161,6 +176,17 @@ class SbMpcLfcBridgeNode(Node):
         self._warmup_count = 0
         self._planner_step_count = 0
         self._last_planning_time_ms: float | None = None
+        self._last_phase: str | None = None
+        self._last_next_phase: str | None = None
+        self._last_running_cost: float | None = None
+        self._last_gain_norm: float | None = None
+        self._last_torque_norm: float | None = None
+        self._last_position_error: float | None = None
+        self._last_orientation_error: float | None = None
+        self._last_object_error: float | None = None
+        self._last_goal_position: list[float] | None = None
+        self._last_control_max_abs_feedforward: float | None = None
+        self._last_control_gain_norm: float | None = None
         self._last_error = ""
         self._warmup_complete = False
 
@@ -173,13 +199,17 @@ class SbMpcLfcBridgeNode(Node):
         diagnostics_topic = (
             self.get_parameter("diagnostics_topic").get_parameter_value().string_value
         )
-        self._control_publisher = self.create_publisher(Control, control_topic, 10)
+        self._control_publisher = self.create_publisher(
+            Control,
+            control_topic,
+            LFC_QOS,
+        )
         self._diagnostics_publisher = self.create_publisher(String, diagnostics_topic, 10)
         self._sensor_subscription = self.create_subscription(
             Sensor,
             sensor_topic,
             self._on_sensor,
-            10,
+            LFC_QOS,
         )
         self._timer = self.create_timer(publish_period_sec, self._on_timer)
 
@@ -197,12 +227,24 @@ class SbMpcLfcBridgeNode(Node):
                 self.get_logger().info(
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
+            if not self._nonzero_control_enabled():
+                self.get_logger().info(
+                    "enable_nonzero_control is false: the bridge will publish zero "
+                    "controls after warmup until you arm it."
+                )
 
     def _force_zero_control_enabled(self) -> bool:
         self._force_zero_control = (
             self.get_parameter("force_zero_control").get_parameter_value().bool_value
         )
         return self._force_zero_control
+
+    def _nonzero_control_enabled(self) -> bool:
+        return (
+            self.get_parameter("enable_nonzero_control")
+            .get_parameter_value()
+            .bool_value
+        )
 
     def _on_sensor(self, message: Sensor) -> None:
         allow_reordering = (
@@ -228,6 +270,8 @@ class SbMpcLfcBridgeNode(Node):
     def diagnostics_snapshot(self) -> BridgeDiagnostics:
         return BridgeDiagnostics(
             state=self._state,
+            control_enabled=self._nonzero_control_enabled(),
+            force_zero_control=self._force_zero_control_enabled(),
             valid_sensor_count=self._valid_sensor_count,
             rejected_sensor_count=self._rejected_sensor_count,
             published_control_count=self._published_control_count,
@@ -236,6 +280,17 @@ class SbMpcLfcBridgeNode(Node):
             planner_step_count=self._planner_step_count,
             deadline_miss_count=self._deadline_monitor.deadline_miss_count,
             last_planning_time_ms=self._last_planning_time_ms,
+            last_phase=self._last_phase,
+            last_next_phase=self._last_next_phase,
+            last_running_cost=self._last_running_cost,
+            last_gain_norm=self._last_gain_norm,
+            last_torque_norm=self._last_torque_norm,
+            last_position_error=self._last_position_error,
+            last_orientation_error=self._last_orientation_error,
+            last_object_error=self._last_object_error,
+            last_goal_position=self._last_goal_position,
+            last_control_max_abs_feedforward=self._last_control_max_abs_feedforward,
+            last_control_gain_norm=self._last_control_gain_norm,
             last_error=self._last_error,
         )
 
@@ -250,7 +305,7 @@ class SbMpcLfcBridgeNode(Node):
             self._state = (
                 "gated_zero_control"
                 if self._force_zero_control_enabled()
-                else "running"
+                else ("running" if self._nonzero_control_enabled() else "armed_idle")
             )
             self._publish_diagnostics()
             return
@@ -261,10 +316,18 @@ class SbMpcLfcBridgeNode(Node):
             self._publish_diagnostics()
             return
 
+        if not self._nonzero_control_enabled():
+            self._state = "armed_idle"
+            self._publish_control(zero_control_from_sensor(self._last_planner_input))
+            self._publish_diagnostics()
+            return
+
+        self._state = "running"
         start = perf_counter()
         try:
             planner_output = self._planner.step(self._last_planner_input)
             self._planner_step_count += 1
+            self._record_planner_diagnostics(planner_output)
             control = planner_output_to_control(
                 planner_output,
                 self._last_planner_input,
@@ -286,7 +349,9 @@ class SbMpcLfcBridgeNode(Node):
 
     def _run_warmup(self) -> None:
         start = perf_counter()
-        self._planner.warmup()
+        warmup_output = self._planner.warmup()
+        if warmup_output is not None:
+            self._record_planner_diagnostics(warmup_output)
         self._warmup_count += 1
         self._warmup_complete = True
         planning_duration_sec = perf_counter() - start
@@ -300,16 +365,87 @@ class SbMpcLfcBridgeNode(Node):
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
 
+    def _record_planner_diagnostics(self, planner_output: object) -> None:
+        self._last_phase = self._phase_name(getattr(planner_output, "phase", None))
+        self._last_next_phase = self._phase_name(
+            getattr(planner_output, "next_phase", None)
+        )
+
+        diagnostics = getattr(planner_output, "diagnostics", None)
+        if diagnostics is None:
+            return
+
+        self._last_running_cost = self._maybe_float(
+            getattr(diagnostics, "running_cost", None)
+        )
+        self._last_gain_norm = self._maybe_float(
+            getattr(diagnostics, "gain_norm", None)
+        )
+        self._last_torque_norm = self._maybe_float(
+            getattr(diagnostics, "torque_norm", None)
+        )
+        self._last_position_error = self._maybe_float(
+            getattr(diagnostics, "position_error", None)
+        )
+        self._last_orientation_error = self._maybe_float(
+            getattr(diagnostics, "orientation_error", None)
+        )
+        self._last_object_error = self._maybe_float(
+            getattr(diagnostics, "object_error", None)
+        )
+
+        goal_position = getattr(diagnostics, "goal_position", None)
+        if goal_position is None:
+            self._last_goal_position = None
+            return
+
+        goal_array = np.asarray(goal_position, dtype=np.float64).reshape(-1)
+        self._last_goal_position = goal_array.tolist()
+
     def _publish_control(self, control: Control) -> None:
-        self._control_publisher.publish(control)
+        try:
+            self._control_publisher.publish(control)
+        except RCLError:
+            if not rclpy.ok(context=self.context):
+                return
+            raise
         self._published_control_count += 1
-        if any(abs(value) > 1e-12 for value in control.feedforward.data):
+        self._last_control_max_abs_feedforward = max(
+            (abs(float(value)) for value in control.feedforward.data),
+            default=0.0,
+        )
+        gain_data = np.asarray(control.feedback_gain.data, dtype=np.float64)
+        self._last_control_gain_norm = (
+            float(np.linalg.norm(gain_data)) if gain_data.size else 0.0
+        )
+        if (
+            self._last_control_max_abs_feedforward > 1e-12
+            or self._last_control_gain_norm > 1e-12
+        ):
             self._nonzero_control_count += 1
 
     def _publish_diagnostics(self) -> None:
-        self._diagnostics_publisher.publish(
-            String(data=self.diagnostics_snapshot().to_json())
-        )
+        try:
+            self._diagnostics_publisher.publish(
+                String(data=self.diagnostics_snapshot().to_json())
+            )
+        except RCLError:
+            if not rclpy.ok(context=self.context):
+                return
+            raise
+
+    @staticmethod
+    def _phase_name(value: object | None) -> str | None:
+        if value is None:
+            return None
+        name = getattr(value, "name", None)
+        return str(name) if name is not None else str(value)
+
+    @staticmethod
+    def _maybe_float(value: object | None) -> float | None:
+        if value is None:
+            return None
+        return float(value)
 
 
 def main(args: list[str] | None = None) -> None:
