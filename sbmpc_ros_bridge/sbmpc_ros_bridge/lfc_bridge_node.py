@@ -27,6 +27,13 @@ from sbmpc_ros_bridge.safety import (
 )
 
 
+class _NoopPlannerAdapter:
+    """Warmup-only placeholder used when the bridge is explicitly gated to zero output."""
+
+    def warmup(self, **kwargs) -> None:
+        del kwargs
+
+
 class SbMpcLfcBridgeNode(Node):
     """Timer-driven SB-MPC to LFC bridge node."""
 
@@ -42,6 +49,7 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("sensor_topic", "sensor")
         self.declare_parameter("control_topic", "control")
         self.declare_parameter("diagnostics_topic", "diagnostics")
+        self.declare_parameter("force_zero_control", False)
         self.declare_parameter("allow_joint_reordering", False)
         self.declare_parameter("publish_rate_hz", 1.0 / publish_period_sec)
         self.declare_parameter(
@@ -85,6 +93,7 @@ class SbMpcLfcBridgeNode(Node):
         joint_names = tuple(
             self.get_parameter("joint_names").get_parameter_value().string_array_value
         )
+        self._force_zero_control = self._force_zero_control_enabled()
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._last_planner_input = None
         planner_config = planner_config_overrides_from_values(
@@ -131,7 +140,11 @@ class SbMpcLfcBridgeNode(Node):
         self._planner = (
             planner
             if planner is not None
-            else SbMpcPlannerAdapter(config_overrides=planner_config)
+            else (
+                _NoopPlannerAdapter()
+                if self._force_zero_control
+                else SbMpcPlannerAdapter(config_overrides=planner_config)
+            )
         )
         self._safety_profile = (
             make_default_safety_profile() if safety_profile is None else safety_profile
@@ -175,9 +188,21 @@ class SbMpcLfcBridgeNode(Node):
             f"and {publish_rate_hz:.1f} Hz control publication."
         )
         if planner is None:
-            self.get_logger().info(
-                f"Planner configuration from ROS parameters: {planner_config.active_items()}"
-            )
+            if self._force_zero_control:
+                self.get_logger().info(
+                    "force_zero_control is enabled: the bridge will publish zero "
+                    "feedforward and zero gains after warmup."
+                )
+            else:
+                self.get_logger().info(
+                    f"Planner configuration from ROS parameters: {planner_config.active_items()}"
+                )
+
+    def _force_zero_control_enabled(self) -> bool:
+        self._force_zero_control = (
+            self.get_parameter("force_zero_control").get_parameter_value().bool_value
+        )
+        return self._force_zero_control
 
     def _on_sensor(self, message: Sensor) -> None:
         allow_reordering = (
@@ -222,7 +247,17 @@ class SbMpcLfcBridgeNode(Node):
         if not self._warmup_complete:
             self._run_warmup()
             self._publish_control(zero_control_from_sensor(self._last_planner_input))
-            self._state = "running"
+            self._state = (
+                "gated_zero_control"
+                if self._force_zero_control_enabled()
+                else "running"
+            )
+            self._publish_diagnostics()
+            return
+
+        if self._force_zero_control_enabled():
+            self._state = "gated_zero_control"
+            self._publish_control(zero_control_from_sensor(self._last_planner_input))
             self._publish_diagnostics()
             return
 

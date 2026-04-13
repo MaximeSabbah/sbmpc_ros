@@ -6,6 +6,8 @@ FER_ARM_JOINT_NAMES: tuple[str, ...] = tuple(f"fer_joint{i}" for i in range(1, 8
 JOINT_STATE_BROADCASTER_NAME = "joint_state_broadcaster"
 JOINT_STATE_ESTIMATOR_NAME = "joint_state_estimator"
 LINEAR_FEEDBACK_CONTROLLER_NAME = "linear_feedback_controller"
+GRIPPER_ACTION_CONTROLLER_NAME = "gripper_action_controller"
+FER_GRIPPER_JOINT_NAME = "fer_finger_joint1"
 
 BRIDGE_SENSOR_TOPIC = f"/{LINEAR_FEEDBACK_CONTROLLER_NAME}/sensor"
 BRIDGE_CONTROL_TOPIC = f"/{LINEAR_FEEDBACK_CONTROLLER_NAME}/control"

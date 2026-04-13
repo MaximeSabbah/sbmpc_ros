@@ -9,6 +9,8 @@ from sbmpc_bringup.constants import (
     BRIDGE_DIAGNOSTICS_TOPIC,
     BRIDGE_SENSOR_TOPIC,
     FER_ARM_JOINT_NAMES,
+    FER_GRIPPER_JOINT_NAME,
+    GRIPPER_ACTION_CONTROLLER_NAME,
     JOINT_STATE_BROADCASTER_NAME,
     JOINT_STATE_ESTIMATOR_NAME,
     LINEAR_FEEDBACK_CONTROLLER_NAME,
@@ -40,6 +42,14 @@ def test_franka_controllers_yaml_declares_expected_controller_types() -> None:
     assert cm_params[LINEAR_FEEDBACK_CONTROLLER_NAME]["type"] == (
         "linear_feedback_controller/LinearFeedbackController"
     )
+    assert cm_params[GRIPPER_ACTION_CONTROLLER_NAME]["type"] == (
+        "position_controllers/GripperActionController"
+    )
+
+    gripper = config[GRIPPER_ACTION_CONTROLLER_NAME]["ros__parameters"]
+    assert gripper["type"] == "position_controllers/GripperActionController"
+    assert gripper["joint"] == FER_GRIPPER_JOINT_NAME
+    assert gripper["allow_stalling"] is True
 
 
 def test_franka_lfc_params_match_the_expected_fer_interface_layout() -> None:
@@ -65,6 +75,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 50.0
+    assert params["force_zero_control"] is False
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_gains"] is True
     assert params["planner_num_samples"] == 0

@@ -25,6 +25,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 from sbmpc_bringup.constants import (
+    GRIPPER_ACTION_CONTROLLER_NAME,
     JOINT_STATE_BROADCASTER_NAME,
     JOINT_STATE_ESTIMATOR_NAME,
     LINEAR_FEEDBACK_CONTROLLER_NAME,
@@ -140,6 +141,24 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
+    gripper_action_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            GRIPPER_ACTION_CONTROLLER_NAME,
+            "--controller-manager",
+            LaunchConfiguration("controller_manager_name"),
+            "--controller-manager-timeout",
+            "60",
+            "--switch-timeout",
+            "60",
+            "--param-file",
+            LaunchConfiguration("controllers_file"),
+        ],
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("load_gripper")),
+    )
+
     lfc_stack_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -246,7 +265,7 @@ def generate_launch_description() -> LaunchDescription:
             RegisterEventHandler(
                 OnProcessExit(
                     target_action=joint_state_broadcaster_spawner,
-                    on_exit=[lfc_stack_spawner],
+                    on_exit=[gripper_action_controller_spawner, lfc_stack_spawner],
                 )
             ),
             RegisterEventHandler(
