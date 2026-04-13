@@ -4,10 +4,17 @@ import numpy as np
 import pytest
 
 from sbmpc_ros_bridge.safety import (
+    SBMPC_TO_LFC_GAIN_SCALE,
     ControlSafetyLimits,
+    PlanningDeadlineMonitor,
     UnsafeControlError,
+    apply_gain_norm_limit,
+    apply_torque_limit,
     compute_lfc_control,
+    compute_control_age_sec,
     compute_lfc_state_error,
+    sbmpc_gain_to_lfc_gain,
+    validate_control_age,
     validate_planner_output,
 )
 
@@ -57,7 +64,33 @@ def test_positive_velocity_gain_is_damping_under_lfc_convention() -> None:
     assert control[0] < 0.0
 
 
-def test_validate_planner_output_rejects_limit_violations() -> None:
+def test_sbmpc_measured_state_gain_must_be_negated_for_lfc() -> None:
+    planner_jacobian = np.zeros((7, 14), dtype=np.float64)
+    planner_jacobian[0, 0] = -20.0
+    desired_state = np.zeros(14, dtype=np.float64)
+    measured_state = np.zeros(14, dtype=np.float64)
+    measured_state[0] = 0.1
+
+    raw_control = compute_lfc_control(
+        np.zeros(7, dtype=np.float64),
+        planner_jacobian,
+        desired_state,
+        measured_state,
+    )
+    lfc_gain = sbmpc_gain_to_lfc_gain(planner_jacobian)
+    safe_control = compute_lfc_control(
+        np.zeros(7, dtype=np.float64),
+        lfc_gain,
+        desired_state,
+        measured_state,
+    )
+
+    assert SBMPC_TO_LFC_GAIN_SCALE == -1.0
+    assert raw_control[0] > 0.0
+    assert safe_control[0] < 0.0
+
+
+def test_validate_planner_output_rejects_limit_violations_by_default() -> None:
     with pytest.raises(UnsafeControlError, match="max_abs_torque"):
         validate_planner_output(
             tau_ff=np.asarray([2.0] + [0.0] * 6, dtype=np.float64),
@@ -71,3 +104,107 @@ def test_validate_planner_output_rejects_limit_violations() -> None:
             feedback_gain=np.full((7, 14), 10.0, dtype=np.float64),
             limits=ControlSafetyLimits(max_gain_norm=1.0),
         )
+
+
+def test_validate_planner_output_can_clip_torque_when_requested() -> None:
+    tau_ff, gain = validate_planner_output(
+        tau_ff=np.asarray([2.0, -3.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        feedback_gain=np.eye(7, 14, dtype=np.float64),
+        limits=ControlSafetyLimits(
+            max_abs_torque=1.0,
+            torque_limit_mode="clip",
+        ),
+    )
+
+    np.testing.assert_allclose(
+        tau_ff,
+        np.asarray([1.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+    )
+    assert float(np.max(np.abs(tau_ff))) == 1.0
+    assert gain.shape == (7, 14)
+
+
+def test_validate_planner_output_can_scale_gain_norm_when_requested() -> None:
+    _, gain = validate_planner_output(
+        tau_ff=np.zeros(7, dtype=np.float64),
+        feedback_gain=np.full((7, 14), 4.0, dtype=np.float64),
+        limits=ControlSafetyLimits(
+            max_gain_norm=2.0,
+            gain_limit_mode="scale",
+        ),
+    )
+
+    assert np.isclose(np.linalg.norm(gain), 2.0)
+
+
+def test_apply_limit_helpers_reject_unknown_modes() -> None:
+    with pytest.raises(ValueError, match="unsupported torque limit mode"):
+        apply_torque_limit(
+            np.asarray([2.0] + [0.0] * 6, dtype=np.float64),
+            max_abs_torque=1.0,
+            mode="bad",  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="unsupported gain limit mode"):
+        apply_gain_norm_limit(
+            np.full((7, 14), 2.0, dtype=np.float64),
+            max_gain_norm=1.0,
+            mode="bad",  # type: ignore[arg-type]
+        )
+
+
+def test_compute_control_age_and_stale_detection() -> None:
+    age = compute_control_age_sec(control_stamp_sec=10.0, now_sec=10.04)
+    assert np.isclose(age, 0.04)
+
+    fresh_age = validate_control_age(
+        control_stamp_sec=10.0,
+        now_sec=10.04,
+        max_control_age_sec=0.05,
+    )
+    assert np.isclose(fresh_age, 0.04)
+
+    with pytest.raises(UnsafeControlError, match="control is stale"):
+        validate_control_age(
+            control_stamp_sec=10.0,
+            now_sec=10.2,
+            max_control_age_sec=0.05,
+        )
+
+    with pytest.raises(UnsafeControlError, match="in the future"):
+        compute_control_age_sec(control_stamp_sec=10.0, now_sec=9.9)
+
+
+def test_planning_deadline_monitor_counts_misses_without_rejecting_when_configured() -> None:
+    monitor = PlanningDeadlineMonitor(
+        max_planning_duration_sec=0.02,
+        fail_closed=False,
+    )
+
+    assert monitor.observe(0.015) is True
+    assert monitor.deadline_miss_count == 0
+    assert monitor.observe(0.03) is False
+    assert monitor.deadline_miss_count == 1
+    assert np.isclose(monitor.last_planning_duration_sec, 0.03)
+
+
+def test_planning_deadline_monitor_can_fail_closed() -> None:
+    monitor = PlanningDeadlineMonitor(
+        max_planning_duration_sec=0.02,
+        fail_closed=True,
+    )
+
+    with pytest.raises(UnsafeControlError, match="planner deadline missed"):
+        monitor.observe(0.03)
+
+    assert monitor.deadline_miss_count == 1
+
+
+def test_planning_deadline_monitor_rejects_invalid_durations() -> None:
+    monitor = PlanningDeadlineMonitor(max_planning_duration_sec=0.02)
+
+    with pytest.raises(UnsafeControlError, match="must be finite"):
+        monitor.observe(np.nan)
+
+    with pytest.raises(UnsafeControlError, match="must be non-negative"):
+        monitor.observe(-0.01)

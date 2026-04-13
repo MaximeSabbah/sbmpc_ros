@@ -9,7 +9,12 @@ from std_msgs.msg import Float64MultiArray, MultiArrayDimension, MultiArrayLayou
 
 from sbmpc_ros_bridge.joint_mapping import JointMapper
 from sbmpc_ros_bridge.planner_adapter import PlannerInput
-from sbmpc_ros_bridge.safety import ControlSafetyLimits, validate_planner_output
+from sbmpc_ros_bridge.safety import (
+    SBMPC_TO_LFC_GAIN_SCALE,
+    ControlSafetyLimits,
+    sbmpc_gain_to_lfc_gain,
+    validate_planner_output,
+)
 
 
 class PlannerOutputLike(Protocol):
@@ -36,12 +41,9 @@ def planner_output_to_control(
     planner_output: PlannerOutputLike,
     planned_state: PlannerInput | Sensor,
     *,
-    gain_scale: float = 1.0,
+    gain_scale: float = SBMPC_TO_LFC_GAIN_SCALE,
     safety_limits: ControlSafetyLimits | None = None,
 ) -> Control:
-    if not np.isfinite(gain_scale):
-        raise ValueError(f"gain_scale must be finite, got {gain_scale}.")
-
     sensor_snapshot = (
         planned_state.sensor if isinstance(planned_state, PlannerInput) else planned_state
     )
@@ -53,7 +55,9 @@ def planner_output_to_control(
 
     control = Control()
     control.header = deepcopy(sensor_snapshot.header)
-    control.feedback_gain = numpy_to_float64_multi_array(feedback_gain * gain_scale)
+    control.feedback_gain = numpy_to_float64_multi_array(
+        sbmpc_gain_to_lfc_gain(feedback_gain, gain_scale=gain_scale)
+    )
     control.feedforward = numpy_to_float64_multi_array(tau_ff.reshape((-1, 1)))
     control.initial_state = deepcopy(sensor_snapshot)
     return control

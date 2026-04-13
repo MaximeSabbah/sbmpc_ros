@@ -57,7 +57,7 @@ def test_planner_output_to_control_uses_lfc_matrix_layouts() -> None:
     feedback_gain = float64_multi_array_to_numpy(control.feedback_gain)
     feedforward = float64_multi_array_to_numpy(control.feedforward)
 
-    np.testing.assert_allclose(feedback_gain, planner_output.K)
+    np.testing.assert_allclose(feedback_gain, -planner_output.K)
     np.testing.assert_allclose(feedforward, planner_output.tau_ff.reshape(7, 1))
     assert control.feedback_gain.layout.dim[0].label == "rows"
     assert control.feedback_gain.layout.dim[0].size == 7
@@ -120,15 +120,15 @@ def test_planner_output_to_control_rejects_invalid_outputs(
         planner_output_to_control(planner_output, make_sensor())
 
 
-def test_planner_output_to_control_applies_configurable_gain_scale() -> None:
+def test_planner_output_to_control_can_override_default_sign_flip() -> None:
     planner_output = FakePlannerOutput(
         tau_ff=np.zeros(7, dtype=np.float64),
         K=np.eye(7, 14, dtype=np.float64),
     )
 
-    control = planner_output_to_control(planner_output, make_sensor(), gain_scale=-1.0)
+    control = planner_output_to_control(planner_output, make_sensor(), gain_scale=1.0)
 
     np.testing.assert_allclose(
         float64_multi_array_to_numpy(control.feedback_gain),
-        -planner_output.K,
+        planner_output.K,
     )
