@@ -20,9 +20,16 @@ proves the core message contract against the installed
 the planner logic out of ROS and only adds thin adapters around the stable
 planner API exposed in `/workspace/sbmpc/sbmpc/planner_api.py`.
 
-This Git repository is not intended to be the colcon workspace root. The
-canonical ROS workspace is `/workspace/ros2_ws`, with this repository mounted or
-linked into `/workspace/ros2_ws/src/sbmpc_ros`.
+This Git repository is not intended to be the colcon workspace root.
+
+Use this repository through the canonical ROS workspace path:
+
+```bash
+/workspace/ros2_ws/src/sbmpc_ros
+```
+
+`/workspace/ros2_ws` is the colcon workspace root. `build/`, `install/`, and
+`log/` belong there, not in this repository.
 
 ## Layout
 
@@ -60,5 +67,8 @@ colcon test-result --verbose
 - The runtime planner adapter lazy-loads `sbmpc` so the bridge package can be
   imported even before the algorithm repo is path-installed into the same
   Python environment.
-- For direct package-only iteration outside a colcon workspace, raw pytest still
-  works from `/workspace/sbmpc_ros/sbmpc_ros_bridge`.
+- When editing code in the container, open files from
+  `/workspace/ros2_ws/src/sbmpc_ros`.
+- For host-side Git operations, the underlying checkout may still physically
+  live outside the workspace root, but there is only one repository; the
+  workspace path is the canonical one to use during development.
