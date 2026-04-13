@@ -15,6 +15,7 @@ from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     Command,
+    EnvironmentVariable,
     FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
@@ -41,13 +42,15 @@ def generate_launch_description() -> LaunchDescription:
                 " ",
                 PathJoinSubstitution(
                     [
-                        FindPackageShare("franka_gazebo_bringup"),
+                        FindPackageShare("sbmpc_bringup"),
                         "urdf",
-                        "franka_arm.gazebo.xacro",
+                        "franka_arm_with_sbmpc_inertials.gazebo.xacro",
                     ]
                 ),
                 " robot_type:=",
                 LaunchConfiguration("robot_type"),
+                " inertials_file:=",
+                LaunchConfiguration("inertials_file"),
                 " hand:=",
                 LaunchConfiguration("load_gripper"),
                 " ros2_control:=true",
@@ -159,9 +162,14 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     bridge = Node(
-        package="sbmpc_ros_bridge",
-        executable="sbmpc_lfc_bridge_node",
+        executable="python",
+        arguments=["-m", "sbmpc_ros_bridge.lfc_bridge_node"],
+        prefix=[LaunchConfiguration("bridge_runtime_script")],
         parameters=[LaunchConfiguration("bridge_params_file"), {"use_sim_time": True}],
+        additional_env={
+            "PIXI_ENV": LaunchConfiguration("pixi_env"),
+            "SBMPC_DIR": LaunchConfiguration("sbmpc_dir"),
+        },
         output="screen",
     )
 
@@ -173,6 +181,33 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("entity_name", default_value="franka"),
             DeclareLaunchArgument("gz_args", default_value="empty.sdf -r"),
             DeclareLaunchArgument("use_rviz", default_value="false"),
+            DeclareLaunchArgument(
+                "bridge_runtime_script",
+                default_value=EnvironmentVariable(
+                    "SBMPC_BRIDGE_RUNTIME_SCRIPT",
+                    default_value="/workspace/sbmpc_containers/scripts/pixi_ros_run.sh",
+                ),
+            ),
+            DeclareLaunchArgument(
+                "inertials_file",
+                default_value=PathJoinSubstitution(
+                    [FindPackageShare("sbmpc_bringup"), "config", "fer_sim_inertials.yaml"]
+                ),
+            ),
+            DeclareLaunchArgument(
+                "pixi_env",
+                default_value=EnvironmentVariable(
+                    "PIXI_ENV",
+                    default_value="cuda",
+                ),
+            ),
+            DeclareLaunchArgument(
+                "sbmpc_dir",
+                default_value=EnvironmentVariable(
+                    "SBMPC_DIR",
+                    default_value="/workspace/sbmpc",
+                ),
+            ),
             DeclareLaunchArgument(
                 "controller_manager_name",
                 default_value="/controller_manager",

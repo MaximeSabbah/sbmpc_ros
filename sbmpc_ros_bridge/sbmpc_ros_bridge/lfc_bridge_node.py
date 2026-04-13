@@ -5,6 +5,7 @@ from time import perf_counter
 from std_msgs.msg import String
 import rclpy
 from linear_feedback_controller_msgs.msg import Control, Sensor
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from sbmpc_ros_bridge.diagnostics import BridgeDiagnostics
@@ -14,7 +15,10 @@ from sbmpc_ros_bridge.lfc_msg_adapter import (
     sensor_to_planner_input,
     zero_control_from_sensor,
 )
-from sbmpc_ros_bridge.planner_adapter import SbMpcPlannerAdapter
+from sbmpc_ros_bridge.planner_adapter import (
+    SbMpcPlannerAdapter,
+    planner_config_overrides_from_values,
+)
 from sbmpc_ros_bridge.safety import (
     BridgeSafetyProfile,
     PlanningDeadlineMonitor,
@@ -45,6 +49,21 @@ class SbMpcLfcBridgeNode(Node):
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
+        self.declare_parameter("planner_phase", "PREGRASP")
+        self.declare_parameter("planner_gains", True)
+        self.declare_parameter("planner_num_samples", 0)
+        self.declare_parameter("planner_horizon", 0)
+        self.declare_parameter("planner_num_parallel_computations", 0)
+        self.declare_parameter("planner_num_control_points", 0)
+        self.declare_parameter("planner_temperature", 0.0)
+        self.declare_parameter("planner_dt", 0.0)
+        self.declare_parameter("planner_lambda_mpc", 0.0)
+        self.declare_parameter("planner_noise_scale", 0.0)
+        self.declare_parameter("planner_std_dev_scale", 0.0)
+        self.declare_parameter("planner_smoothing", "Spline")
+        self.declare_parameter("planner_gain_method", "finite_difference")
+        self.declare_parameter("planner_gain_fd_epsilon", 1e-3)
+        self.declare_parameter("planner_gain_fd_scheme", "forward")
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -68,7 +87,52 @@ class SbMpcLfcBridgeNode(Node):
         )
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._last_planner_input = None
-        self._planner = planner if planner is not None else SbMpcPlannerAdapter()
+        planner_config = planner_config_overrides_from_values(
+            phase=self.get_parameter("planner_phase").get_parameter_value().string_value,
+            gains=self.get_parameter("planner_gains").get_parameter_value().bool_value,
+            num_samples=(
+                self.get_parameter("planner_num_samples").get_parameter_value().integer_value
+            ),
+            horizon=self.get_parameter("planner_horizon").get_parameter_value().integer_value,
+            num_parallel_computations=(
+                self.get_parameter("planner_num_parallel_computations")
+                .get_parameter_value()
+                .integer_value
+            ),
+            num_control_points=(
+                self.get_parameter("planner_num_control_points")
+                .get_parameter_value()
+                .integer_value
+            ),
+            temperature=(
+                self.get_parameter("planner_temperature").get_parameter_value().double_value
+            ),
+            dt=self.get_parameter("planner_dt").get_parameter_value().double_value,
+            lambda_mpc=(
+                self.get_parameter("planner_lambda_mpc").get_parameter_value().double_value
+            ),
+            noise_scale=(
+                self.get_parameter("planner_noise_scale").get_parameter_value().double_value
+            ),
+            std_dev_scale=(
+                self.get_parameter("planner_std_dev_scale").get_parameter_value().double_value
+            ),
+            smoothing=self.get_parameter("planner_smoothing").get_parameter_value().string_value,
+            gain_method=(
+                self.get_parameter("planner_gain_method").get_parameter_value().string_value
+            ),
+            gain_fd_epsilon=(
+                self.get_parameter("planner_gain_fd_epsilon").get_parameter_value().double_value
+            ),
+            gain_fd_scheme=(
+                self.get_parameter("planner_gain_fd_scheme").get_parameter_value().string_value
+            ),
+        )
+        self._planner = (
+            planner
+            if planner is not None
+            else SbMpcPlannerAdapter(config_overrides=planner_config)
+        )
         self._safety_profile = (
             make_default_safety_profile() if safety_profile is None else safety_profile
         )
@@ -110,6 +174,10 @@ class SbMpcLfcBridgeNode(Node):
             "SB-MPC LFC bridge active: waiting for valid sensors before warmup "
             f"and {publish_rate_hz:.1f} Hz control publication."
         )
+        if planner is None:
+            self.get_logger().info(
+                f"Planner configuration from ROS parameters: {planner_config.active_items()}"
+            )
 
     def _on_sensor(self, message: Sensor) -> None:
         allow_reordering = (
@@ -214,6 +282,13 @@ def main(args: list[str] | None = None) -> None:
     node = SbMpcLfcBridgeNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok(context=node.context):
+            rclpy.shutdown(context=node.context)
+
+
+if __name__ == "__main__":
+    main()

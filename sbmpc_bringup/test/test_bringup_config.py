@@ -65,3 +65,31 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 50.0
+    assert params["planner_phase"] == "PREGRASP"
+    assert params["planner_gains"] is True
+    assert params["planner_num_samples"] == 0
+    assert params["planner_horizon"] == 0
+    assert params["planner_num_parallel_computations"] == 0
+    assert params["planner_num_control_points"] == 0
+    assert params["planner_temperature"] == 0.0
+    assert params["planner_dt"] == 0.0
+    assert params["planner_lambda_mpc"] == 0.0
+    assert params["planner_noise_scale"] == 0.0
+    assert params["planner_std_dev_scale"] == 0.0
+    assert params["planner_smoothing"] == "Spline"
+    assert params["planner_gain_method"] == "finite_difference"
+    assert params["planner_gain_fd_epsilon"] == 0.001
+    assert params["planner_gain_fd_scheme"] == "forward"
+
+
+def test_fer_sim_inertials_zero_only_the_problematic_link4_cross_terms() -> None:
+    config = load_yaml("fer_sim_inertials.yaml")
+    link4 = config["link4"]["inertia"]
+
+    assert link4["xy"] == 0.0
+    assert link4["xz"] == 0.0
+    assert link4["yz"] == 0.0
+
+    # Keep the rest of the FER inertials unchanged for the narrowest possible workaround.
+    link3 = config["link3"]["inertia"]
+    assert link3["xy"] != 0.0

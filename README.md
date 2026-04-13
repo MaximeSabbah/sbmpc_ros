@@ -35,6 +35,16 @@ Use this repository through the canonical ROS workspace path:
 `/workspace/ros2_ws` is the colcon workspace root. `build/`, `install/`, and
 `log/` belong there, not in this repository.
 
+For compatibility with older tooling, the container also restores:
+
+```bash
+/workspace/sbmpc_ros
+```
+
+Use `/workspace/ros2_ws/src/sbmpc_ros` as the canonical development path and
+`/workspace/sbmpc_ros` only when a legacy script or editor workflow still
+expects it.
+
 ## Safety Philosophy
 
 The bridge safety code is intentionally split into three layers:
@@ -135,6 +145,44 @@ ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
   gz_args:='empty.sdf -r -s' use_rviz:=false
 ```
 
+Both sim and real bringup launch the bridge through
+`/workspace/sbmpc_containers/scripts/pixi_ros_run.sh`, so ROS sees the
+`sbmpc` JAX/Pixi stack without requiring a separate manual wrapper command.
+
+Useful launch overrides:
+
+- `sbmpc_dir:=/workspace/sbmpc`
+- `pixi_env:=cuda`
+- `bridge_runtime_script:=/workspace/sbmpc_containers/scripts/pixi_ros_run.sh`
+
+## Planner Tuning From YAML
+
+The bridge reads planner overrides from:
+
+```bash
+/workspace/ros2_ws/src/sbmpc_ros/sbmpc_bringup/config/sbmpc_bridge.yaml
+```
+
+This lets you tune the ROS-side runtime without editing the `sbmpc` codebase.
+The main knobs now exposed are:
+
+- `planner_phase`
+- `planner_gains`
+- `planner_horizon`
+- `planner_num_samples` or `planner_num_parallel_computations`
+- `planner_num_control_points`
+- `planner_dt`
+- `planner_temperature` or `planner_lambda_mpc`
+- `planner_noise_scale` or `planner_std_dev_scale`
+- `planner_smoothing`
+- `planner_gain_method`
+- `planner_gain_fd_epsilon`
+- `planner_gain_fd_scheme`
+
+For numeric overrides, leave the value at `0` or `0.0` to keep the current
+`sbmpc` default. Set it to a positive value to override the planner config from
+ROS.
+
 ## Notes
 
 - The bridge package assumes the ROS environment already exposes
@@ -155,9 +203,11 @@ ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
   `/workspace/ros2_ws/install/setup.bash` before entering the Pixi
   environment, so planner smoke commands can see both ROS packages and the
   `sbmpc` JAX stack.
-- Current Gazebo status with the installed FER model:
-  the robot entity spawns and `/joint_states` publishes the expected
-  `fer_joint*` names, but Gazebo reports `fer_link4` has invalid inertia and
-  the `/controller_manager/list_controllers` service never becomes contactable.
-  The current simulation blocker is therefore in the installed FER Gazebo
-  model/control-manager path, not in the SB-MPC bridge packaging.
+- `sbmpc_franka_lfc_sim.launch.py` now uses a local Gazebo wrapper xacro plus
+  `config/fer_sim_inertials.yaml`, which zeros only the `fer_link4` cross
+  inertia terms (`xy`, `xz`, `yz`) for simulation. This is a narrow sim-only
+  workaround that unblocks Gazebo validation without modifying the upstream
+  installed description.
+- The bridge diagnostics topic is `/sbmpc/diagnostics`.
+- If X11 forwarding is available from `sbmpc_containers`, set `use_rviz:=true`
+  to visualize the FER model in RViz while iterating on planner quality.

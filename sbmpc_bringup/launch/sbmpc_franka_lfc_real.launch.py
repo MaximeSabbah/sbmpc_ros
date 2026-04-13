@@ -4,7 +4,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -56,9 +56,14 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     bridge = Node(
-        package="sbmpc_ros_bridge",
-        executable="sbmpc_lfc_bridge_node",
+        executable="python",
+        arguments=["-m", "sbmpc_ros_bridge.lfc_bridge_node"],
+        prefix=[LaunchConfiguration("bridge_runtime_script")],
         parameters=[LaunchConfiguration("bridge_params_file"), {"use_sim_time": False}],
+        additional_env={
+            "PIXI_ENV": LaunchConfiguration("pixi_env"),
+            "SBMPC_DIR": LaunchConfiguration("sbmpc_dir"),
+        },
         output="screen",
     )
 
@@ -73,8 +78,29 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
             DeclareLaunchArgument("joint_state_rate", default_value="30"),
             DeclareLaunchArgument(
+                "bridge_runtime_script",
+                default_value=EnvironmentVariable(
+                    "SBMPC_BRIDGE_RUNTIME_SCRIPT",
+                    default_value="/workspace/sbmpc_containers/scripts/pixi_ros_run.sh",
+                ),
+            ),
+            DeclareLaunchArgument(
                 "controller_manager_name",
                 default_value="/controller_manager",
+            ),
+            DeclareLaunchArgument(
+                "pixi_env",
+                default_value=EnvironmentVariable(
+                    "PIXI_ENV",
+                    default_value="cuda",
+                ),
+            ),
+            DeclareLaunchArgument(
+                "sbmpc_dir",
+                default_value=EnvironmentVariable(
+                    "SBMPC_DIR",
+                    default_value="/workspace/sbmpc",
+                ),
             ),
             DeclareLaunchArgument(
                 "controllers_file",

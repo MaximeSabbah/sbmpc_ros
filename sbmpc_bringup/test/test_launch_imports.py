@@ -40,15 +40,19 @@ def test_sim_launch_imports_and_declares_expected_arguments() -> None:
     assert_declared_arguments(
         launch_description,
         {
+            "bridge_runtime_script",
             "bridge_params_file",
             "controller_manager_name",
             "controllers_file",
             "entity_name",
             "franka_hand",
             "gz_args",
+            "inertials_file",
             "lfc_params_file",
             "load_gripper",
+            "pixi_env",
             "robot_type",
+            "sbmpc_dir",
             "use_rviz",
         },
     )
@@ -63,6 +67,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
         launch_description,
         {
             "arm_prefix",
+            "bridge_runtime_script",
             "bridge_params_file",
             "controller_manager_name",
             "controllers_file",
@@ -71,8 +76,10 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "lfc_params_file",
             "load_gripper",
             "namespace",
+            "pixi_env",
             "robot_ip",
             "robot_type",
+            "sbmpc_dir",
             "use_fake_hardware",
         },
     )
