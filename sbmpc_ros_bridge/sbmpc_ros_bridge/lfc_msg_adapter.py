@@ -23,6 +23,12 @@ class PlannerOutputLike(Protocol):
     K: np.ndarray
 
 
+class ZeroPlannerOutput:
+    def __init__(self, control_dim: int = 7, state_dim: int = 14) -> None:
+        self.tau_ff = np.zeros(control_dim, dtype=np.float64)
+        self.K = np.zeros((control_dim, state_dim), dtype=np.float64)
+
+
 def sensor_to_planner_input(
     sensor: Sensor,
     *,
@@ -76,6 +82,19 @@ def planner_output_to_control(
     control.feedforward = numpy_to_float64_multi_array(tau_ff.reshape((-1, 1)))
     control.initial_state = deepcopy(sensor_snapshot)
     return control
+
+
+def zero_control_from_sensor(
+    sensor_snapshot: PlannerInput | Sensor,
+    *,
+    control_dim: int = 7,
+    state_dim: int = 14,
+) -> Control:
+    return planner_output_to_control(
+        ZeroPlannerOutput(control_dim=control_dim, state_dim=state_dim),
+        sensor_snapshot,
+        gain_scale=1.0,
+    )
 
 
 def numpy_to_float64_multi_array(values: np.ndarray) -> Float64MultiArray:

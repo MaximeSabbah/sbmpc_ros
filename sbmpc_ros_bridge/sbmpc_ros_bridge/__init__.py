@@ -1,3 +1,4 @@
+from sbmpc_ros_bridge.diagnostics import BridgeDiagnostics
 from sbmpc_ros_bridge.joint_mapping import (
     JointMapper,
     JointMappingError,
@@ -8,6 +9,7 @@ from sbmpc_ros_bridge.lfc_msg_adapter import (
     float64_multi_array_to_numpy,
     planner_output_to_control,
     sensor_to_planner_input,
+    zero_control_from_sensor,
 )
 from sbmpc_ros_bridge.planner_adapter import PlannerInput, SbMpcPlannerAdapter
 from sbmpc_ros_bridge.safety import (
@@ -33,6 +35,7 @@ from sbmpc_ros_bridge.safety import (
 
 __all__ = [
     "AlwaysOnSafety",
+    "BridgeDiagnostics",
     "BridgeSafetyProfile",
     "BringupLimits",
     "MonitoringOnly",
@@ -59,4 +62,5 @@ __all__ = [
     "sensor_to_planner_input",
     "validate_control_age",
     "validate_planner_output",
+    "zero_control_from_sensor",
 ]

@@ -61,6 +61,7 @@ sbmpc_ros/
     resource/
     sbmpc_ros_bridge/
       __init__.py
+      diagnostics.py
       joint_mapping.py
       lfc_msg_adapter.py
       planner_adapter.py
@@ -69,7 +70,7 @@ sbmpc_ros/
     test/
 ```
 
-## Milestone 1 Test Command
+## Test Command
 
 ```bash
 cd /workspace/ros2_ws
@@ -77,6 +78,19 @@ colcon build --symlink-install --packages-select sbmpc_ros_bridge
 colcon test --packages-select sbmpc_ros_bridge --event-handlers console_direct+
 colcon test-result --verbose
 ```
+
+The fake-loop integration coverage for Milestone 3 lives in:
+
+```text
+/workspace/ros2_ws/src/sbmpc_ros/sbmpc_ros_bridge/test/test_fake_ros_loop.py
+```
+
+It exercises a real `rclpy` timer loop with:
+
+- a fake LFC `Sensor` publisher
+- the `sbmpc_lfc_bridge_node` at 50 Hz
+- a fake `Control` subscriber
+- diagnostics publication
 
 ## Notes
 
