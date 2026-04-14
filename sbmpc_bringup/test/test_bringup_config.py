@@ -79,15 +79,15 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["force_zero_control"] is False
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_gains"] is True
-    assert params["planner_num_samples"] == 0
-    assert params["planner_horizon"] == 0
-    assert params["planner_num_parallel_computations"] == 0
-    assert params["planner_num_control_points"] == 0
-    assert params["planner_temperature"] == 0.0
-    assert params["planner_dt"] == 0.0
-    assert params["planner_lambda_mpc"] == 0.0
-    assert params["planner_noise_scale"] == 0.0
-    assert params["planner_std_dev_scale"] == 0.0
+    assert params["planner_num_samples"] == 14
+    assert params["planner_horizon"] == 8
+    assert params["planner_num_parallel_computations"] == 14
+    assert params["planner_num_control_points"] == 4
+    assert params["planner_temperature"] == 0.05
+    assert params["planner_dt"] == 0.02
+    assert params["planner_lambda_mpc"] == 0.05
+    assert params["planner_noise_scale"] == 0.05
+    assert params["planner_std_dev_scale"] == 0.05
     assert params["planner_smoothing"] == "Spline"
     assert params["planner_gain_method"] == "finite_difference"
     assert params["planner_gain_fd_epsilon"] == 0.001

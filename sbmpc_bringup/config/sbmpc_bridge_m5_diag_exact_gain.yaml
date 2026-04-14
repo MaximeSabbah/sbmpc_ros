@@ -10,20 +10,19 @@ sbmpc_lfc_bridge_node:
     allow_joint_reordering: false
     planner_phase: PREGRASP
     planner_gains: true
-    # Pin the working SB-MPC realtime feedback budget directly in YAML.
     planner_num_samples: 14
     planner_horizon: 8
-    # Legacy aliases are kept aligned with the primary parameters above.
     planner_num_parallel_computations: 14
     planner_num_control_points: 4
     planner_temperature: 0.05
     planner_dt: 0.02
     planner_lambda_mpc: 0.05
-    # std_dev_mppi = scale * torque_limits
     planner_noise_scale: 0.05
     planner_std_dev_scale: 0.05
     planner_smoothing: Spline
-    planner_gain_method: finite_difference
+    # KEY DIFFERENCE: exact uses the JAX differentiated rollout path instead of
+    # finite-differencing the first MPPI action.
+    planner_gain_method: exact
     planner_gain_fd_epsilon: 0.001
     planner_gain_fd_scheme: forward
     joint_names:
