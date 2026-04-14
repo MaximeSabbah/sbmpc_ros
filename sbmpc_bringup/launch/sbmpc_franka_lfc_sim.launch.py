@@ -240,7 +240,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "lfc_params_file",
                 default_value=PathJoinSubstitution(
-                    [FindPackageShare("sbmpc_bringup"), "config", "franka_lfc_params.yaml"]
+                    [FindPackageShare("sbmpc_bringup"), "config", "franka_lfc_params_sim.yaml"]
                 ),
             ),
             DeclareLaunchArgument(
