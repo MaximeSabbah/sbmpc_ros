@@ -301,7 +301,11 @@ class SbMpcLfcBridgeNode(Node):
 
         if not self._warmup_complete:
             self._run_warmup()
-            self._publish_control(zero_control_from_sensor(self._last_planner_input))
+            # Do NOT publish any Control here. Publishing a zero Control message
+            # (tau_ff=0, K=0) would cause LFC to immediately start its PD→LF
+            # transition (it triggers on the first non-NaN feedforward). After
+            # 100 ms LFC would be in pure LF mode sending zero torques → the
+            # robot falls. Keep LFC in PD mode until the bridge is explicitly armed.
             self._state = (
                 "gated_zero_control"
                 if self._force_zero_control_enabled()
@@ -311,14 +315,17 @@ class SbMpcLfcBridgeNode(Node):
             return
 
         if self._force_zero_control_enabled():
+            # Explicit test mode: caller deliberately wants LFC in LF mode with
+            # zero torques (e.g. to verify the robot holds under PD-only).
             self._state = "gated_zero_control"
             self._publish_control(zero_control_from_sensor(self._last_planner_input))
             self._publish_diagnostics()
             return
 
         if not self._nonzero_control_enabled():
+            # Not armed yet — do NOT publish. Keeping silent here leaves LFC in
+            # PD mode (stiff hold) until the operator explicitly arms the bridge.
             self._state = "armed_idle"
-            self._publish_control(zero_control_from_sensor(self._last_planner_input))
             self._publish_diagnostics()
             return
 
