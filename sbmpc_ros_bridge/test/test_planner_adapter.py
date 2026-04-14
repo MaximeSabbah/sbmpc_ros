@@ -66,6 +66,7 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
     overrides = planner_config_overrides_from_values(
         phase=" transport ",
         gains=False,
+        num_steps=3,
         num_samples=128,
         horizon=24,
         num_control_points=6,
@@ -81,6 +82,7 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
     assert overrides == PlannerConfigOverrides(
         phase="transport",
         gains=False,
+        num_steps=3,
         horizon=24,
         num_parallel_computations=128,
         num_control_points=6,
@@ -96,11 +98,13 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
 
 def test_planner_config_overrides_support_legacy_aliases_for_existing_config_names() -> None:
     overrides = planner_config_overrides_from_values(
+        num_steps=2,
         num_parallel_computations=96,
         lambda_mpc=0.07,
         std_dev_scale=0.03,
     )
 
+    assert overrides.num_steps == 2
     assert overrides.num_parallel_computations == 96
     assert np.isclose(overrides.lambda_mpc, 0.07)
     assert np.isclose(overrides.std_dev_scale, 0.03)

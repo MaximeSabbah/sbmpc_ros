@@ -13,6 +13,7 @@ sbmpc_lfc_bridge_node:
     # Use this config ONLY to confirm zero-gain is stable as a sanity check.
     # Compare result to sbmpc_bridge_milestone5_feedforward.yaml.
     planner_gains: false
+    planner_num_steps: 1
     planner_num_samples: 32
     planner_horizon: 16
     planner_num_parallel_computations: 32

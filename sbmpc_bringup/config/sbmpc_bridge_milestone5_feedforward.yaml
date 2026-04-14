@@ -10,6 +10,7 @@ sbmpc_lfc_bridge_node:
     allow_joint_reordering: false
     planner_phase: PREGRASP
     planner_gains: false
+    planner_num_steps: 1
     planner_num_samples: 32
     planner_horizon: 16
     planner_num_parallel_computations: 32

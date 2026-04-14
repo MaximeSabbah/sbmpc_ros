@@ -22,6 +22,7 @@ class PlannerConfigOverrides:
 
     phase: str | None = None
     gains: bool | None = None
+    num_steps: int | None = None
     horizon: int | None = None
     num_parallel_computations: int | None = None
     num_control_points: int | None = None
@@ -46,6 +47,7 @@ def planner_config_overrides_from_values(
     *,
     phase: str | None = None,
     gains: bool | None = None,
+    num_steps: int = 0,
     num_samples: int = 0,
     horizon: int = 0,
     num_parallel_computations: int = 0,
@@ -75,6 +77,7 @@ def planner_config_overrides_from_values(
     return PlannerConfigOverrides(
         phase=_clean_optional_text(phase),
         gains=gains,
+        num_steps=_optional_positive_int(num_steps),
         horizon=_optional_positive_int(horizon),
         num_parallel_computations=sample_count,
         num_control_points=_optional_positive_int(num_control_points),
@@ -159,7 +162,10 @@ class SbMpcPlannerAdapter:
         if controller is None:
             controller = self._build_default_controller(self._config_overrides)
         self._controller = controller
-        default_step_kwargs = self._build_default_step_kwargs(self._config_overrides.phase)
+        default_step_kwargs = self._build_step_kwargs(
+            phase_name=self._config_overrides.phase,
+            num_steps=self._config_overrides.num_steps,
+        )
         self._warmup_kwargs = (
             default_step_kwargs
             if warmup_kwargs is None
@@ -212,11 +218,25 @@ class SbMpcPlannerAdapter:
 
     @staticmethod
     def _build_default_step_kwargs(phase_name: str | None) -> dict[str, Any]:
+        return SbMpcPlannerAdapter._build_step_kwargs(phase_name=phase_name)
+
+    @staticmethod
+    def _build_step_kwargs(
+        *,
+        phase_name: str | None,
+        num_steps: int | None = None,
+    ) -> dict[str, Any]:
         try:
             from sbmpc.panda_pick_and_place import Phase
         except ImportError:
-            return {}
-        return {"phase": SbMpcPlannerAdapter._resolve_phase(phase_name, Phase)}
+            kwargs: dict[str, Any] = {}
+            if num_steps is not None:
+                kwargs["num_steps"] = num_steps
+            return kwargs
+        kwargs = {"phase": SbMpcPlannerAdapter._resolve_phase(phase_name, Phase)}
+        if num_steps is not None:
+            kwargs["num_steps"] = num_steps
+        return kwargs
 
     @staticmethod
     def _resolve_phase(

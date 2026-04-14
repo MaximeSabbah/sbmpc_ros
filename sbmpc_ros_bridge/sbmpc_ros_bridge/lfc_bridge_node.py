@@ -74,6 +74,7 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
         self.declare_parameter("planner_phase", "PREGRASP")
         self.declare_parameter("planner_gains", True)
+        self.declare_parameter("planner_num_steps", 1)
         self.declare_parameter("planner_num_samples", 14)
         self.declare_parameter("planner_horizon", 8)
         self.declare_parameter("planner_num_parallel_computations", 14)
@@ -114,6 +115,9 @@ class SbMpcLfcBridgeNode(Node):
         planner_config = planner_config_overrides_from_values(
             phase=self.get_parameter("planner_phase").get_parameter_value().string_value,
             gains=self.get_parameter("planner_gains").get_parameter_value().bool_value,
+            num_steps=(
+                self.get_parameter("planner_num_steps").get_parameter_value().integer_value
+            ),
             num_samples=(
                 self.get_parameter("planner_num_samples").get_parameter_value().integer_value
             ),

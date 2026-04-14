@@ -79,6 +79,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["force_zero_control"] is False
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_gains"] is True
+    assert params["planner_num_steps"] == 1
     assert params["planner_num_samples"] == 14
     assert params["planner_horizon"] == 8
     assert params["planner_num_parallel_computations"] == 14
