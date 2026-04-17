@@ -11,12 +11,12 @@ sbmpc_lfc_bridge_node:
     planner_phase: PREGRASP
     planner_gains: true
     planner_num_steps: 1
-    # Pin the working SB-MPC realtime feedback budget directly in YAML.
-    planner_num_samples: 14
+    # Stable constant-dt ROS default synced with the validated sbmpc benchmark.
+    planner_num_samples: 1024
     planner_horizon: 8
     # Legacy aliases are kept aligned with the primary parameters above.
-    planner_num_parallel_computations: 14
-    planner_num_control_points: 4
+    planner_num_parallel_computations: 1024
+    planner_num_control_points: 8
     planner_temperature: 0.05
     planner_dt: 0.02
     planner_lambda_mpc: 0.05
@@ -27,6 +27,7 @@ sbmpc_lfc_bridge_node:
     planner_gain_method: finite_difference
     planner_gain_fd_epsilon: 0.001
     planner_gain_fd_scheme: forward
+    planner_gain_fd_num_samples: 256
     joint_names:
       - fer_joint1
       - fer_joint2

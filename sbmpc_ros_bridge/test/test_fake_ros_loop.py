@@ -30,6 +30,7 @@ LFC_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.BEST_EFFORT,
 )
+DEFAULT_WARMUP_ITERATIONS = 10
 
 
 @dataclass(frozen=True)
@@ -189,16 +190,14 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         spin_for(executor, 0.20)
 
         assert len(collector.controls) >= 2
-        first_control = collector.controls[0]
         later_control = collector.controls[-1]
-        np.testing.assert_allclose(
-            float64_multi_array_to_numpy(first_control.feedforward),
-            np.zeros((7, 1), dtype=np.float64),
+        assert np.all(
+            float64_multi_array_to_numpy(collector.controls[0].feedforward).reshape(-1) > 0.0
         )
         assert np.all(
             float64_multi_array_to_numpy(later_control.feedforward).reshape(-1) > 0.0
         )
-        assert planner.warmup_calls == 1
+        assert planner.warmup_calls == DEFAULT_WARMUP_ITERATIONS
         assert planner.step_calls >= 1
         snapshot = bridge.diagnostics_snapshot()
         assert snapshot.state == "running"
@@ -209,6 +208,8 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.nonzero_control_count >= 1
         assert snapshot.last_phase == "PREGRASP"
         assert snapshot.last_next_phase == "DESCEND"
+        assert snapshot.last_planner_output_time_ms == pytest.approx(12.5)
+        assert snapshot.last_bridge_loop_time_ms is not None
         assert snapshot.last_position_error == pytest.approx(0.25)
         assert snapshot.last_goal_position == [0.55, 0.0, 0.4]
     finally:
@@ -275,6 +276,10 @@ def test_fake_ros_loop_counts_deadline_misses() -> None:
         assert snapshot.deadline_miss_count >= 1
         assert snapshot.last_planning_time_ms is not None
         assert snapshot.last_planning_time_ms > 20.0
+        assert snapshot.last_bridge_loop_time_ms == pytest.approx(
+            snapshot.last_planning_time_ms
+        )
+        assert snapshot.last_planner_output_time_ms == pytest.approx(12.5)
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -289,17 +294,8 @@ def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
     try:
         spin_for(executor, 0.20)
 
-        assert collector.controls
-        for control in collector.controls:
-            np.testing.assert_allclose(
-                float64_multi_array_to_numpy(control.feedforward),
-                np.zeros((7, 1), dtype=np.float64),
-            )
-            np.testing.assert_allclose(
-                float64_multi_array_to_numpy(control.feedback_gain),
-                np.zeros((7, 14), dtype=np.float64),
-            )
-        assert planner.warmup_calls == 1
+        assert collector.controls == []
+        assert planner.warmup_calls == DEFAULT_WARMUP_ITERATIONS
         assert planner.step_calls == 0
         snapshot = bridge.diagnostics_snapshot()
         assert snapshot.state == "armed_idle"
@@ -370,7 +366,7 @@ def test_fake_ros_loop_force_zero_control_gate_blocks_nonzero_outputs() -> None:
                 float64_multi_array_to_numpy(control.feedback_gain),
                 np.zeros((7, 14), dtype=np.float64),
             )
-        assert planner.warmup_calls == 1
+        assert planner.warmup_calls == DEFAULT_WARMUP_ITERATIONS
         assert planner.step_calls == 0
         snapshot = bridge.diagnostics_snapshot()
         assert snapshot.state == "gated_zero_control"

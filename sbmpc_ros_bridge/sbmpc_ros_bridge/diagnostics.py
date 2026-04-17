@@ -17,6 +17,8 @@ class BridgeDiagnostics:
     planner_step_count: int
     deadline_miss_count: int
     last_planning_time_ms: float | None
+    last_planner_output_time_ms: float | None
+    last_bridge_loop_time_ms: float | None
     last_phase: str | None
     last_next_phase: str | None
     last_running_cost: float | None

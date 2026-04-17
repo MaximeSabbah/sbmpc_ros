@@ -71,14 +71,15 @@ class SbMpcLfcBridgeNode(Node):
             "planner_deadline_sec",
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
+        self.declare_parameter("planner_warmup_iterations", 10)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
         self.declare_parameter("planner_phase", "PREGRASP")
         self.declare_parameter("planner_gains", True)
         self.declare_parameter("planner_num_steps", 1)
-        self.declare_parameter("planner_num_samples", 14)
+        self.declare_parameter("planner_num_samples", 1024)
         self.declare_parameter("planner_horizon", 8)
-        self.declare_parameter("planner_num_parallel_computations", 14)
-        self.declare_parameter("planner_num_control_points", 4)
+        self.declare_parameter("planner_num_parallel_computations", 1024)
+        self.declare_parameter("planner_num_control_points", 8)
         self.declare_parameter("planner_temperature", 0.05)
         self.declare_parameter("planner_dt", 0.02)
         self.declare_parameter("planner_lambda_mpc", 0.05)
@@ -88,6 +89,7 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_gain_method", "finite_difference")
         self.declare_parameter("planner_gain_fd_epsilon", 1e-3)
         self.declare_parameter("planner_gain_fd_scheme", "forward")
+        self.declare_parameter("planner_gain_fd_num_samples", 256)
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -112,6 +114,14 @@ class SbMpcLfcBridgeNode(Node):
         self._force_zero_control = self._force_zero_control_enabled()
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._last_planner_input = None
+        self._planner_warmup_iterations = max(
+            1,
+            int(
+                self.get_parameter("planner_warmup_iterations")
+                .get_parameter_value()
+                .integer_value
+            ),
+        )
         planner_config = planner_config_overrides_from_values(
             phase=self.get_parameter("planner_phase").get_parameter_value().string_value,
             gains=self.get_parameter("planner_gains").get_parameter_value().bool_value,
@@ -155,6 +165,11 @@ class SbMpcLfcBridgeNode(Node):
             gain_fd_scheme=(
                 self.get_parameter("planner_gain_fd_scheme").get_parameter_value().string_value
             ),
+            gain_fd_num_samples=(
+                self.get_parameter("planner_gain_fd_num_samples")
+                .get_parameter_value()
+                .integer_value
+            ),
         )
         self._planner = (
             planner
@@ -180,6 +195,8 @@ class SbMpcLfcBridgeNode(Node):
         self._warmup_count = 0
         self._planner_step_count = 0
         self._last_planning_time_ms: float | None = None
+        self._last_planner_output_time_ms: float | None = None
+        self._last_bridge_loop_time_ms: float | None = None
         self._last_phase: str | None = None
         self._last_next_phase: str | None = None
         self._last_running_cost: float | None = None
@@ -284,6 +301,8 @@ class SbMpcLfcBridgeNode(Node):
             planner_step_count=self._planner_step_count,
             deadline_miss_count=self._deadline_monitor.deadline_miss_count,
             last_planning_time_ms=self._last_planning_time_ms,
+            last_planner_output_time_ms=self._last_planner_output_time_ms,
+            last_bridge_loop_time_ms=self._last_bridge_loop_time_ms,
             last_phase=self._last_phase,
             last_next_phase=self._last_next_phase,
             last_running_cost=self._last_running_cost,
@@ -360,9 +379,11 @@ class SbMpcLfcBridgeNode(Node):
 
     def _run_warmup(self) -> None:
         start = perf_counter()
-        warmup_output = self._planner.warmup()
-        if warmup_output is not None:
-            self._record_planner_diagnostics(warmup_output)
+        warmup_output = None
+        for _ in range(self._planner_warmup_iterations):
+            warmup_output = self._planner.warmup()
+            if warmup_output is not None:
+                self._record_planner_diagnostics(warmup_output)
         self._warmup_count += 1
         self._warmup_complete = True
         planning_duration_sec = perf_counter() - start
@@ -370,6 +391,7 @@ class SbMpcLfcBridgeNode(Node):
 
     def _record_planning_duration(self, planning_duration_sec: float) -> None:
         self._last_planning_time_ms = 1000.0 * planning_duration_sec
+        self._last_bridge_loop_time_ms = self._last_planning_time_ms
         try:
             self._deadline_monitor.observe(planning_duration_sec)
         except UnsafeControlError as exc:
@@ -386,6 +408,9 @@ class SbMpcLfcBridgeNode(Node):
         if diagnostics is None:
             return
 
+        self._last_planner_output_time_ms = self._maybe_float(
+            getattr(diagnostics, "planning_time_ms", None)
+        )
         self._last_running_cost = self._maybe_float(
             getattr(diagnostics, "running_cost", None)
         )

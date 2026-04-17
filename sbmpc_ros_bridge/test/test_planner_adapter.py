@@ -27,6 +27,7 @@ class FakeMPCConfig:
     gain_method: str = "finite_difference"
     gain_fd_epsilon: float = 1e-3
     gain_fd_scheme: str = "forward"
+    gain_fd_num_samples: int | None = None
     initial_guess: object = field(
         default_factory=lambda: np.zeros((8, 7), dtype=np.float32)
     )
@@ -62,6 +63,23 @@ class FakePlanner:
         return np.full((horizon, 7), dt, dtype=np.float32)
 
 
+class FakePregraspPlanner(FakePlanner):
+    def nominal_torque_sequence_from_state(self, state, horizon, dt):
+        self.initial_guess_calls.append(
+            {
+                "state": np.asarray(state, dtype=np.float32),
+                "horizon": horizon,
+                "dt": np.asarray(dt, dtype=np.float32),
+            }
+        )
+        dt_array = np.asarray(dt, dtype=np.float32).reshape(horizon, 1)
+        return np.repeat(dt_array, 7, axis=1)
+
+    def step_durations(self, horizon, dt, dt_schedule):
+        assert dt_schedule is None
+        return np.full((horizon,), dt, dtype=np.float32)
+
+
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:
     overrides = planner_config_overrides_from_values(
         phase=" transport ",
@@ -77,6 +95,7 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         gain_method="finite_difference",
         gain_fd_epsilon=5e-4,
         gain_fd_scheme="central",
+        gain_fd_num_samples=256,
     )
 
     assert overrides == PlannerConfigOverrides(
@@ -93,6 +112,7 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         gain_method="finite_difference",
         gain_fd_epsilon=5e-4,
         gain_fd_scheme="central",
+        gain_fd_num_samples=256,
     )
 
 
@@ -125,6 +145,7 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         gain_method="finite_difference",
         gain_fd_epsilon=2e-4,
         gain_fd_scheme="central",
+        gain_fd_num_samples=256,
     )
 
     updated_config = apply_config_overrides(
@@ -148,6 +169,7 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
     assert updated_config.MPC.gain_method == "finite_difference"
     assert np.isclose(updated_config.MPC.gain_fd_epsilon, 2e-4)
     assert updated_config.MPC.gain_fd_scheme == "central"
+    assert updated_config.MPC.gain_fd_num_samples == 256
     assert np.asarray(updated_config.MPC.initial_guess).shape == (12, 7)
     np.testing.assert_allclose(
         np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
@@ -166,3 +188,25 @@ def test_apply_config_overrides_rejects_control_points_above_horizon() -> None:
             PlannerConfigOverrides(horizon=3, num_control_points=4),
             initial_guess_phase="PREGRASP",
         )
+
+
+def test_apply_config_overrides_supports_pregrasp_style_initial_guess() -> None:
+    config = FakeConfig()
+    planner = FakePregraspPlanner()
+
+    updated_config = apply_config_overrides(
+        config,
+        planner,
+        PlannerConfigOverrides(horizon=5, dt=0.03),
+        initial_guess_phase="PREGRASP",
+    )
+
+    assert np.asarray(updated_config.MPC.initial_guess).shape == (5, 7)
+    np.testing.assert_allclose(
+        np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
+        np.full((5, 7), 0.03, dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        planner.initial_guess_calls[-1]["dt"],
+        np.full((5,), 0.03, dtype=np.float32),
+    )

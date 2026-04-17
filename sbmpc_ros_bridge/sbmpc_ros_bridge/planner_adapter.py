@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,7 @@ class PlannerConfigOverrides:
     gain_method: str | None = None
     gain_fd_epsilon: float | None = None
     gain_fd_scheme: str | None = None
+    gain_fd_num_samples: int | None = None
 
     def active_items(self) -> dict[str, object]:
         values: dict[str, object] = {}
@@ -61,6 +63,7 @@ def planner_config_overrides_from_values(
     gain_method: str | None = None,
     gain_fd_epsilon: float = 0.0,
     gain_fd_scheme: str | None = None,
+    gain_fd_num_samples: int = 0,
 ) -> PlannerConfigOverrides:
     sample_count = _optional_positive_int(num_samples)
     if sample_count is None:
@@ -88,6 +91,7 @@ def planner_config_overrides_from_values(
         gain_method=_clean_optional_text(gain_method),
         gain_fd_epsilon=_optional_positive_float(gain_fd_epsilon),
         gain_fd_scheme=_clean_optional_text(gain_fd_scheme),
+        gain_fd_num_samples=_optional_positive_int(gain_fd_num_samples),
     )
 
 
@@ -124,6 +128,8 @@ def apply_config_overrides(
         config.MPC.gain_fd_epsilon = overrides.gain_fd_epsilon
     if overrides.gain_fd_scheme is not None:
         config.MPC.gain_fd_scheme = overrides.gain_fd_scheme
+    if overrides.gain_fd_num_samples is not None:
+        config.MPC.gain_fd_num_samples = overrides.gain_fd_num_samples
 
     if config.MPC.num_control_points > config.MPC.horizon:
         raise ValueError(
@@ -131,16 +137,12 @@ def apply_config_overrides(
             "applying ROS-side overrides."
         )
 
-    config.MPC.initial_guess = planner.nominal_torque_sequence_from_state(
-        xp.concatenate(
-            [
-                xp.asarray(planner.home_q, dtype=np.float32),
-                xp.zeros(planner.nv, dtype=np.float32),
-            ]
-        ),
-        config.MPC.horizon,
-        config.MPC.dt,
-        initial_guess_phase,
+    config.MPC.initial_guess = _planner_initial_guess(
+        planner,
+        horizon=config.MPC.horizon,
+        dt=config.MPC.dt,
+        dt_schedule=getattr(config.MPC, "dt_schedule", None),
+        initial_guess_phase=initial_guess_phase,
     )
     return config
 
@@ -190,19 +192,19 @@ class SbMpcPlannerAdapter:
     @staticmethod
     def _build_default_controller(config_overrides: PlannerConfigOverrides) -> Any:
         try:
-            from sbmpc import PandaPickAndPlaceController
-            from sbmpc.panda_pick_and_place import (
-                PandaPickAndPlacePlanner,
-                make_panda_pick_and_place_config,
+            from sbmpc import PandaPregraspController
+            from sbmpc.panda_pregrasp import (
+                PandaPregraspPlanner,
+                make_panda_pregrasp_config,
             )
         except ImportError as exc:
             raise RuntimeError(
                 "sbmpc is not importable. Install or path-expose the algorithm "
                 "repository before using the runtime planner adapter."
             ) from exc
-        planner = PandaPickAndPlacePlanner()
+        planner = PandaPregraspPlanner()
         gains = True if config_overrides.gains is None else config_overrides.gains
-        config = make_panda_pick_and_place_config(
+        config = make_panda_pregrasp_config(
             planner,
             visualize=False,
             gains=gains,
@@ -214,7 +216,11 @@ class SbMpcPlannerAdapter:
             config_overrides,
             initial_guess_phase=phase,
         )
-        return PandaPickAndPlaceController(planner=planner, config=config)
+        return PandaPregraspController(
+            planner=planner,
+            config=config,
+            reseed_every_step=True,
+        )
 
     @staticmethod
     def _build_default_step_kwargs(phase_name: str | None) -> dict[str, Any]:
@@ -287,6 +293,40 @@ def _normalize_smoothing_value(value: str | None) -> str | None:
     if cleaned.lower() in {"none", "null", "off"}:
         return "__none__"
     return cleaned
+
+
+def _planner_initial_guess(
+    planner: Any,
+    *,
+    horizon: int,
+    dt: float,
+    dt_schedule: Any,
+    initial_guess_phase: Any,
+) -> Any:
+    xp = _array_namespace()
+    state = xp.concatenate(
+        [
+            xp.asarray(planner.home_q, dtype=np.float32),
+            xp.zeros(planner.nv, dtype=np.float32),
+        ]
+    )
+    dt_argument = dt
+    if hasattr(planner, "step_durations"):
+        dt_argument = planner.step_durations(horizon, dt, dt_schedule)
+
+    parameters = inspect.signature(planner.nominal_torque_sequence_from_state).parameters
+    if len(parameters) >= 4:
+        return planner.nominal_torque_sequence_from_state(
+            state,
+            horizon,
+            dt_argument,
+            initial_guess_phase,
+        )
+    return planner.nominal_torque_sequence_from_state(
+        state,
+        horizon,
+        dt_argument,
+    )
 
 
 def _array_namespace():

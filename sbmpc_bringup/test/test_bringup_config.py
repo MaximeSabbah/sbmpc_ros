@@ -80,10 +80,10 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_gains"] is True
     assert params["planner_num_steps"] == 1
-    assert params["planner_num_samples"] == 14
+    assert params["planner_num_samples"] == 1024
     assert params["planner_horizon"] == 8
-    assert params["planner_num_parallel_computations"] == 14
-    assert params["planner_num_control_points"] == 4
+    assert params["planner_num_parallel_computations"] == 1024
+    assert params["planner_num_control_points"] == 8
     assert params["planner_temperature"] == 0.05
     assert params["planner_dt"] == 0.02
     assert params["planner_lambda_mpc"] == 0.05
@@ -93,6 +93,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_gain_method"] == "finite_difference"
     assert params["planner_gain_fd_epsilon"] == 0.001
     assert params["planner_gain_fd_scheme"] == "forward"
+    assert params["planner_gain_fd_num_samples"] == 256
 
 
 def test_fer_sim_inertials_zero_only_the_problematic_link4_cross_terms() -> None:
@@ -111,13 +112,27 @@ def test_fer_sim_inertials_zero_only_the_problematic_link4_cross_terms() -> None
 def test_milestone5_bridge_presets_cover_feedforward_and_feedback_runs() -> None:
     feedforward = load_yaml("sbmpc_bridge_milestone5_feedforward.yaml")
     feedback = load_yaml("sbmpc_bridge_milestone5_feedback.yaml")
+    local_lqr = load_yaml("sbmpc_bridge_m5_diag_local_lqr.yaml")
+    exact_slow = load_yaml("sbmpc_bridge_m5_diag_exact_none_h10_5000.yaml")
 
     feedforward_params = feedforward["sbmpc_lfc_bridge_node"]["ros__parameters"]
     feedback_params = feedback["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    local_lqr_params = local_lqr["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    exact_slow_params = exact_slow["sbmpc_lfc_bridge_node"]["ros__parameters"]
 
     assert feedforward_params["planner_phase"] == "PREGRASP"
     assert feedback_params["planner_phase"] == "PREGRASP"
+    assert local_lqr_params["planner_phase"] == "PREGRASP"
     assert feedforward_params["enable_nonzero_control"] is False
     assert feedback_params["enable_nonzero_control"] is False
+    assert local_lqr_params["enable_nonzero_control"] is False
+    assert exact_slow_params["enable_nonzero_control"] is False
     assert feedforward_params["planner_gains"] is False
     assert feedback_params["planner_gains"] is True
+    assert local_lqr_params["planner_gains"] is True
+    assert exact_slow_params["planner_gains"] is True
+    assert local_lqr_params["planner_gain_method"] == "local_lqr"
+    assert local_lqr_params["publish_rate_hz"] == 10.0
+    assert exact_slow_params["planner_gain_method"] == "exact"
+    assert exact_slow_params["planner_smoothing"] == "none"
+    assert exact_slow_params["planner_num_parallel_computations"] == 5000
