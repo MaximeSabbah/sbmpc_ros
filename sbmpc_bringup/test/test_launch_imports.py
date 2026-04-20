@@ -41,6 +41,7 @@ def test_sim_launch_imports_and_declares_expected_arguments() -> None:
         launch_description,
         {
             "bridge_runtime_script",
+            "allow_existing_ros_graph",
             "bridge_params_file",
             "controller_manager_name",
             "controllers_file",

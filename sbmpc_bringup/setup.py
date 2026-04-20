@@ -29,4 +29,9 @@ setup(
     ),
     license="MIT",
     extras_require={"test": ["pytest"]},
+    entry_points={
+        "console_scripts": [
+            "cleanup_sbmpc_sim = sbmpc_bringup.cleanup_sim:main",
+        ],
+    },
 )

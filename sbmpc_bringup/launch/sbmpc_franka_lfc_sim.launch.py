@@ -6,12 +6,14 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessExit, OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     Command,
@@ -30,6 +32,7 @@ from sbmpc_bringup.constants import (
     JOINT_STATE_ESTIMATOR_NAME,
     LINEAR_FEEDBACK_CONTROLLER_NAME,
 )
+from sbmpc_bringup.launch_preflight import assert_clean_ros_graph
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -192,6 +195,18 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
+    cleanup_on_shutdown = ExecuteProcess(
+        cmd=[
+            FindExecutable(name="ros2"),
+            "run",
+            "sbmpc_bringup",
+            "cleanup_sbmpc_sim",
+            "--timeout-sec",
+            "3.0",
+        ],
+        output="screen",
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_type", default_value="fer"),
@@ -200,6 +215,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("entity_name", default_value="franka"),
             DeclareLaunchArgument("gz_args", default_value="empty.sdf -r"),
             DeclareLaunchArgument("use_rviz", default_value="false"),
+            DeclareLaunchArgument(
+                "allow_existing_ros_graph",
+                default_value="false",
+                description=(
+                    "Bypass the stale ROS/Gazebo graph guard. Keep false for normal "
+                    "Milestone 5 validation runs."
+                ),
+            ),
             DeclareLaunchArgument(
                 "bridge_runtime_script",
                 default_value=EnvironmentVariable(
@@ -250,6 +273,7 @@ def generate_launch_description() -> LaunchDescription:
                 ),
             ),
             SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", franka_resource_root),
+            OpaqueFunction(function=assert_clean_ros_graph),
             gazebo,
             robot_state_publisher,
             spawn_entity,
@@ -274,5 +298,6 @@ def generate_launch_description() -> LaunchDescription:
                     on_exit=[bridge],
                 )
             ),
+            RegisterEventHandler(OnShutdown(on_shutdown=[cleanup_on_shutdown])),
         ]
     )

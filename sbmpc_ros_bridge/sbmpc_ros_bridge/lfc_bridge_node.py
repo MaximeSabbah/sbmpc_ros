@@ -250,8 +250,8 @@ class SbMpcLfcBridgeNode(Node):
                 )
             if not self._nonzero_control_enabled():
                 self.get_logger().info(
-                    "enable_nonzero_control is false: the bridge will publish zero "
-                    "controls after warmup until you arm it."
+                    "enable_nonzero_control is false: the bridge will stay silent "
+                    "after warmup so LFC remains in PD mode until you arm it."
                 )
 
     def _force_zero_control_enabled(self) -> bool:
@@ -492,7 +492,10 @@ def main(args: list[str] | None = None) -> None:
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
         if rclpy.ok(context=node.context):
             rclpy.shutdown(context=node.context)
 

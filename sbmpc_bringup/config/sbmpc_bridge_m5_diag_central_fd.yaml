@@ -11,10 +11,10 @@ sbmpc_lfc_bridge_node:
     planner_phase: PREGRASP
     planner_gains: true
     planner_num_steps: 1
-    planner_num_samples: 14
+    planner_num_samples: 1024
     planner_horizon: 8
-    planner_num_parallel_computations: 14
-    planner_num_control_points: 4
+    planner_num_parallel_computations: 1024
+    planner_num_control_points: 8
     planner_temperature: 0.05
     planner_dt: 0.02
     planner_lambda_mpc: 0.05
@@ -27,6 +27,7 @@ sbmpc_lfc_bridge_node:
     # instead of forward (f(x+e) - f(x)) / e.
     # Central is more accurate and less biased near cost asymmetries.
     planner_gain_fd_scheme: central
+    planner_gain_fd_num_samples: 256
     joint_names:
       - fer_joint1
       - fer_joint2
