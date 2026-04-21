@@ -91,7 +91,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_std_dev_scale"] == 0.05
     assert params["planner_smoothing"] == "Spline"
     assert params["planner_gain_method"] == "finite_difference"
-    assert params["planner_gain_fd_epsilon"] == 0.001
+    assert params["planner_gain_fd_epsilon"] == 0.01
     assert params["planner_gain_fd_scheme"] == "forward"
     assert params["planner_gain_fd_num_samples"] == 256
 

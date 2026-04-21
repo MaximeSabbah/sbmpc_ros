@@ -87,7 +87,7 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_std_dev_scale", 0.05)
         self.declare_parameter("planner_smoothing", "Spline")
         self.declare_parameter("planner_gain_method", "finite_difference")
-        self.declare_parameter("planner_gain_fd_epsilon", 1e-3)
+        self.declare_parameter("planner_gain_fd_epsilon", 1e-2)
         self.declare_parameter("planner_gain_fd_scheme", "forward")
         self.declare_parameter("planner_gain_fd_num_samples", 256)
 

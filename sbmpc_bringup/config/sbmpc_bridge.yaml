@@ -25,7 +25,7 @@ sbmpc_lfc_bridge_node:
     planner_std_dev_scale: 0.05
     planner_smoothing: Spline
     planner_gain_method: finite_difference
-    planner_gain_fd_epsilon: 0.001
+    planner_gain_fd_epsilon: 0.01
     planner_gain_fd_scheme: forward
     planner_gain_fd_num_samples: 256
     joint_names:
