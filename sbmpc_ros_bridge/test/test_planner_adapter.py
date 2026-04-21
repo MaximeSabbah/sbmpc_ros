@@ -69,15 +69,10 @@ class FakePregraspPlanner(FakePlanner):
             {
                 "state": np.asarray(state, dtype=np.float32),
                 "horizon": horizon,
-                "dt": np.asarray(dt, dtype=np.float32),
+                "dt": float(dt),
             }
         )
-        dt_array = np.asarray(dt, dtype=np.float32).reshape(horizon, 1)
-        return np.repeat(dt_array, 7, axis=1)
-
-    def step_durations(self, horizon, dt, dt_schedule):
-        assert dt_schedule is None
-        return np.full((horizon,), dt, dtype=np.float32)
+        return np.full((horizon, 7), float(dt), dtype=np.float32)
 
 
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:

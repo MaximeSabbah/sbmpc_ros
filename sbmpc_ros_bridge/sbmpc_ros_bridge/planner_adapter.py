@@ -141,7 +141,6 @@ def apply_config_overrides(
         planner,
         horizon=config.MPC.horizon,
         dt=config.MPC.dt,
-        dt_schedule=getattr(config.MPC, "dt_schedule", None),
         initial_guess_phase=initial_guess_phase,
     )
     return config
@@ -203,8 +202,8 @@ class SbMpcPlannerAdapter:
     @staticmethod
     def _build_default_controller(config_overrides: PlannerConfigOverrides) -> Any:
         try:
-            from sbmpc import PandaPregraspController
-            from sbmpc.panda_pregrasp import (
+            from sbmpc.examples.franka_emika_panda.planner_api import PandaPregraspController
+            from sbmpc.examples.franka_emika_panda.panda_pregrasp import (
                 PandaPregraspPlanner,
                 make_panda_pregrasp_config,
             )
@@ -244,7 +243,7 @@ class SbMpcPlannerAdapter:
         num_steps: int | None = None,
     ) -> dict[str, Any]:
         try:
-            from sbmpc.panda_pick_and_place import Phase
+            from sbmpc.examples.franka_emika_panda.panda_pick_and_place import Phase
         except ImportError:
             kwargs: dict[str, Any] = {}
             if num_steps is not None:
@@ -263,7 +262,7 @@ class SbMpcPlannerAdapter:
         try:
             Phase = phase_enum
             if Phase is None:
-                from sbmpc.panda_pick_and_place import Phase
+                from sbmpc.examples.franka_emika_panda.panda_pick_and_place import Phase
         except ImportError as exc:
             raise RuntimeError(
                 "sbmpc is not importable, so the requested planner phase cannot be "
@@ -311,7 +310,6 @@ def _planner_initial_guess(
     *,
     horizon: int,
     dt: float,
-    dt_schedule: Any,
     initial_guess_phase: Any,
 ) -> Any:
     xp = _array_namespace()
@@ -321,22 +319,19 @@ def _planner_initial_guess(
             xp.zeros(planner.nv, dtype=np.float32),
         ]
     )
-    dt_argument = dt
-    if hasattr(planner, "step_durations"):
-        dt_argument = planner.step_durations(horizon, dt, dt_schedule)
 
     parameters = inspect.signature(planner.nominal_torque_sequence_from_state).parameters
     if len(parameters) >= 4:
         return planner.nominal_torque_sequence_from_state(
             state,
             horizon,
-            dt_argument,
+            dt,
             initial_guess_phase,
         )
     return planner.nominal_torque_sequence_from_state(
         state,
         horizon,
-        dt_argument,
+        dt,
     )
 
 
