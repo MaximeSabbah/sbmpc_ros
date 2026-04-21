@@ -55,10 +55,11 @@ class FakePlannerDiagnostics:
 
 
 class FakePlanner:
-    def __init__(self, *, step_sleep_sec: float = 0.0) -> None:
+    def __init__(self, *, step_sleep_sec: float = 0.0, on_step=None) -> None:
         self.warmup_calls = 0
         self.step_calls = 0
         self.step_sleep_sec = step_sleep_sec
+        self.on_step = on_step
 
     def warmup(self) -> FakePlannerOutput:
         self.warmup_calls += 1
@@ -76,11 +77,27 @@ class FakePlanner:
         self.step_calls += 1
         if self.step_sleep_sec > 0.0:
             time.sleep(self.step_sleep_sec)
+        if self.on_step is not None:
+            self.on_step()
         return FakePlannerOutput(
             tau_ff=np.asarray([0.5] * 7, dtype=np.float64),
             K=np.eye(7, 14, dtype=np.float64),
             diagnostics=FakePlannerDiagnostics(),
         )
+
+
+def make_sensor(position_offset: float = 0.0) -> Sensor:
+    now = rclpy.clock.Clock().now().to_msg()
+    return Sensor(
+        header=Header(stamp=now),
+        joint_state=JointState(
+            header=Header(stamp=now),
+            name=list(PANDA_ARM_JOINT_NAMES),
+            position=[position_offset + 0.1 * i for i in range(7)],
+            velocity=[0.0] * 7,
+            effort=[0.0] * 7,
+        ),
+    )
 
 
 class FakeSensorPublisher(Node):
@@ -93,17 +110,7 @@ class FakeSensorPublisher(Node):
     def _publish(self) -> None:
         if not self.enabled:
             return
-        msg = Sensor()
-        now = self.get_clock().now().to_msg()
-        msg.header.stamp = now
-        msg.joint_state = JointState(
-            header=Header(stamp=now),
-            name=list(PANDA_ARM_JOINT_NAMES),
-            position=[0.1 * i for i in range(7)],
-            velocity=[0.0] * 7,
-            effort=[0.0] * 7,
-        )
-        self.publisher.publish(msg)
+        self.publisher.publish(make_sensor())
 
 
 class ControlCollector(Node):
@@ -328,6 +335,41 @@ def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
         assert snapshot.last_control_max_abs_feedforward == pytest.approx(0.5)
         assert snapshot.last_control_gain_norm is not None
         assert snapshot.last_control_gain_norm > 0.0
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_retimes_control_initial_state_to_latest_sensor() -> None:
+    bridge: SbMpcLfcBridgeNode | None = None
+
+    def publish_new_sensor_during_planning() -> None:
+        assert bridge is not None
+        bridge._on_sensor(make_sensor(position_offset=1.0))
+
+    planner = FakePlanner(on_step=publish_new_sensor_during_planning)
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            )
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=False)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        bridge._on_sensor(make_sensor(position_offset=0.0))
+        spin_for(executor, 0.12)
+
+        assert collector.controls
+        np.testing.assert_allclose(
+            collector.controls[-1].initial_state.joint_state.position,
+            [1.0 + 0.1 * i for i in range(7)],
+        )
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

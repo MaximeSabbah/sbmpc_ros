@@ -21,6 +21,7 @@ from sbmpc_bringup.constants import (
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+URDF_DIR = Path(__file__).resolve().parents[1] / "urdf"
 
 
 def load_yaml(name: str) -> dict[str, object]:
@@ -74,9 +75,11 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["control_topic"] == BRIDGE_CONTROL_TOPIC
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
-    assert params["publish_rate_hz"] == 50.0
+    assert params["publish_rate_hz"] == 33.333333333333336
     assert params["enable_nonzero_control"] is False
     assert params["force_zero_control"] is False
+    assert params["retime_control_initial_state"] is True
+    assert params["control_initial_state_prediction_sec"] == 0.0
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_gains"] is True
     assert params["planner_num_steps"] == 1
@@ -85,15 +88,24 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_num_parallel_computations"] == 1024
     assert params["planner_num_control_points"] == 8
     assert params["planner_temperature"] == 0.05
-    assert params["planner_dt"] == 0.02
+    assert params["planner_dt"] == 0.03
     assert params["planner_lambda_mpc"] == 0.05
     assert params["planner_noise_scale"] == 0.05
     assert params["planner_std_dev_scale"] == 0.05
     assert params["planner_smoothing"] == "Spline"
     assert params["planner_gain_method"] == "finite_difference"
-    assert params["planner_gain_fd_epsilon"] == 0.01
+    assert params["planner_gain_fd_epsilon"] == 0.05
     assert params["planner_gain_fd_scheme"] == "forward"
     assert params["planner_gain_fd_num_samples"] == 256
+
+
+def test_gazebo_xacro_keeps_gravity_enabled_by_default_for_sbmpc() -> None:
+    xacro_text = (
+        URDF_DIR / "franka_arm_with_sbmpc_inertials.gazebo.xacro"
+    ).read_text(encoding="utf-8")
+
+    assert '<xacro:arg name="disable_gazebo_gravity" default="false"/>' in xacro_text
+    assert '<xacro:if value="$(arg disable_gazebo_gravity)">' in xacro_text
 
 
 def test_fer_sim_inertials_zero_only_the_problematic_link4_cross_terms() -> None:
@@ -123,6 +135,10 @@ def test_milestone5_bridge_presets_cover_feedforward_and_feedback_runs() -> None
     assert feedforward_params["planner_phase"] == "PREGRASP"
     assert feedback_params["planner_phase"] == "PREGRASP"
     assert local_lqr_params["planner_phase"] == "PREGRASP"
+    assert feedforward_params["publish_rate_hz"] == 33.333333333333336
+    assert feedback_params["publish_rate_hz"] == 33.333333333333336
+    assert feedforward_params["planner_dt"] == 0.03
+    assert feedback_params["planner_dt"] == 0.03
     assert feedforward_params["enable_nonzero_control"] is False
     assert feedback_params["enable_nonzero_control"] is False
     assert local_lqr_params["enable_nonzero_control"] is False

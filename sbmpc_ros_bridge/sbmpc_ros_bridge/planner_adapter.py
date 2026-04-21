@@ -189,6 +189,17 @@ class SbMpcPlannerAdapter:
         call_kwargs.update(kwargs)
         return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
 
+    def predict_state(
+        self,
+        planner_input: PlannerInput,
+        tau_ff: np.ndarray,
+        duration_sec: float,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        predict_state = getattr(self._controller, "predict_state", None)
+        if predict_state is None:
+            return None
+        return predict_state(planner_input.q, planner_input.v, tau_ff, duration_sec)
+
     @staticmethod
     def _build_default_controller(config_overrides: PlannerConfigOverrides) -> Any:
         try:

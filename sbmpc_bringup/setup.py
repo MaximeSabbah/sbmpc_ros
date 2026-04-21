@@ -32,6 +32,7 @@ setup(
     entry_points={
         "console_scripts": [
             "cleanup_sbmpc_sim = sbmpc_bringup.cleanup_sim:main",
+            "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
         ],
     },
 )

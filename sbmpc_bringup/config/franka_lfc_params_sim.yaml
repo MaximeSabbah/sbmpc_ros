@@ -89,14 +89,16 @@ linear_feedback_controller:
         - fer_joint7/effort
       reference_prefix: ''
     joint_velocity_filter_coefficient: 0.9
+    max_abs_effort: [87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0]
     pd_to_lf_transition_duration: 0.1
     # GAZEBO vs REAL ROBOT difference:
     # On the real Franka, libfranka/FCI automatically sums the commanded torque
     # with its own gravity compensation. LFC must subtract gravity first to avoid
     # double compensation → set true for hardware.
     # In Gazebo, ros2_control effort interface applies the torque directly with no
-    # automatic gravity addition. sbmpc tau_ff already includes gravity compensation
-    # (it is a full absolute torque command from the MPPI dynamics model).
+    # automatic gravity addition. SB-MPC tau_ff already includes gravity compensation
+    # (it is a full absolute torque command from the MPPI dynamics model), and
+    # the SB-MPC Gazebo xacro keeps link gravity enabled by default.
     # If set true here, LFC subtracts gravity from tau_ff, leaving only the dynamic
     # component (~0 Nm at equilibrium) → robot falls and hits velocity limits.
     # Set false for Gazebo so tau_ff is applied as-is.

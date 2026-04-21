@@ -62,6 +62,8 @@ def generate_launch_description() -> LaunchDescription:
                 " ee_id:=",
                 LaunchConfiguration("franka_hand"),
                 " gazebo_effort:=true",
+                " disable_gazebo_gravity:=",
+                LaunchConfiguration("disable_gazebo_gravity"),
             ]
         ),
         value_type=str,
@@ -215,6 +217,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("entity_name", default_value="franka"),
             DeclareLaunchArgument("gz_args", default_value="empty.sdf -r"),
             DeclareLaunchArgument("use_rviz", default_value="false"),
+            DeclareLaunchArgument(
+                "disable_gazebo_gravity",
+                default_value="false",
+                description=(
+                    "Keep false for SB-MPC: the planner publishes absolute "
+                    "effort commands that include gravity compensation."
+                ),
+            ),
             DeclareLaunchArgument(
                 "allow_existing_ros_graph",
                 default_value="false",

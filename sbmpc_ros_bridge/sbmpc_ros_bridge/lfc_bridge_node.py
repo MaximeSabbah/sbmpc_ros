@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from threading import Lock
 from time import perf_counter
 
 import numpy as np
@@ -7,7 +9,9 @@ from std_msgs.msg import String
 import rclpy
 from linear_feedback_controller_msgs.msg import Control, Sensor
 from rclpy._rclpy_pybind11 import RCLError
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     HistoryPolicy,
@@ -23,6 +27,7 @@ from sbmpc_ros_bridge.lfc_msg_adapter import (
     zero_control_from_sensor,
 )
 from sbmpc_ros_bridge.planner_adapter import (
+    PlannerInput,
     SbMpcPlannerAdapter,
     planner_config_overrides_from_values,
 )
@@ -66,6 +71,8 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("enable_nonzero_control", False)
         self.declare_parameter("force_zero_control", False)
         self.declare_parameter("allow_joint_reordering", False)
+        self.declare_parameter("retime_control_initial_state", True)
+        self.declare_parameter("control_initial_state_prediction_sec", 0.0)
         self.declare_parameter("publish_rate_hz", 1.0 / publish_period_sec)
         self.declare_parameter(
             "planner_deadline_sec",
@@ -113,6 +120,7 @@ class SbMpcLfcBridgeNode(Node):
         )
         self._force_zero_control = self._force_zero_control_enabled()
         self._joint_mapper = JointMapper(expected_names=joint_names)
+        self._sensor_lock = Lock()
         self._last_planner_input = None
         self._planner_warmup_iterations = max(
             1,
@@ -226,13 +234,20 @@ class SbMpcLfcBridgeNode(Node):
             LFC_QOS,
         )
         self._diagnostics_publisher = self.create_publisher(String, diagnostics_topic, 10)
+        self._sensor_callback_group = MutuallyExclusiveCallbackGroup()
+        self._timer_callback_group = MutuallyExclusiveCallbackGroup()
         self._sensor_subscription = self.create_subscription(
             Sensor,
             sensor_topic,
             self._on_sensor,
             LFC_QOS,
+            callback_group=self._sensor_callback_group,
         )
-        self._timer = self.create_timer(publish_period_sec, self._on_timer)
+        self._timer = self.create_timer(
+            publish_period_sec,
+            self._on_timer,
+            callback_group=self._timer_callback_group,
+        )
 
         self.get_logger().info(
             "SB-MPC LFC bridge active: waiting for valid sensors before warmup "
@@ -267,6 +282,17 @@ class SbMpcLfcBridgeNode(Node):
             .bool_value
         )
 
+    def _retime_control_initial_state_enabled(self) -> bool:
+        return (
+            self.get_parameter("retime_control_initial_state")
+            .get_parameter_value()
+            .bool_value
+        )
+
+    def _snapshot_planner_input(self):
+        with self._sensor_lock:
+            return self._last_planner_input
+
     def _on_sensor(self, message: Sensor) -> None:
         allow_reordering = (
             self.get_parameter("allow_joint_reordering")
@@ -274,12 +300,14 @@ class SbMpcLfcBridgeNode(Node):
             .bool_value
         )
         try:
-            self._last_planner_input = sensor_to_planner_input(
+            planner_input = sensor_to_planner_input(
                 message,
                 joint_mapper=self._joint_mapper,
                 allow_reordering=allow_reordering,
             )
-            self._valid_sensor_count += 1
+            with self._sensor_lock:
+                self._last_planner_input = planner_input
+                self._valid_sensor_count += 1
             if self._state == "waiting_for_sensor":
                 self._state = "warming_up"
         except Exception as exc:
@@ -318,12 +346,13 @@ class SbMpcLfcBridgeNode(Node):
         )
 
     def _on_timer(self) -> None:
-        if self._last_planner_input is None:
+        planner_input = self._snapshot_planner_input()
+        if planner_input is None:
             self._publish_diagnostics()
             return
 
         if not self._warmup_complete:
-            self._run_warmup()
+            self._run_warmup(planner_input)
             # Do NOT publish any Control here. Publishing a zero Control message
             # (tau_ff=0, K=0) would cause LFC to immediately start its PD→LF
             # transition (it triggers on the first non-NaN feedforward). After
@@ -341,7 +370,7 @@ class SbMpcLfcBridgeNode(Node):
             # Explicit test mode: caller deliberately wants LFC in LF mode with
             # zero torques (e.g. to verify the robot holds under PD-only).
             self._state = "gated_zero_control"
-            self._publish_control(zero_control_from_sensor(self._last_planner_input))
+            self._publish_control(zero_control_from_sensor(planner_input))
             self._publish_diagnostics()
             return
 
@@ -355,12 +384,19 @@ class SbMpcLfcBridgeNode(Node):
         self._state = "running"
         start = perf_counter()
         try:
-            planner_output = self._planner.step(self._last_planner_input)
+            planner_output = self._planner.step(planner_input)
             self._planner_step_count += 1
             self._record_planner_diagnostics(planner_output)
+            control_initial_state = planner_input
+            if self._retime_control_initial_state_enabled():
+                control_initial_state = self._snapshot_planner_input() or planner_input
+            control_initial_state = self._predict_control_initial_state(
+                control_initial_state,
+                planner_output,
+            )
             control = planner_output_to_control(
                 planner_output,
-                self._last_planner_input,
+                control_initial_state,
                 safety_profile=self._safety_profile,
             )
             planning_duration_sec = perf_counter() - start
@@ -377,13 +413,14 @@ class SbMpcLfcBridgeNode(Node):
         finally:
             self._publish_diagnostics()
 
-    def _run_warmup(self) -> None:
+    def _run_warmup(self, planner_input: PlannerInput) -> None:
         start = perf_counter()
         warmup_output = None
         for _ in range(self._planner_warmup_iterations):
             warmup_output = self._planner.warmup()
             if warmup_output is not None:
                 self._record_planner_diagnostics(warmup_output)
+                self._predict_control_initial_state(planner_input, warmup_output)
         self._warmup_count += 1
         self._warmup_complete = True
         planning_duration_sec = perf_counter() - start
@@ -397,6 +434,40 @@ class SbMpcLfcBridgeNode(Node):
         except UnsafeControlError as exc:
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
+
+    def _control_initial_state_prediction_sec(self) -> float:
+        value = (
+            self.get_parameter("control_initial_state_prediction_sec")
+            .get_parameter_value()
+            .double_value
+        )
+        return max(0.0, float(value))
+
+    def _predict_control_initial_state(
+        self,
+        planner_input: PlannerInput,
+        planner_output: object,
+    ) -> PlannerInput:
+        prediction_sec = self._control_initial_state_prediction_sec()
+        if prediction_sec <= 0.0:
+            return planner_input
+
+        predict_state = getattr(self._planner, "predict_state", None)
+        if predict_state is None:
+            return planner_input
+
+        tau_ff = np.asarray(getattr(planner_output, "tau_ff"), dtype=np.float64)
+        prediction = predict_state(planner_input, tau_ff, prediction_sec)
+        if prediction is None:
+            return planner_input
+
+        q_pred, v_pred = prediction
+        q = np.asarray(q_pred, dtype=np.float64).reshape(-1)
+        v = np.asarray(v_pred, dtype=np.float64).reshape(-1)
+        sensor = deepcopy(planner_input.sensor)
+        sensor.joint_state.position = q.tolist()
+        sensor.joint_state.velocity = v.tolist()
+        return PlannerInput(sensor=sensor, q=q, v=v)
 
     def _record_planner_diagnostics(self, planner_output: object) -> None:
         self._last_phase = self._phase_name(getattr(planner_output, "phase", None))
@@ -487,11 +558,17 @@ class SbMpcLfcBridgeNode(Node):
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
     node = SbMpcLfcBridgeNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        try:
+            executor.shutdown()
+        except KeyboardInterrupt:
+            pass
         try:
             node.destroy_node()
         except KeyboardInterrupt:

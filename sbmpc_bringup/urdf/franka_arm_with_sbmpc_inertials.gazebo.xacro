@@ -22,6 +22,7 @@
   <xacro:arg name="fake_sensor_commands" default="false"/>
   <xacro:arg name="gazebo" default="true"/>
   <xacro:arg name="gazebo_effort" default="true"/>
+  <xacro:arg name="disable_gazebo_gravity" default="false"/>
   <xacro:arg name="description_pkg" default="franka_description"/>
   <xacro:arg name="xyz" default="0 0 0"/>
   <xacro:arg name="rpy" default="0 0 0"/>
@@ -76,5 +77,7 @@
     arm_prefix="$(arg arm_prefix)"
     robot_type="$(arg robot_type)"
     imu_side="bottom"/>
-  <xacro:disable_arm_gravity prefix="$(arg arm_prefix)" robot_type="$(arg robot_type)"/>
+  <xacro:if value="$(arg disable_gazebo_gravity)">
+    <xacro:disable_arm_gravity prefix="$(arg arm_prefix)" robot_type="$(arg robot_type)"/>
+  </xacro:if>
 </robot>
