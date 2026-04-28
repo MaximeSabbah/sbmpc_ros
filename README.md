@@ -91,9 +91,13 @@ sbmpc_ros/
       sbmpc_franka_lfc_sim.launch.py
       sbmpc_franka_lfc_real.launch.py
     config/
+      fer_sim_inertials.yaml
       franka_controllers.yaml
       franka_lfc_params.yaml
+      franka_lfc_params_sim.yaml
       sbmpc_bridge.yaml
+      sbmpc_bridge_exact_async.yaml
+      sbmpc_bridge_feedforward.yaml
     test/
 ```
 
@@ -126,6 +130,14 @@ Real planner smoke through the ROS bridge adapter:
 ```bash
 /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
   python -m sbmpc_ros_bridge.planner_smoke --joint-set fer
+```
+
+Exact async planner smoke:
+
+```bash
+/workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+  python -m sbmpc_ros_bridge.planner_smoke \
+  --joint-set fer --planner-mode exact_async_feedback
 ```
 
 FER-adapted Gazebo bringup:
@@ -164,20 +176,34 @@ The bridge reads planner overrides from:
 ```
 
 This lets you tune the ROS-side runtime without editing the `sbmpc` codebase.
-The main knobs now exposed are:
+Only three bridge presets are kept:
 
+- `sbmpc_bridge.yaml`: default finite-difference feedback.
+- `sbmpc_bridge_feedforward.yaml`: feedforward baseline.
+- `sbmpc_bridge_exact_async.yaml`: background exact-gain validation.
+
+The preferred controller selector is `planner_mode`:
+
+- `feedforward`: MPPI feedforward only, zero gain sent to LFC.
+- `fd_feedback`: MPPI feedforward plus finite-difference gain.
+- `exact_async_feedback`: MPPI feedforward plus background exact gain.
+
+The main tuning knobs are:
+
+- `planner_mode`
 - `planner_phase`
-- `planner_gains`
 - `planner_horizon`
-- `planner_num_samples` or `planner_num_parallel_computations`
+- `planner_num_samples`
 - `planner_num_control_points`
 - `planner_dt`
-- `planner_temperature` or `planner_lambda_mpc`
-- `planner_noise_scale` or `planner_std_dev_scale`
+- `planner_temperature`
+- `planner_noise_scale`
 - `planner_smoothing`
-- `planner_gain_method`
 - `planner_gain_fd_epsilon`
 - `planner_gain_fd_scheme`
+- `planner_gain_fd_num_samples`
+- `planner_gain_samples_per_cycle`
+- `planner_gain_buffer_size`
 
 For numeric overrides, leave the value at `0` or `0.0` to keep the current
 `sbmpc` default. Set it to a positive value to override the planner config from
@@ -208,6 +234,9 @@ ROS.
   inertia terms (`xy`, `xz`, `yz`) for simulation. This is a narrow sim-only
   workaround that unblocks Gazebo validation without modifying the upstream
   installed description.
-- The bridge diagnostics topic is `/sbmpc/diagnostics`.
+- The bridge diagnostics topic is `/sbmpc/diagnostics`; for async exact mode it
+  includes foreground planning time, background gain timing, gain age, rolling
+  window fill, completed/dropped gain batches, worker running state, and worker
+  errors.
 - If X11 forwarding is available from `sbmpc_containers`, set `use_rviz:=true`
   to visualize the FER model in RViz while iterating on planner quality.

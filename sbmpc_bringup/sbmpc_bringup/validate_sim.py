@@ -26,15 +26,24 @@ class ValidationSummary:
     diagnostics_count: int
     running_count: int
     joint_count: int
+    planner_mode: str | None
     final_position_error: float | None
     min_position_error: float | None
     max_position_error: float | None
-    mean_planner_ms: float | None
-    max_planner_ms: float | None
+    mean_foreground_ms: float | None
+    max_foreground_ms: float | None
     mean_bridge_loop_ms: float | None
     max_bridge_loop_ms: float | None
+    mean_background_gain_ms: float | None
+    max_background_gain_ms: float | None
     max_gain_norm: float | None
     final_gain_norm: float | None
+    max_gain_age_cycles: float | None
+    final_gain_window_fill: int | None
+    final_gain_completed_batch_count: int | None
+    final_gain_dropped_snapshot_count: int | None
+    gain_worker_running_samples: int
+    gain_worker_error_count: int
     deadline_miss_count: int | None
     joint_velocity_rms_mean: float | None
     joint_velocity_abs_max: float | None
@@ -107,6 +116,21 @@ def finite_values(rows: list[dict[str, object]], key: str) -> np.ndarray:
     return np.asarray(values, dtype=np.float64)
 
 
+def last_finite_int(rows: list[dict[str, object]], key: str) -> int | None:
+    values = finite_values(rows, key)
+    if values.size == 0:
+        return None
+    return int(values[-1])
+
+
+def last_text(rows: list[dict[str, object]], key: str) -> str | None:
+    for row in reversed(rows):
+        value = row.get(key)
+        if value:
+            return str(value)
+    return None
+
+
 def summarize(
     diagnostics: list[dict[str, object]],
     joint_records: list[JointRecord],
@@ -115,10 +139,20 @@ def summarize(
 ) -> ValidationSummary:
     running = [row for row in diagnostics if row.get("state") == "running"]
     position_error = finite_values(running, "last_position_error")
-    planner_ms = finite_values(running, "last_planner_output_time_ms")
+    foreground_ms = finite_values(running, "last_foreground_planning_time_ms")
+    if foreground_ms.size == 0:
+        foreground_ms = finite_values(running, "last_planner_output_time_ms")
     bridge_ms = finite_values(running, "last_bridge_loop_time_ms")
+    background_gain_ms = finite_values(running, "last_background_gain_time_ms")
     gain_norm = finite_values(running, "last_gain_norm")
+    gain_age_cycles = finite_values(running, "last_gain_age_cycles")
     deadline_misses = finite_values(running, "deadline_miss_count")
+    gain_worker_running_samples = sum(
+        1 for row in running if row.get("last_gain_worker_running") is True
+    )
+    gain_worker_error_count = sum(
+        1 for row in running if row.get("last_gain_worker_error")
+    )
 
     tail_joint_spans: tuple[float, ...] = ()
     velocity_rms_mean: float | None = None
@@ -126,24 +160,50 @@ def summarize(
     if joint_records:
         positions = np.asarray([record.position for record in joint_records])
         velocities = np.asarray([record.velocity for record in joint_records])
-        tail_start = int(max(0, min(len(positions) - 1, round(len(positions) * (1.0 - tail_fraction)))))
-        tail_joint_spans = tuple(float(value) for value in np.ptp(positions[tail_start:], axis=0))
-        velocity_rms_mean = float(np.mean(np.sqrt(np.mean(velocities * velocities, axis=1))))
+        tail_start = int(
+            max(
+                0,
+                min(len(positions) - 1, round(len(positions) * (1.0 - tail_fraction))),
+            )
+        )
+        tail_joint_spans = tuple(
+            float(value) for value in np.ptp(positions[tail_start:], axis=0)
+        )
+        velocity_rms_mean = float(
+            np.mean(np.sqrt(np.mean(velocities * velocities, axis=1)))
+        )
         velocity_abs_max = float(np.max(np.abs(velocities), initial=0.0))
 
     return ValidationSummary(
         diagnostics_count=len(diagnostics),
         running_count=len(running),
         joint_count=len(joint_records),
+        planner_mode=last_text(running, "planner_mode"),
         final_position_error=float(position_error[-1]) if position_error.size else None,
         min_position_error=float(np.min(position_error)) if position_error.size else None,
         max_position_error=float(np.max(position_error)) if position_error.size else None,
-        mean_planner_ms=float(np.mean(planner_ms)) if planner_ms.size else None,
-        max_planner_ms=float(np.max(planner_ms)) if planner_ms.size else None,
+        mean_foreground_ms=float(np.mean(foreground_ms)) if foreground_ms.size else None,
+        max_foreground_ms=float(np.max(foreground_ms)) if foreground_ms.size else None,
         mean_bridge_loop_ms=float(np.mean(bridge_ms)) if bridge_ms.size else None,
         max_bridge_loop_ms=float(np.max(bridge_ms)) if bridge_ms.size else None,
+        mean_background_gain_ms=(
+            float(np.mean(background_gain_ms)) if background_gain_ms.size else None
+        ),
+        max_background_gain_ms=(
+            float(np.max(background_gain_ms)) if background_gain_ms.size else None
+        ),
         max_gain_norm=float(np.max(gain_norm)) if gain_norm.size else None,
         final_gain_norm=float(gain_norm[-1]) if gain_norm.size else None,
+        max_gain_age_cycles=float(np.max(gain_age_cycles)) if gain_age_cycles.size else None,
+        final_gain_window_fill=last_finite_int(running, "last_gain_window_fill"),
+        final_gain_completed_batch_count=last_finite_int(
+            running, "last_gain_completed_batch_count"
+        ),
+        final_gain_dropped_snapshot_count=last_finite_int(
+            running, "last_gain_dropped_snapshot_count"
+        ),
+        gain_worker_running_samples=gain_worker_running_samples,
+        gain_worker_error_count=gain_worker_error_count,
         deadline_miss_count=int(deadline_misses[-1]) if deadline_misses.size else None,
         joint_velocity_rms_mean=velocity_rms_mean,
         joint_velocity_abs_max=velocity_abs_max,
@@ -182,6 +242,7 @@ def print_summary(summary: ValidationSummary) -> None:
         f"running={summary.running_count} "
         f"joint_states={summary.joint_count}"
     )
+    print(f"planner_mode: {summary.planner_mode or 'n/a'}")
     print(
         "task_error_m: "
         f"final={format_optional(summary.final_position_error)} "
@@ -189,9 +250,9 @@ def print_summary(summary: ValidationSummary) -> None:
         f"max={format_optional(summary.max_position_error)}"
     )
     print(
-        "planner_ms: "
-        f"mean={format_optional(summary.mean_planner_ms, precision=2)} "
-        f"max={format_optional(summary.max_planner_ms, precision=2)}"
+        "foreground_ms: "
+        f"mean={format_optional(summary.mean_foreground_ms, precision=2)} "
+        f"max={format_optional(summary.max_foreground_ms, precision=2)}"
     )
     print(
         "bridge_loop_ms: "
@@ -203,6 +264,17 @@ def print_summary(summary: ValidationSummary) -> None:
         "gain_norm: "
         f"final={format_optional(summary.final_gain_norm)} "
         f"max={format_optional(summary.max_gain_norm)}"
+    )
+    print(
+        "async_gain: "
+        f"background_mean_ms={format_optional(summary.mean_background_gain_ms, precision=2)} "
+        f"background_max_ms={format_optional(summary.max_background_gain_ms, precision=2)} "
+        f"max_age_cycles={format_optional(summary.max_gain_age_cycles, precision=2)} "
+        f"window_fill={format_optional(summary.final_gain_window_fill)} "
+        f"completed_batches={format_optional(summary.final_gain_completed_batch_count)} "
+        f"dropped_snapshots={format_optional(summary.final_gain_dropped_snapshot_count)} "
+        f"worker_running_samples={summary.gain_worker_running_samples} "
+        f"worker_errors={summary.gain_worker_error_count}"
     )
     print(
         "joint_velocity: "
@@ -223,12 +295,19 @@ def assert_stable(
     *,
     max_tail_joint_span: float,
     max_final_position_error: float,
+    max_foreground_ms: float,
 ) -> bool:
-    if summary.final_position_error is None or summary.max_tail_joint_span is None:
+    if (
+        summary.final_position_error is None
+        or summary.max_tail_joint_span is None
+        or summary.max_foreground_ms is None
+    ):
         return False
     return (
         summary.final_position_error <= max_final_position_error
         and summary.max_tail_joint_span <= max_tail_joint_span
+        and summary.max_foreground_ms <= max_foreground_ms
+        and summary.gain_worker_error_count == 0
     )
 
 
@@ -240,7 +319,8 @@ def main() -> None:
     parser.add_argument("--tail-fraction", type=float, default=0.5)
     parser.add_argument("--assert-stable", action="store_true")
     parser.add_argument("--max-tail-joint-span", type=float, default=0.1)
-    parser.add_argument("--max-final-position-error", type=float, default=0.05)
+    parser.add_argument("--max-final-position-error", type=float, default=0.001)
+    parser.add_argument("--max-foreground-ms", type=float, default=20.0)
     args = parser.parse_args()
 
     if args.duration_sec <= 0.0:
@@ -261,6 +341,7 @@ def main() -> None:
             summary,
             max_tail_joint_span=args.max_tail_joint_span,
             max_final_position_error=args.max_final_position_error,
+            max_foreground_ms=args.max_foreground_ms,
         )
         print("verdict: " + ("stable" if stable else "unstable"))
         raise SystemExit(0 if stable else 1)

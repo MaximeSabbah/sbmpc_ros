@@ -6,14 +6,13 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
-from launch.event_handlers import OnProcessExit, OnShutdown
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     Command,
@@ -197,18 +196,6 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    cleanup_on_shutdown = ExecuteProcess(
-        cmd=[
-            FindExecutable(name="ros2"),
-            "run",
-            "sbmpc_bringup",
-            "cleanup_sbmpc_sim",
-            "--timeout-sec",
-            "3.0",
-        ],
-        output="screen",
-    )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_type", default_value="fer"),
@@ -308,6 +295,5 @@ def generate_launch_description() -> LaunchDescription:
                     on_exit=[bridge],
                 )
             ),
-            RegisterEventHandler(OnShutdown(on_shutdown=[cleanup_on_shutdown])),
         ]
     )

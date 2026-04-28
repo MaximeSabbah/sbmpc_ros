@@ -1,8 +1,13 @@
 from glob import glob
+from pathlib import Path
 from setuptools import find_packages, setup
 
 
 package_name = "sbmpc_bringup"
+
+
+def existing_files(pattern: str) -> list[str]:
+    return sorted(path for path in glob(pattern) if Path(path).is_file())
 
 
 setup(
@@ -15,9 +20,9 @@ setup(
             [f"resource/{package_name}"],
         ),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/launch", glob("launch/*.py")),
-        (f"share/{package_name}/config", glob("config/*.yaml")),
-        (f"share/{package_name}/urdf", glob("urdf/*.xacro")),
+        (f"share/{package_name}/launch", existing_files("launch/*.py")),
+        (f"share/{package_name}/config", existing_files("config/*.yaml")),
+        (f"share/{package_name}/urdf", existing_files("urdf/*.xacro")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -31,7 +36,6 @@ setup(
     extras_require={"test": ["pytest"]},
     entry_points={
         "console_scripts": [
-            "cleanup_sbmpc_sim = sbmpc_bringup.cleanup_sim:main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
         ],
     },

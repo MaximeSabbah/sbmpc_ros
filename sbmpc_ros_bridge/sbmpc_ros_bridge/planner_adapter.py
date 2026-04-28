@@ -21,6 +21,7 @@ class PlannerInput:
 class PlannerConfigOverrides:
     """Optional ROS-side overrides for the public sbmpc planner adapter."""
 
+    mode: str | None = None
     phase: str | None = None
     gains: bool | None = None
     num_steps: int | None = None
@@ -35,6 +36,8 @@ class PlannerConfigOverrides:
     gain_fd_epsilon: float | None = None
     gain_fd_scheme: str | None = None
     gain_fd_num_samples: int | None = None
+    gain_samples_per_cycle: int | None = None
+    gain_buffer_size: int | None = None
 
     def active_items(self) -> dict[str, object]:
         values: dict[str, object] = {}
@@ -47,6 +50,7 @@ class PlannerConfigOverrides:
 
 def planner_config_overrides_from_values(
     *,
+    mode: str | None = None,
     phase: str | None = None,
     gains: bool | None = None,
     num_steps: int = 0,
@@ -64,6 +68,8 @@ def planner_config_overrides_from_values(
     gain_fd_epsilon: float = 0.0,
     gain_fd_scheme: str | None = None,
     gain_fd_num_samples: int = 0,
+    gain_samples_per_cycle: int = 0,
+    gain_buffer_size: int = 0,
 ) -> PlannerConfigOverrides:
     sample_count = _optional_positive_int(num_samples)
     if sample_count is None:
@@ -78,6 +84,7 @@ def planner_config_overrides_from_values(
         effective_noise_scale = _optional_positive_float(std_dev_scale)
 
     return PlannerConfigOverrides(
+        mode=_clean_optional_text(mode),
         phase=_clean_optional_text(phase),
         gains=gains,
         num_steps=_optional_positive_int(num_steps),
@@ -92,6 +99,8 @@ def planner_config_overrides_from_values(
         gain_fd_epsilon=_optional_positive_float(gain_fd_epsilon),
         gain_fd_scheme=_clean_optional_text(gain_fd_scheme),
         gain_fd_num_samples=_optional_positive_int(gain_fd_num_samples),
+        gain_samples_per_cycle=_optional_positive_int(gain_samples_per_cycle),
+        gain_buffer_size=_optional_positive_int(gain_buffer_size),
     )
 
 
@@ -130,6 +139,10 @@ def apply_config_overrides(
         config.MPC.gain_fd_scheme = overrides.gain_fd_scheme
     if overrides.gain_fd_num_samples is not None:
         config.MPC.gain_fd_num_samples = overrides.gain_fd_num_samples
+    if overrides.gain_samples_per_cycle is not None:
+        config.MPC.gain_samples_per_cycle = overrides.gain_samples_per_cycle
+    if overrides.gain_buffer_size is not None:
+        config.MPC.gain_buffer_size = overrides.gain_buffer_size
 
     if config.MPC.num_control_points > config.MPC.horizon:
         raise ValueError(
@@ -177,13 +190,30 @@ class SbMpcPlannerAdapter:
             if step_kwargs is None
             else dict(step_kwargs)
         )
+        self._started = False
+
+    def start(self) -> None:
+        if self._started:
+            return
+        start = getattr(self._controller, "start", None)
+        if callable(start):
+            start()
+        self._started = True
+
+    def close(self) -> None:
+        close = getattr(self._controller, "close", None)
+        if callable(close):
+            close()
+        self._started = False
 
     def warmup(self, **kwargs: Any) -> Any:
+        self.start()
         call_kwargs = dict(self._warmup_kwargs)
         call_kwargs.update(kwargs)
         return self._controller.warmup(**call_kwargs)
 
     def step(self, planner_input: PlannerInput, **kwargs: Any) -> Any:
+        self.start()
         call_kwargs = dict(self._step_kwargs)
         call_kwargs.update(kwargs)
         return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
@@ -198,6 +228,12 @@ class SbMpcPlannerAdapter:
         if predict_state is None:
             return None
         return predict_state(planner_input.q, planner_input.v, tau_ff, duration_sec)
+
+    def diagnostics_snapshot(self) -> Any:
+        diagnostics = getattr(self._controller, "diagnostics_snapshot", None)
+        if callable(diagnostics):
+            return diagnostics()
+        return None
 
     @staticmethod
     def _build_default_controller(config_overrides: PlannerConfigOverrides) -> Any:
@@ -230,6 +266,7 @@ class SbMpcPlannerAdapter:
             planner=planner,
             config=config,
             reseed_every_step=True,
+            gain_mode=config_overrides.mode,
         )
 
     @staticmethod

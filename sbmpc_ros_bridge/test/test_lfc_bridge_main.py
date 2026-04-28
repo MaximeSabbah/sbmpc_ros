@@ -91,3 +91,53 @@ def test_main_avoids_double_shutdown_when_context_is_already_closed(
     assert executors[0].shutdown_called is True
     assert fake_node.destroyed is True
     assert shutdown_contexts == []
+
+
+def test_main_converts_sigterm_to_clean_shutdown(monkeypatch) -> None:
+    fake_node = FakeNode()
+    shutdown_contexts: list[object] = []
+    executors: list[FakeExecutor] = []
+    installed_handlers = []
+
+    monkeypatch.setattr(lfc_bridge_node.rclpy, "init", lambda args=None: None)
+    monkeypatch.setattr(lfc_bridge_node, "SbMpcLfcBridgeNode", lambda: fake_node)
+    monkeypatch.setattr(
+        lfc_bridge_node.signal,
+        "getsignal",
+        lambda signum: "previous-sigterm-handler",
+    )
+
+    def set_signal(signum, handler):
+        installed_handlers.append((signum, handler))
+
+    monkeypatch.setattr(lfc_bridge_node.signal, "signal", set_signal)
+
+    class SigtermExecutor(FakeExecutor):
+        def spin(self) -> None:
+            assert self.nodes == [fake_node]
+            signum, handler = installed_handlers[0]
+            assert signum == lfc_bridge_node.signal.SIGTERM
+            handler(signum, None)
+
+    def make_executor(num_threads: int):
+        executor = SigtermExecutor(num_threads=num_threads)
+        executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(lfc_bridge_node, "MultiThreadedExecutor", make_executor)
+    monkeypatch.setattr(lfc_bridge_node.rclpy, "ok", lambda context=None: True)
+    monkeypatch.setattr(
+        lfc_bridge_node.rclpy,
+        "shutdown",
+        lambda context=None: shutdown_contexts.append(context),
+    )
+
+    lfc_bridge_node.main()
+
+    assert executors[0].shutdown_called is True
+    assert fake_node.destroyed is True
+    assert shutdown_contexts == [fake_node.context]
+    assert installed_handlers[-1] == (
+        lfc_bridge_node.signal.SIGTERM,
+        "previous-sigterm-handler",
+    )

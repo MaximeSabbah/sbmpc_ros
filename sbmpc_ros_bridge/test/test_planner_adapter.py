@@ -28,6 +28,8 @@ class FakeMPCConfig:
     gain_fd_epsilon: float = 1e-3
     gain_fd_scheme: str = "forward"
     gain_fd_num_samples: int | None = None
+    gain_samples_per_cycle: int | None = None
+    gain_buffer_size: int | None = None
     initial_guess: object = field(
         default_factory=lambda: np.zeros((8, 7), dtype=np.float32)
     )
@@ -77,6 +79,7 @@ class FakePregraspPlanner(FakePlanner):
 
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:
     overrides = planner_config_overrides_from_values(
+        mode=" exact_async_feedback ",
         phase=" transport ",
         gains=False,
         num_steps=3,
@@ -91,9 +94,12 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         gain_fd_epsilon=5e-4,
         gain_fd_scheme="central",
         gain_fd_num_samples=256,
+        gain_samples_per_cycle=64,
+        gain_buffer_size=256,
     )
 
     assert overrides == PlannerConfigOverrides(
+        mode="exact_async_feedback",
         phase="transport",
         gains=False,
         num_steps=3,
@@ -108,6 +114,8 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         gain_fd_epsilon=5e-4,
         gain_fd_scheme="central",
         gain_fd_num_samples=256,
+        gain_samples_per_cycle=64,
+        gain_buffer_size=256,
     )
 
 
@@ -141,6 +149,8 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         gain_fd_epsilon=2e-4,
         gain_fd_scheme="central",
         gain_fd_num_samples=256,
+        gain_samples_per_cycle=32,
+        gain_buffer_size=128,
     )
 
     updated_config = apply_config_overrides(
@@ -165,6 +175,8 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
     assert np.isclose(updated_config.MPC.gain_fd_epsilon, 2e-4)
     assert updated_config.MPC.gain_fd_scheme == "central"
     assert updated_config.MPC.gain_fd_num_samples == 256
+    assert updated_config.MPC.gain_samples_per_cycle == 32
+    assert updated_config.MPC.gain_buffer_size == 128
     assert np.asarray(updated_config.MPC.initial_guess).shape == (12, 7)
     np.testing.assert_allclose(
         np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),

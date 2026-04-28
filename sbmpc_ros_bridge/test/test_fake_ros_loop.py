@@ -52,12 +52,22 @@ class FakePlannerDiagnostics:
     orientation_error: float = 0.01
     object_error: float | None = None
     goal_position: tuple[float, float, float] = (0.55, 0.0, 0.40)
+    gain_mode: str = "exact_async_feedback"
+    foreground_planning_time_ms: float = 9.5
+    background_gain_time_ms: float = 4.25
+    async_gain_worker_running: bool = True
+    gain_age_cycles: float = 1.0
+    gain_window_fill: int = 128
+    gain_completed_batch_count: int = 3
+    gain_dropped_snapshot_count: int = 1
+    async_gain_worker_error: str | None = None
 
 
 class FakePlanner:
     def __init__(self, *, step_sleep_sec: float = 0.0, on_step=None) -> None:
         self.warmup_calls = 0
         self.step_calls = 0
+        self.close_calls = 0
         self.step_sleep_sec = step_sleep_sec
         self.on_step = on_step
 
@@ -84,6 +94,9 @@ class FakePlanner:
             K=np.eye(7, 14, dtype=np.float64),
             diagnostics=FakePlannerDiagnostics(),
         )
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def make_sensor(position_offset: float = 0.0) -> Sensor:
@@ -219,8 +232,22 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.last_bridge_loop_time_ms is not None
         assert snapshot.last_position_error == pytest.approx(0.25)
         assert snapshot.last_goal_position == [0.55, 0.0, 0.4]
+        assert snapshot.planner_mode == "exact_async_feedback"
+        assert snapshot.last_foreground_planning_time_ms == pytest.approx(9.5)
+        assert snapshot.last_background_gain_time_ms == pytest.approx(4.25)
+        assert snapshot.last_gain_worker_running is True
+        assert snapshot.last_gain_window_fill == 128
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_bridge_destroy_closes_planner() -> None:
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+
+    bridge.destroy_node()
+
+    assert planner.close_calls == 1
 
 
 def test_fake_ros_loop_publishes_controls_near_target_rate_and_diagnostics() -> None:

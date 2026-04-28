@@ -37,6 +37,8 @@ class FakeMPCConfig:
     gain_fd_epsilon: float = 1e-3
     gain_fd_scheme: str = "forward"
     gain_fd_num_samples: int | None = 256
+    gain_samples_per_cycle: int | None = None
+    gain_buffer_size: int | None = None
     initial_guess: object = field(
         default_factory=lambda: np.zeros((8, 7), dtype=np.float32)
     )
@@ -55,6 +57,8 @@ class FakeConfig:
 
 class FakePlanner:
     def __init__(self) -> None:
+        self.home_q = np.zeros(7, dtype=np.float32)
+        self.nv = 7
         self.torque_limits = np.full(7, 87.0, dtype=np.float32)
 
     def nominal_torque_sequence_from_state(self, state, horizon, dt, phase):
@@ -73,6 +77,8 @@ _MPC_FIELDS = (
     "gain_fd_epsilon",
     "gain_fd_scheme",
     "gain_fd_num_samples",
+    "gain_samples_per_cycle",
+    "gain_buffer_size",
 )
 
 

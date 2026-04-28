@@ -31,6 +31,15 @@ class BridgeDiagnostics:
     last_control_max_abs_feedforward: float | None
     last_control_gain_norm: float | None
     last_error: str
+    planner_mode: str | None = None
+    last_foreground_planning_time_ms: float | None = None
+    last_background_gain_time_ms: float | None = None
+    last_gain_age_cycles: float | None = None
+    last_gain_window_fill: int | None = None
+    last_gain_completed_batch_count: int | None = None
+    last_gain_dropped_snapshot_count: int | None = None
+    last_gain_worker_running: bool | None = None
+    last_gain_worker_error: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import signal
 from threading import Lock
 from time import perf_counter
 
@@ -80,6 +81,7 @@ class SbMpcLfcBridgeNode(Node):
         )
         self.declare_parameter("planner_warmup_iterations", 10)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
+        self.declare_parameter("planner_mode", "")
         self.declare_parameter("planner_phase", "PREGRASP")
         self.declare_parameter("planner_gains", True)
         self.declare_parameter("planner_num_steps", 1)
@@ -97,6 +99,8 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_gain_fd_epsilon", 1e-2)
         self.declare_parameter("planner_gain_fd_scheme", "forward")
         self.declare_parameter("planner_gain_fd_num_samples", 256)
+        self.declare_parameter("planner_gain_samples_per_cycle", 0)
+        self.declare_parameter("planner_gain_buffer_size", 0)
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -131,6 +135,7 @@ class SbMpcLfcBridgeNode(Node):
             ),
         )
         planner_config = planner_config_overrides_from_values(
+            mode=self.get_parameter("planner_mode").get_parameter_value().string_value,
             phase=self.get_parameter("planner_phase").get_parameter_value().string_value,
             gains=self.get_parameter("planner_gains").get_parameter_value().bool_value,
             num_steps=(
@@ -178,6 +183,16 @@ class SbMpcLfcBridgeNode(Node):
                 .get_parameter_value()
                 .integer_value
             ),
+            gain_samples_per_cycle=(
+                self.get_parameter("planner_gain_samples_per_cycle")
+                .get_parameter_value()
+                .integer_value
+            ),
+            gain_buffer_size=(
+                self.get_parameter("planner_gain_buffer_size")
+                .get_parameter_value()
+                .integer_value
+            ),
         )
         self._planner = (
             planner
@@ -216,6 +231,15 @@ class SbMpcLfcBridgeNode(Node):
         self._last_goal_position: list[float] | None = None
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
+        self._planner_mode: str | None = planner_config.mode
+        self._last_foreground_planning_time_ms: float | None = None
+        self._last_background_gain_time_ms: float | None = None
+        self._last_gain_age_cycles: float | None = None
+        self._last_gain_window_fill: int | None = None
+        self._last_gain_completed_batch_count: int | None = None
+        self._last_gain_dropped_snapshot_count: int | None = None
+        self._last_gain_worker_running: bool | None = None
+        self._last_gain_worker_error: str | None = None
         self._last_error = ""
         self._warmup_complete = False
 
@@ -343,6 +367,15 @@ class SbMpcLfcBridgeNode(Node):
             last_control_max_abs_feedforward=self._last_control_max_abs_feedforward,
             last_control_gain_norm=self._last_control_gain_norm,
             last_error=self._last_error,
+            planner_mode=self._planner_mode,
+            last_foreground_planning_time_ms=self._last_foreground_planning_time_ms,
+            last_background_gain_time_ms=self._last_background_gain_time_ms,
+            last_gain_age_cycles=self._last_gain_age_cycles,
+            last_gain_window_fill=self._last_gain_window_fill,
+            last_gain_completed_batch_count=self._last_gain_completed_batch_count,
+            last_gain_dropped_snapshot_count=self._last_gain_dropped_snapshot_count,
+            last_gain_worker_running=self._last_gain_worker_running,
+            last_gain_worker_error=self._last_gain_worker_error,
         )
 
     def _on_timer(self) -> None:
@@ -501,6 +534,34 @@ class SbMpcLfcBridgeNode(Node):
             getattr(diagnostics, "object_error", None)
         )
 
+        self._planner_mode = self._maybe_text(
+            getattr(diagnostics, "gain_mode", None)
+        )
+        self._last_foreground_planning_time_ms = self._maybe_float(
+            getattr(diagnostics, "foreground_planning_time_ms", None)
+        )
+        self._last_background_gain_time_ms = self._maybe_float(
+            getattr(diagnostics, "background_gain_time_ms", None)
+        )
+        self._last_gain_age_cycles = self._maybe_float(
+            getattr(diagnostics, "gain_age_cycles", None)
+        )
+        self._last_gain_window_fill = self._maybe_int(
+            getattr(diagnostics, "gain_window_fill", None)
+        )
+        self._last_gain_completed_batch_count = self._maybe_int(
+            getattr(diagnostics, "gain_completed_batch_count", None)
+        )
+        self._last_gain_dropped_snapshot_count = self._maybe_int(
+            getattr(diagnostics, "gain_dropped_snapshot_count", None)
+        )
+        self._last_gain_worker_running = self._maybe_bool(
+            getattr(diagnostics, "async_gain_worker_running", None)
+        )
+        self._last_gain_worker_error = self._maybe_text(
+            getattr(diagnostics, "async_gain_worker_error", None)
+        )
+
         goal_position = getattr(diagnostics, "goal_position", None)
         if goal_position is None:
             self._last_goal_position = None
@@ -541,6 +602,14 @@ class SbMpcLfcBridgeNode(Node):
                 return
             raise
 
+    def destroy_node(self) -> None:
+        try:
+            close = getattr(self._planner, "close", None)
+            if callable(close):
+                close()
+        finally:
+            super().destroy_node()
+
     @staticmethod
     def _phase_name(value: object | None) -> str | None:
         if value is None:
@@ -554,17 +623,43 @@ class SbMpcLfcBridgeNode(Node):
             return None
         return float(value)
 
+    @staticmethod
+    def _maybe_int(value: object | None) -> int | None:
+        if value is None:
+            return None
+        return int(value)
+
+    @staticmethod
+    def _maybe_text(value: object | None) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _maybe_bool(value: object | None) -> bool | None:
+        if value is None:
+            return None
+        return bool(value)
+
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
     node = SbMpcLfcBridgeNode()
     executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(node)
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum, frame) -> None:
+        del signum, frame
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     try:
         executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
         try:
             executor.shutdown()
         except KeyboardInterrupt:
