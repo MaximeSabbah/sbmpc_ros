@@ -19,6 +19,9 @@ class BridgeDiagnostics:
     last_planning_time_ms: float | None
     last_planner_output_time_ms: float | None
     last_bridge_loop_time_ms: float | None
+    last_planner_step_wall_time_ms: float | None
+    last_control_prepare_time_ms: float | None
+    last_control_publish_time_ms: float | None
     last_phase: str | None
     last_next_phase: str | None
     last_running_cost: float | None

@@ -140,7 +140,7 @@ Exact async planner smoke:
   --joint-set fer --planner-mode exact_async_feedback
 ```
 
-FER-adapted Gazebo bringup:
+FER-adapted Gazebo bringup, headless by default:
 
 ```bash
 cd /workspace/ros2_ws
@@ -148,13 +148,22 @@ source install/setup.bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py
 ```
 
-Headless smoke version:
+Visual RViz check, when X11 forwarding works:
 
 ```bash
 cd /workspace/ros2_ws
 source install/setup.bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
-  gz_args:='empty.sdf -r -s' use_rviz:=false
+  use_rviz:=true
+```
+
+Gazebo GUI check, when X11 forwarding works:
+
+```bash
+cd /workspace/ros2_ws
+source install/setup.bash
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
+  gz_args:='empty.sdf -r' use_rviz:=true
 ```
 
 Both sim and real bringup launch the bridge through
@@ -166,6 +175,7 @@ Useful launch overrides:
 - `sbmpc_dir:=/workspace/sbmpc`
 - `pixi_env:=cuda`
 - `bridge_runtime_script:=/workspace/sbmpc_containers/scripts/pixi_ros_run.sh`
+- `load_gripper:=false` only for arm-only debugging
 
 ## Planner Tuning From YAML
 

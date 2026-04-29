@@ -11,7 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES
+from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES, SBMPC_JOINT_STATES_TOPIC
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +34,12 @@ class ValidationSummary:
     max_foreground_ms: float | None
     mean_bridge_loop_ms: float | None
     max_bridge_loop_ms: float | None
+    mean_planner_step_wall_ms: float | None
+    max_planner_step_wall_ms: float | None
+    mean_control_prepare_ms: float | None
+    max_control_prepare_ms: float | None
+    mean_control_publish_ms: float | None
+    max_control_publish_ms: float | None
     mean_background_gain_ms: float | None
     max_background_gain_ms: float | None
     max_gain_norm: float | None
@@ -143,6 +149,9 @@ def summarize(
     if foreground_ms.size == 0:
         foreground_ms = finite_values(running, "last_planner_output_time_ms")
     bridge_ms = finite_values(running, "last_bridge_loop_time_ms")
+    planner_step_wall_ms = finite_values(running, "last_planner_step_wall_time_ms")
+    control_prepare_ms = finite_values(running, "last_control_prepare_time_ms")
+    control_publish_ms = finite_values(running, "last_control_publish_time_ms")
     background_gain_ms = finite_values(running, "last_background_gain_time_ms")
     gain_norm = finite_values(running, "last_gain_norm")
     gain_age_cycles = finite_values(running, "last_gain_age_cycles")
@@ -186,6 +195,24 @@ def summarize(
         max_foreground_ms=float(np.max(foreground_ms)) if foreground_ms.size else None,
         mean_bridge_loop_ms=float(np.mean(bridge_ms)) if bridge_ms.size else None,
         max_bridge_loop_ms=float(np.max(bridge_ms)) if bridge_ms.size else None,
+        mean_planner_step_wall_ms=(
+            float(np.mean(planner_step_wall_ms)) if planner_step_wall_ms.size else None
+        ),
+        max_planner_step_wall_ms=(
+            float(np.max(planner_step_wall_ms)) if planner_step_wall_ms.size else None
+        ),
+        mean_control_prepare_ms=(
+            float(np.mean(control_prepare_ms)) if control_prepare_ms.size else None
+        ),
+        max_control_prepare_ms=(
+            float(np.max(control_prepare_ms)) if control_prepare_ms.size else None
+        ),
+        mean_control_publish_ms=(
+            float(np.mean(control_publish_ms)) if control_publish_ms.size else None
+        ),
+        max_control_publish_ms=(
+            float(np.max(control_publish_ms)) if control_publish_ms.size else None
+        ),
         mean_background_gain_ms=(
             float(np.mean(background_gain_ms)) if background_gain_ms.size else None
         ),
@@ -261,6 +288,15 @@ def print_summary(summary: ValidationSummary) -> None:
         f"deadline_misses={format_optional(summary.deadline_miss_count)}"
     )
     print(
+        "bridge_breakdown_ms: "
+        f"planner_step_mean={format_optional(summary.mean_planner_step_wall_ms, precision=2)} "
+        f"planner_step_max={format_optional(summary.max_planner_step_wall_ms, precision=2)} "
+        f"prepare_mean={format_optional(summary.mean_control_prepare_ms, precision=2)} "
+        f"prepare_max={format_optional(summary.max_control_prepare_ms, precision=2)} "
+        f"publish_mean={format_optional(summary.mean_control_publish_ms, precision=2)} "
+        f"publish_max={format_optional(summary.max_control_publish_ms, precision=2)}"
+    )
+    print(
         "gain_norm: "
         f"final={format_optional(summary.final_gain_norm)} "
         f"max={format_optional(summary.max_gain_norm)}"
@@ -315,7 +351,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration-sec", type=float, default=12.0)
     parser.add_argument("--diagnostics-topic", default="/sbmpc/diagnostics")
-    parser.add_argument("--joint-states-topic", default="/joint_states")
+    parser.add_argument("--joint-states-topic", default=SBMPC_JOINT_STATES_TOPIC)
     parser.add_argument("--tail-fraction", type=float, default=0.5)
     parser.add_argument("--assert-stable", action="store_true")
     parser.add_argument("--max-tail-joint-span", type=float, default=0.1)

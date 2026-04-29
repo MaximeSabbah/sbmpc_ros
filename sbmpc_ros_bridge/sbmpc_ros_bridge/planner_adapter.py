@@ -267,6 +267,7 @@ class SbMpcPlannerAdapter:
             config=config,
             reseed_every_step=True,
             gain_mode=config_overrides.mode,
+            compute_running_cost=False,
         )
 
     @staticmethod

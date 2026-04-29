@@ -8,6 +8,7 @@ from sbmpc_bringup.launch_preflight import (
     check_clean_ros_graph,
     find_stale_sim_nodes,
     parse_ros_node_list,
+    wait_for_clean_ros_graph,
 )
 
 
@@ -66,3 +67,38 @@ def test_check_clean_ros_graph_errors_when_node_list_fails() -> None:
 
     with pytest.raises(RuntimeError, match="daemon unavailable"):
         check_clean_ros_graph(runner=runner)
+
+
+def test_wait_for_clean_ros_graph_rechecks_transient_stale_nodes() -> None:
+    calls = 0
+
+    def runner(*args, **kwargs) -> FakeRunResult:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls == 1:
+            return FakeRunResult(stdout="/ros_gz_bridge\n")
+        return FakeRunResult(stdout="")
+
+    result = wait_for_clean_ros_graph(
+        runner=runner,
+        timeout_sec=1.0,
+        poll_sec=0.0,
+    )
+
+    assert result.stale_nodes == ()
+    assert calls == 2
+
+
+def test_wait_for_clean_ros_graph_returns_persistent_stale_nodes() -> None:
+    def runner(*args, **kwargs) -> FakeRunResult:
+        del args, kwargs
+        return FakeRunResult(stdout="/ros_gz_bridge\n")
+
+    result = wait_for_clean_ros_graph(
+        runner=runner,
+        timeout_sec=0.0,
+        poll_sec=0.0,
+    )
+
+    assert result.stale_nodes == ("/ros_gz_bridge",)

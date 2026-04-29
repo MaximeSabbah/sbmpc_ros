@@ -1,7 +1,7 @@
 sbmpc_lfc_bridge_node:
   ros__parameters:
-    sensor_topic: /sensor
-    control_topic: /control
+    sensor_topic: /sbmpc/sensor
+    control_topic: /sbmpc/control
     diagnostics_topic: /sbmpc/diagnostics
     publish_rate_hz: 50.0
     planner_deadline_sec: 0.02

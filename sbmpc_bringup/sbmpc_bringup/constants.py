@@ -9,9 +9,11 @@ LINEAR_FEEDBACK_CONTROLLER_NAME = "linear_feedback_controller"
 GRIPPER_ACTION_CONTROLLER_NAME = "gripper_action_controller"
 FER_GRIPPER_JOINT_NAME = "fer_finger_joint1"
 
-BRIDGE_SENSOR_TOPIC = "/sensor"
-BRIDGE_CONTROL_TOPIC = "/control"
+BRIDGE_SENSOR_TOPIC = "/sbmpc/sensor"
+BRIDGE_CONTROL_TOPIC = "/sbmpc/control"
 BRIDGE_DIAGNOSTICS_TOPIC = "/sbmpc/diagnostics"
+SBMPC_JOINT_STATES_TOPIC = "/sbmpc/joint_states"
+SBMPC_DYNAMIC_JOINT_STATES_TOPIC = "/sbmpc/dynamic_joint_states"
 
 
 def hardware_state_interfaces(

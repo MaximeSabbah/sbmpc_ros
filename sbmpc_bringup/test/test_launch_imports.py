@@ -32,6 +32,17 @@ def assert_declared_arguments(
     assert expected_argument_names.issubset(declared_argument_names)
 
 
+def declared_argument_defaults(launch_description: LaunchDescription) -> dict[str, str]:
+    defaults: dict[str, str] = {}
+    for entity in launch_description.entities:
+        if not isinstance(entity, DeclareLaunchArgument):
+            continue
+        defaults[entity.name] = "".join(
+            getattr(value, "text", str(value)) for value in entity.default_value
+        )
+    return defaults
+
+
 def test_sim_launch_imports_and_declares_expected_arguments() -> None:
     module = load_launch_module("sbmpc_franka_lfc_sim.launch.py")
     launch_description = module.generate_launch_description()
@@ -57,6 +68,18 @@ def test_sim_launch_imports_and_declares_expected_arguments() -> None:
             "use_rviz",
         },
     )
+    defaults = declared_argument_defaults(launch_description)
+    assert defaults["load_gripper"] == "true"
+    assert defaults["gz_args"] == "empty.sdf -r -s"
+
+
+def test_sim_launch_has_self_contained_shutdown_handlers() -> None:
+    launch_text = (LAUNCH_DIR / "sbmpc_franka_lfc_sim.launch.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "on_exit_shutdown" in launch_text
+    assert "Shutdown(reason=" in launch_text
 
 
 def test_real_launch_imports_and_declares_expected_arguments() -> None:

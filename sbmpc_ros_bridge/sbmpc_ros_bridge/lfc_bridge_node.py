@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import signal
-from threading import Lock
+from threading import Event, Lock, Thread
 from time import perf_counter
 
 import numpy as np
@@ -80,6 +80,7 @@ class SbMpcLfcBridgeNode(Node):
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
         self.declare_parameter("planner_warmup_iterations", 10)
+        self.declare_parameter("planner_warmup_on_start", True)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
         self.declare_parameter("planner_mode", "")
         self.declare_parameter("planner_phase", "PREGRASP")
@@ -123,6 +124,11 @@ class SbMpcLfcBridgeNode(Node):
             self.get_parameter("joint_names").get_parameter_value().string_array_value
         )
         self._force_zero_control = self._force_zero_control_enabled()
+        self._closing = Event()
+        self._planner_lock = Lock()
+        self._warmup_lock = Lock()
+        self._warmup_started = False
+        self._warmup_thread: Thread | None = None
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._sensor_lock = Lock()
         self._last_planner_input = None
@@ -220,6 +226,9 @@ class SbMpcLfcBridgeNode(Node):
         self._last_planning_time_ms: float | None = None
         self._last_planner_output_time_ms: float | None = None
         self._last_bridge_loop_time_ms: float | None = None
+        self._last_planner_step_wall_time_ms: float | None = None
+        self._last_control_prepare_time_ms: float | None = None
+        self._last_control_publish_time_ms: float | None = None
         self._last_phase: str | None = None
         self._last_next_phase: str | None = None
         self._last_running_cost: float | None = None
@@ -292,6 +301,11 @@ class SbMpcLfcBridgeNode(Node):
                     "enable_nonzero_control is false: the bridge will stay silent "
                     "after warmup so LFC remains in PD mode until you arm it."
                 )
+            if (
+                not self._force_zero_control
+                and self._planner_warmup_on_start_enabled()
+            ):
+                self._start_warmup_thread()
 
     def _force_zero_control_enabled(self) -> bool:
         self._force_zero_control = (
@@ -302,6 +316,13 @@ class SbMpcLfcBridgeNode(Node):
     def _nonzero_control_enabled(self) -> bool:
         return (
             self.get_parameter("enable_nonzero_control")
+            .get_parameter_value()
+            .bool_value
+        )
+
+    def _planner_warmup_on_start_enabled(self) -> bool:
+        return (
+            self.get_parameter("planner_warmup_on_start")
             .get_parameter_value()
             .bool_value
         )
@@ -333,7 +354,7 @@ class SbMpcLfcBridgeNode(Node):
                 self._last_planner_input = planner_input
                 self._valid_sensor_count += 1
             if self._state == "waiting_for_sensor":
-                self._state = "warming_up"
+                self._state = "warming_up" if not self._warmup_complete else "armed_idle"
         except Exception as exc:
             self._rejected_sensor_count += 1
             self._last_error = str(exc)
@@ -355,6 +376,9 @@ class SbMpcLfcBridgeNode(Node):
             last_planning_time_ms=self._last_planning_time_ms,
             last_planner_output_time_ms=self._last_planner_output_time_ms,
             last_bridge_loop_time_ms=self._last_bridge_loop_time_ms,
+            last_planner_step_wall_time_ms=self._last_planner_step_wall_time_ms,
+            last_control_prepare_time_ms=self._last_control_prepare_time_ms,
+            last_control_publish_time_ms=self._last_control_publish_time_ms,
             last_phase=self._last_phase,
             last_next_phase=self._last_next_phase,
             last_running_cost=self._last_running_cost,
@@ -381,21 +405,19 @@ class SbMpcLfcBridgeNode(Node):
     def _on_timer(self) -> None:
         planner_input = self._snapshot_planner_input()
         if planner_input is None:
+            if self._warmup_started and not self._warmup_complete:
+                self._state = "warming_up"
             self._publish_diagnostics()
             return
 
         if not self._warmup_complete:
-            self._run_warmup(planner_input)
+            self._start_warmup_thread()
             # Do NOT publish any Control here. Publishing a zero Control message
             # (tau_ff=0, K=0) would cause LFC to immediately start its PD→LF
             # transition (it triggers on the first non-NaN feedforward). After
             # 100 ms LFC would be in pure LF mode sending zero torques → the
             # robot falls. Keep LFC in PD mode until the bridge is explicitly armed.
-            self._state = (
-                "gated_zero_control"
-                if self._force_zero_control_enabled()
-                else ("running" if self._nonzero_control_enabled() else "armed_idle")
-            )
+            self._state = "warming_up"
             self._publish_diagnostics()
             return
 
@@ -417,8 +439,13 @@ class SbMpcLfcBridgeNode(Node):
         self._state = "running"
         start = perf_counter()
         try:
-            planner_output = self._planner.step(planner_input)
+            step_start = perf_counter()
+            with self._planner_lock:
+                planner_output = self._planner.step(planner_input)
+            step_end = perf_counter()
+            self._last_planner_step_wall_time_ms = 1000.0 * (step_end - step_start)
             self._planner_step_count += 1
+            prepare_start = perf_counter()
             self._record_planner_diagnostics(planner_output)
             control_initial_state = planner_input
             if self._retime_control_initial_state_enabled():
@@ -432,9 +459,14 @@ class SbMpcLfcBridgeNode(Node):
                 control_initial_state,
                 safety_profile=self._safety_profile,
             )
-            planning_duration_sec = perf_counter() - start
-            self._record_planning_duration(planning_duration_sec)
+            prepare_end = perf_counter()
+            self._last_control_prepare_time_ms = 1000.0 * (prepare_end - prepare_start)
+            publish_start = perf_counter()
             self._publish_control(control)
+            publish_end = perf_counter()
+            self._last_control_publish_time_ms = 1000.0 * (publish_end - publish_start)
+            planning_duration_sec = publish_end - start
+            self._record_planning_duration(planning_duration_sec)
         except UnsafeControlError as exc:
             self._state = "error"
             self._last_error = str(exc)
@@ -446,22 +478,65 @@ class SbMpcLfcBridgeNode(Node):
         finally:
             self._publish_diagnostics()
 
-    def _run_warmup(self, planner_input: PlannerInput) -> None:
+    def _start_warmup_thread(self) -> None:
+        with self._warmup_lock:
+            if self._warmup_complete or self._warmup_started:
+                return
+            self._warmup_started = True
+            self._state = "warming_up"
+            self.get_logger().info(
+                "Starting planner warmup/JIT compilation before arming."
+            )
+            self._warmup_thread = Thread(
+                target=self._run_warmup_in_background,
+                name="sbmpc_planner_warmup",
+                daemon=True,
+            )
+            self._warmup_thread.start()
+
+    def _run_warmup_in_background(self) -> None:
+        try:
+            self._run_warmup()
+            self.get_logger().info("Planner warmup/JIT compilation complete.")
+        except Exception as exc:
+            self._state = "error"
+            self._last_error = str(exc)
+            self.get_logger().error(f"Planner warmup failed: {exc}")
+        finally:
+            self._publish_diagnostics()
+
+    def _run_warmup(self, planner_input: PlannerInput | None = None) -> None:
         start = perf_counter()
         warmup_output = None
-        for _ in range(self._planner_warmup_iterations):
-            warmup_output = self._planner.warmup()
-            if warmup_output is not None:
-                self._record_planner_diagnostics(warmup_output)
-                self._predict_control_initial_state(planner_input, warmup_output)
+        with self._warmup_lock:
+            if self._warmup_complete:
+                return
+            for _ in range(self._planner_warmup_iterations):
+                if self._closing.is_set():
+                    return
+                with self._planner_lock:
+                    warmup_output = self._planner.warmup()
+                if warmup_output is not None:
+                    self._record_planner_diagnostics(warmup_output)
+                    if planner_input is not None:
+                        self._predict_control_initial_state(planner_input, warmup_output)
         self._warmup_count += 1
         self._warmup_complete = True
         planning_duration_sec = perf_counter() - start
-        self._record_planning_duration(planning_duration_sec)
+        self._record_planning_duration(planning_duration_sec, observe_deadline=False)
+        if self._snapshot_planner_input() is None:
+            self._state = "waiting_for_sensor"
 
-    def _record_planning_duration(self, planning_duration_sec: float) -> None:
+    def _record_planning_duration(
+        self,
+        planning_duration_sec: float,
+        *,
+        observe_deadline: bool = True,
+    ) -> None:
         self._last_planning_time_ms = 1000.0 * planning_duration_sec
         self._last_bridge_loop_time_ms = self._last_planning_time_ms
+        if not observe_deadline:
+            return
         try:
             self._deadline_monitor.observe(planning_duration_sec)
         except UnsafeControlError as exc:
@@ -604,9 +679,16 @@ class SbMpcLfcBridgeNode(Node):
 
     def destroy_node(self) -> None:
         try:
+            self._closing.set()
+            warmup_thread = self._warmup_thread
+            if warmup_thread is not None and warmup_thread.is_alive():
+                warmup_thread.join(timeout=1.0)
             close = getattr(self._planner, "close", None)
-            if callable(close):
-                close()
+            if callable(close) and self._planner_lock.acquire(timeout=1.0):
+                try:
+                    close()
+                finally:
+                    self._planner_lock.release()
         finally:
             super().destroy_node()
 

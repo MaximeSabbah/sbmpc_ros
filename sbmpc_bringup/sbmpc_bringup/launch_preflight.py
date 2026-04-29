@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import subprocess
+import time
 from typing import Callable, Iterable, Protocol
 
 from launch.substitutions import LaunchConfiguration
@@ -78,20 +79,42 @@ def check_clean_ros_graph(
     return RosGraphPreflightResult(nodes=nodes, stale_nodes=stale_nodes)
 
 
+def wait_for_clean_ros_graph(
+    *,
+    runner: Runner = subprocess.run,
+    protected_names: Iterable[str] = STALE_SIM_NODE_NAMES,
+    timeout_sec: float = 20.0,
+    poll_sec: float = 1.0,
+) -> RosGraphPreflightResult:
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    result = check_clean_ros_graph(
+        runner=runner,
+        protected_names=protected_names,
+    )
+    while result.stale_nodes and time.monotonic() < deadline:
+        time.sleep(max(0.0, poll_sec))
+        result = check_clean_ros_graph(
+            runner=runner,
+            protected_names=protected_names,
+        )
+    return result
+
+
 def assert_clean_ros_graph(context, *args, **kwargs) -> list[object]:
     del args, kwargs
     if _launch_bool(LaunchConfiguration("allow_existing_ros_graph").perform(context)):
         return []
 
-    result = check_clean_ros_graph()
+    result = wait_for_clean_ros_graph()
     if not result.stale_nodes:
         return []
 
     stale_list = ", ".join(result.stale_nodes)
     raise RuntimeError(
         "Refusing to launch SB-MPC Franka simulation because an existing ROS/Gazebo "
-        f"control graph is already running: {stale_list}. Stop the previous launch "
-        "cleanly before retrying. If this is intentional, pass "
+        f"control graph is already running or still visible after waiting for graph "
+        f"settling: {stale_list}. Stop the previous launch cleanly before retrying. "
+        "If this is intentional, pass "
         "allow_existing_ros_graph:=true."
     )
 

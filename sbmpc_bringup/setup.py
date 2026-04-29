@@ -36,6 +36,7 @@ setup(
     extras_require={"test": ["pytest"]},
     entry_points={
         "console_scripts": [
+            "sbmpc_pixi_supervisor = sbmpc_bringup.pixi_supervisor:main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
         ],
     },
