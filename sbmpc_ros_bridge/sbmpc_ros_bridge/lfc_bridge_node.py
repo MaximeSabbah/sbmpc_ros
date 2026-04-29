@@ -131,7 +131,7 @@ class SbMpcLfcBridgeNode(Node):
         self._warmup_thread: Thread | None = None
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._sensor_lock = Lock()
-        self._last_planner_input = None
+        self._last_sensor: Sensor | None = None
         self._planner_warmup_iterations = max(
             1,
             int(
@@ -341,9 +341,14 @@ class SbMpcLfcBridgeNode(Node):
 
     def _snapshot_planner_input(self):
         with self._sensor_lock:
-            return self._last_planner_input
+            sensor = (
+                deepcopy(self._last_sensor)
+                if self._last_sensor is not None
+                else None
+            )
+        if sensor is None:
+            return None
 
-    def _on_sensor(self, message: Sensor) -> None:
         allow_reordering = (
             self.get_parameter("allow_joint_reordering")
             .get_parameter_value()
@@ -351,20 +356,23 @@ class SbMpcLfcBridgeNode(Node):
         )
         try:
             planner_input = sensor_to_planner_input(
-                message,
+                sensor,
                 joint_mapper=self._joint_mapper,
                 allow_reordering=allow_reordering,
             )
-            with self._sensor_lock:
-                self._last_planner_input = planner_input
-                self._valid_sensor_count += 1
+            self._valid_sensor_count += 1
             if self._state == "waiting_for_sensor":
                 self._state = "warming_up" if not self._warmup_complete else "armed_idle"
+            return planner_input
         except Exception as exc:
             self._rejected_sensor_count += 1
             self._last_error = str(exc)
             self.get_logger().error(f"Rejected sensor message: {exc}")
-            self._publish_diagnostics()
+            return None
+
+    def _on_sensor(self, message: Sensor) -> None:
+        with self._sensor_lock:
+            self._last_sensor = message
 
     def diagnostics_snapshot(self) -> BridgeDiagnostics:
         return BridgeDiagnostics(
