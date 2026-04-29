@@ -34,9 +34,6 @@ class FakeMPCConfig:
     )
     smoothing: str | None = "Spline"
     gain_method: str = "exact"
-    gain_fd_epsilon: float = 1e-3
-    gain_fd_scheme: str = "forward"
-    gain_fd_num_samples: int | None = 256
     gain_samples_per_cycle: int | None = None
     gain_buffer_size: int | None = None
     initial_guess: object = field(
@@ -74,9 +71,6 @@ _MPC_FIELDS = (
     "lambda_mpc",
     "smoothing",
     "gain_method",
-    "gain_fd_epsilon",
-    "gain_fd_scheme",
-    "gain_fd_num_samples",
     "gain_samples_per_cycle",
     "gain_buffer_size",
 )

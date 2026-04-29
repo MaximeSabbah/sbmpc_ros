@@ -10,7 +10,7 @@ sbmpc_lfc_bridge_node:
     allow_joint_reordering: false
     retime_control_initial_state: true
     control_initial_state_prediction_sec: 0.0
-    planner_mode: fd_feedback
+    planner_mode: exact_async_feedback
     planner_phase: PREGRASP
     planner_num_steps: 1
     planner_num_samples: 1024
@@ -20,9 +20,8 @@ sbmpc_lfc_bridge_node:
     planner_dt: 0.02
     planner_noise_scale: 0.05
     planner_smoothing: Spline
-    planner_gain_fd_epsilon: 0.05
-    planner_gain_fd_scheme: forward
-    planner_gain_fd_num_samples: 256
+    planner_gain_samples_per_cycle: 128
+    planner_gain_buffer_size: 512
     joint_names:
       - fer_joint1
       - fer_joint2

@@ -27,10 +27,7 @@ class FakeMPCConfig:
         default_factory=lambda: np.ones(7, dtype=np.float32)
     )
     smoothing: str | None = "Spline"
-    gain_method: str = "finite_difference"
-    gain_fd_epsilon: float = 1e-3
-    gain_fd_scheme: str = "forward"
-    gain_fd_num_samples: int | None = None
+    gain_method: str = "exact"
     gain_samples_per_cycle: int | None = None
     gain_buffer_size: int | None = None
     initial_guess: object = field(
@@ -108,10 +105,6 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         dt=0.05,
         noise_scale=0.08,
         smoothing="none",
-        gain_method="finite_difference",
-        gain_fd_epsilon=5e-4,
-        gain_fd_scheme="central",
-        gain_fd_num_samples=256,
         gain_samples_per_cycle=64,
         gain_buffer_size=256,
     )
@@ -128,10 +121,6 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         lambda_mpc=0.15,
         std_dev_scale=0.08,
         smoothing="__none__",
-        gain_method="finite_difference",
-        gain_fd_epsilon=5e-4,
-        gain_fd_scheme="central",
-        gain_fd_num_samples=256,
         gain_samples_per_cycle=64,
         gain_buffer_size=256,
     )
@@ -163,10 +152,6 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         lambda_mpc=0.1,
         std_dev_scale=0.07,
         smoothing="__none__",
-        gain_method="finite_difference",
-        gain_fd_epsilon=2e-4,
-        gain_fd_scheme="central",
-        gain_fd_num_samples=256,
         gain_samples_per_cycle=32,
         gain_buffer_size=128,
     )
@@ -189,10 +174,7 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         np.asarray([0.14] * 7, dtype=np.float32),
     )
     assert updated_config.MPC.smoothing is None
-    assert updated_config.MPC.gain_method == "finite_difference"
-    assert np.isclose(updated_config.MPC.gain_fd_epsilon, 2e-4)
-    assert updated_config.MPC.gain_fd_scheme == "central"
-    assert updated_config.MPC.gain_fd_num_samples == 256
+    assert updated_config.MPC.gain_method == "exact"
     assert updated_config.MPC.gain_samples_per_cycle == 32
     assert updated_config.MPC.gain_buffer_size == 128
     assert np.asarray(updated_config.MPC.initial_guess).shape == (12, 7)

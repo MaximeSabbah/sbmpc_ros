@@ -17,10 +17,9 @@ from sbmpc_bringup.constants import (
 
 STALE_SIM_NODE_NAMES: tuple[str, ...] = (
     "/controller_manager",
-    "/gz_ros_control",
     "/joint_state_publisher",
+    "/mujoco_ros2_control",
     "/robot_state_publisher",
-    "/ros_gz_bridge",
     "/rviz2",
     "/sbmpc_lfc_bridge_node",
     f"/{GRIPPER_ACTION_CONTROLLER_NAME}",
@@ -111,7 +110,7 @@ def assert_clean_ros_graph(context, *args, **kwargs) -> list[object]:
 
     stale_list = ", ".join(result.stale_nodes)
     raise RuntimeError(
-        "Refusing to launch SB-MPC Franka simulation because an existing ROS/Gazebo "
+        "Refusing to launch SB-MPC Franka simulation because an existing ROS "
         f"control graph is already running or still visible after waiting for graph "
         f"settling: {stale_list}. Stop the previous launch cleanly before retrying. "
         "If this is intentional, pass "

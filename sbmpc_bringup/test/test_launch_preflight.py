@@ -77,7 +77,7 @@ def test_wait_for_clean_ros_graph_rechecks_transient_stale_nodes() -> None:
         del args, kwargs
         calls += 1
         if calls == 1:
-            return FakeRunResult(stdout="/ros_gz_bridge\n")
+            return FakeRunResult(stdout="/mujoco_ros2_control\n")
         return FakeRunResult(stdout="")
 
     result = wait_for_clean_ros_graph(
@@ -93,7 +93,7 @@ def test_wait_for_clean_ros_graph_rechecks_transient_stale_nodes() -> None:
 def test_wait_for_clean_ros_graph_returns_persistent_stale_nodes() -> None:
     def runner(*args, **kwargs) -> FakeRunResult:
         del args, kwargs
-        return FakeRunResult(stdout="/ros_gz_bridge\n")
+        return FakeRunResult(stdout="/mujoco_ros2_control\n")
 
     result = wait_for_clean_ros_graph(
         runner=runner,
@@ -101,4 +101,4 @@ def test_wait_for_clean_ros_graph_returns_persistent_stale_nodes() -> None:
         poll_sec=0.0,
     )
 
-    assert result.stale_nodes == ("/ros_gz_bridge",)
+    assert result.stale_nodes == ("/mujoco_ros2_control",)

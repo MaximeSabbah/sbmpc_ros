@@ -21,9 +21,7 @@ from sbmpc_bringup.constants import (
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
-URDF_DIR = Path(__file__).resolve().parents[1] / "urdf"
 EXPECTED_CONFIG_FILES = {
-    "fer_sim_inertials.yaml",
     "franka_controllers.yaml",
     "franka_lfc_params.yaml",
     "franka_lfc_params_sim.yaml",
@@ -93,7 +91,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["force_zero_control"] is False
     assert params["retime_control_initial_state"] is True
     assert params["control_initial_state_prediction_sec"] == 0.0
-    assert params["planner_mode"] == "fd_feedback"
+    assert params["planner_mode"] == "exact_async_feedback"
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_num_steps"] == 1
     assert params["planner_num_samples"] == 1024
@@ -103,32 +101,8 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_dt"] == 0.02
     assert params["planner_noise_scale"] == 0.05
     assert params["planner_smoothing"] == "Spline"
-    assert params["planner_gain_fd_epsilon"] == 0.05
-    assert params["planner_gain_fd_scheme"] == "forward"
-    assert params["planner_gain_fd_num_samples"] == 256
-
-
-def test_gazebo_xacro_keeps_gravity_enabled_by_default_for_sbmpc() -> None:
-    xacro_text = (
-        URDF_DIR / "franka_arm_with_sbmpc_inertials.gazebo.xacro"
-    ).read_text(encoding="utf-8")
-
-    assert '<xacro:arg name="disable_gazebo_gravity" default="false"/>' in xacro_text
-    assert '<xacro:if value="$(arg disable_gazebo_gravity)">' in xacro_text
-
-
-def test_fer_sim_inertials_zero_only_the_problematic_link4_cross_terms() -> None:
-    config = load_yaml("fer_sim_inertials.yaml")
-    link4 = config["link4"]["inertia"]
-
-    assert link4["xy"] == 0.0
-    assert link4["xz"] == 0.0
-    assert link4["yz"] == 0.0
-
-    # Keep the rest of the FER inertials unchanged for the narrowest possible workaround.
-    link3 = config["link3"]["inertia"]
-    assert link3["xy"] != 0.0
-
+    assert params["planner_gain_samples_per_cycle"] == 128
+    assert params["planner_gain_buffer_size"] == 512
 
 def test_bridge_presets_cover_feedforward_and_exact_async_runs() -> None:
     feedforward = load_yaml("sbmpc_bridge_feedforward.yaml")
@@ -142,7 +116,7 @@ def test_bridge_presets_cover_feedforward_and_exact_async_runs() -> None:
     assert feedforward_params["planner_phase"] == "PREGRASP"
     assert feedback_params["planner_phase"] == "PREGRASP"
     assert feedforward_params["planner_mode"] == "feedforward"
-    assert feedback_params["planner_mode"] == "fd_feedback"
+    assert feedback_params["planner_mode"] == "exact_async_feedback"
     assert feedforward_params["publish_rate_hz"] == 50.0
     assert feedback_params["publish_rate_hz"] == 50.0
     assert exact_async_params["publish_rate_hz"] == 50.0

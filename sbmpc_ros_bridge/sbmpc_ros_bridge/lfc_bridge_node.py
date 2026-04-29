@@ -96,10 +96,6 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_noise_scale", 0.05)
         self.declare_parameter("planner_std_dev_scale", 0.05)
         self.declare_parameter("planner_smoothing", "Spline")
-        self.declare_parameter("planner_gain_method", "finite_difference")
-        self.declare_parameter("planner_gain_fd_epsilon", 1e-2)
-        self.declare_parameter("planner_gain_fd_scheme", "forward")
-        self.declare_parameter("planner_gain_fd_num_samples", 256)
         self.declare_parameter("planner_gain_samples_per_cycle", 0)
         self.declare_parameter("planner_gain_buffer_size", 0)
 
@@ -175,20 +171,6 @@ class SbMpcLfcBridgeNode(Node):
                 self.get_parameter("planner_std_dev_scale").get_parameter_value().double_value
             ),
             smoothing=self.get_parameter("planner_smoothing").get_parameter_value().string_value,
-            gain_method=(
-                self.get_parameter("planner_gain_method").get_parameter_value().string_value
-            ),
-            gain_fd_epsilon=(
-                self.get_parameter("planner_gain_fd_epsilon").get_parameter_value().double_value
-            ),
-            gain_fd_scheme=(
-                self.get_parameter("planner_gain_fd_scheme").get_parameter_value().string_value
-            ),
-            gain_fd_num_samples=(
-                self.get_parameter("planner_gain_fd_num_samples")
-                .get_parameter_value()
-                .integer_value
-            ),
             gain_samples_per_cycle=(
                 self.get_parameter("planner_gain_samples_per_cycle")
                 .get_parameter_value()

@@ -26,7 +26,6 @@ JOINT_NAME_SETS: dict[str, tuple[str, ...]] = {
 }
 PLANNER_MODES: tuple[str, ...] = (
     "feedforward",
-    "fd_feedback",
     "exact_async_feedback",
 )
 
@@ -68,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--planner-mode",
         choices=PLANNER_MODES,
-        default="fd_feedback",
+        default="exact_async_feedback",
         help="Planner mode to smoke-test through the ROS adapter.",
     )
     args = parser.parse_args(argv)

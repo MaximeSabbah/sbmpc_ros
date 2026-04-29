@@ -37,10 +37,6 @@ class PlannerConfigOverrides:
     lambda_mpc: float | None = None
     std_dev_scale: float | None = None
     smoothing: str | None = None
-    gain_method: str | None = None
-    gain_fd_epsilon: float | None = None
-    gain_fd_scheme: str | None = None
-    gain_fd_num_samples: int | None = None
     gain_samples_per_cycle: int | None = None
     gain_buffer_size: int | None = None
 
@@ -69,10 +65,6 @@ def planner_config_overrides_from_values(
     noise_scale: float = 0.0,
     std_dev_scale: float = 0.0,
     smoothing: str | None = None,
-    gain_method: str | None = None,
-    gain_fd_epsilon: float = 0.0,
-    gain_fd_scheme: str | None = None,
-    gain_fd_num_samples: int = 0,
     gain_samples_per_cycle: int = 0,
     gain_buffer_size: int = 0,
 ) -> PlannerConfigOverrides:
@@ -100,10 +92,6 @@ def planner_config_overrides_from_values(
         lambda_mpc=effective_temperature,
         std_dev_scale=effective_noise_scale,
         smoothing=_normalize_smoothing_value(smoothing),
-        gain_method=_clean_optional_text(gain_method),
-        gain_fd_epsilon=_optional_positive_float(gain_fd_epsilon),
-        gain_fd_scheme=_clean_optional_text(gain_fd_scheme),
-        gain_fd_num_samples=_optional_positive_int(gain_fd_num_samples),
         gain_samples_per_cycle=_optional_positive_int(gain_samples_per_cycle),
         gain_buffer_size=_optional_positive_int(gain_buffer_size),
     )
@@ -136,14 +124,7 @@ def apply_config_overrides(
         )
     if overrides.smoothing is not None:
         config.MPC.smoothing = None if overrides.smoothing == "__none__" else overrides.smoothing
-    if overrides.gain_method is not None:
-        config.MPC.gain_method = overrides.gain_method
-    if overrides.gain_fd_epsilon is not None:
-        config.MPC.gain_fd_epsilon = overrides.gain_fd_epsilon
-    if overrides.gain_fd_scheme is not None:
-        config.MPC.gain_fd_scheme = overrides.gain_fd_scheme
-    if overrides.gain_fd_num_samples is not None:
-        config.MPC.gain_fd_num_samples = overrides.gain_fd_num_samples
+    config.MPC.gain_method = "exact"
     if overrides.gain_samples_per_cycle is not None:
         config.MPC.gain_samples_per_cycle = overrides.gain_samples_per_cycle
     if overrides.gain_buffer_size is not None:

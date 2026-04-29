@@ -88,10 +88,8 @@ sbmpc_ros/
   sbmpc_bringup/
     package.xml
     launch/
-      sbmpc_franka_lfc_sim.launch.py
       sbmpc_franka_lfc_real.launch.py
     config/
-      fer_sim_inertials.yaml
       franka_controllers.yaml
       franka_lfc_params.yaml
       franka_lfc_params_sim.yaml
@@ -140,33 +138,24 @@ Exact async planner smoke:
   --joint-set fer --planner-mode exact_async_feedback
 ```
 
-FER-adapted Gazebo bringup, headless by default:
+Real or fake-hardware bringup:
 
 ```bash
 cd /workspace/ros2_ws
 source install/setup.bash
-ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py robot_ip:=<robot-ip>
 ```
 
-Visual RViz check, when X11 forwarding works:
+Fake-hardware check:
 
 ```bash
 cd /workspace/ros2_ws
 source install/setup.bash
-ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
-  use_rviz:=true
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
+  use_fake_hardware:=true use_rviz:=true
 ```
 
-Gazebo GUI check, when X11 forwarding works:
-
-```bash
-cd /workspace/ros2_ws
-source install/setup.bash
-ros2 launch sbmpc_bringup sbmpc_franka_lfc_sim.launch.py \
-  gz_args:='empty.sdf -r' use_rviz:=true
-```
-
-Both sim and real bringup launch the bridge through
+Bringup launches the bridge through
 `/workspace/sbmpc_containers/scripts/pixi_ros_run.sh`, so ROS sees the
 `sbmpc` JAX/Pixi stack without requiring a separate manual wrapper command.
 
@@ -188,14 +177,13 @@ The bridge reads planner overrides from:
 This lets you tune the ROS-side runtime without editing the `sbmpc` codebase.
 Only three bridge presets are kept:
 
-- `sbmpc_bridge.yaml`: default finite-difference feedback.
+- `sbmpc_bridge.yaml`: default exact async feedback.
 - `sbmpc_bridge_feedforward.yaml`: feedforward baseline.
 - `sbmpc_bridge_exact_async.yaml`: background exact-gain validation.
 
 The preferred controller selector is `planner_mode`:
 
 - `feedforward`: MPPI feedforward only, zero gain sent to LFC.
-- `fd_feedback`: MPPI feedforward plus finite-difference gain.
 - `exact_async_feedback`: MPPI feedforward plus background exact gain.
 
 The main tuning knobs are:
@@ -209,9 +197,6 @@ The main tuning knobs are:
 - `planner_temperature`
 - `planner_noise_scale`
 - `planner_smoothing`
-- `planner_gain_fd_epsilon`
-- `planner_gain_fd_scheme`
-- `planner_gain_fd_num_samples`
 - `planner_gain_samples_per_cycle`
 - `planner_gain_buffer_size`
 
@@ -239,11 +224,8 @@ ROS.
   `/workspace/ros2_ws/install/setup.bash` before entering the Pixi
   environment, so planner smoke commands can see both ROS packages and the
   `sbmpc` JAX stack.
-- `sbmpc_franka_lfc_sim.launch.py` now uses a local Gazebo wrapper xacro plus
-  `config/fer_sim_inertials.yaml`, which zeros only the `fer_link4` cross
-  inertia terms (`xy`, `xz`, `yz`) for simulation. This is a narrow sim-only
-  workaround that unblocks Gazebo validation without modifying the upstream
-  installed description.
+- Legacy Gazebo launch files and Gazebo-only inertial overrides have been removed.
+  Simulation bringup is being replatformed on `mujoco_ros2_control`.
 - The bridge diagnostics topic is `/sbmpc/diagnostics`; for async exact mode it
   includes foreground planning time, background gain timing, gain age, rolling
   window fill, completed/dropped gain batches, worker running state, and worker

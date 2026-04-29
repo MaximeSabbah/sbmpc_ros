@@ -62,14 +62,14 @@ class ValidationSummary:
         return max(self.tail_joint_spans)
 
 
-class GazeboValidationCollector(Node):
+class SimulationValidationCollector(Node):
     def __init__(
         self,
         *,
         diagnostics_topic: str,
         joint_states_topic: str,
     ) -> None:
-        super().__init__("sbmpc_gazebo_validation_collector")
+        super().__init__("sbmpc_sim_validation_collector")
         self.diagnostics: list[dict[str, object]] = []
         self.joint_records: list[JointRecord] = []
         self.create_subscription(String, diagnostics_topic, self._on_diagnostics, 10)
@@ -240,7 +240,7 @@ def summarize(
 
 def collect(duration_sec: float, *, diagnostics_topic: str, joint_states_topic: str):
     rclpy.init()
-    node = GazeboValidationCollector(
+    node = SimulationValidationCollector(
         diagnostics_topic=diagnostics_topic,
         joint_states_topic=joint_states_topic,
     )

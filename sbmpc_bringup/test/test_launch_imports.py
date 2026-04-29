@@ -43,43 +43,8 @@ def declared_argument_defaults(launch_description: LaunchDescription) -> dict[st
     return defaults
 
 
-def test_sim_launch_imports_and_declares_expected_arguments() -> None:
-    module = load_launch_module("sbmpc_franka_lfc_sim.launch.py")
-    launch_description = module.generate_launch_description()
-
-    assert isinstance(launch_description, LaunchDescription)
-    assert_declared_arguments(
-        launch_description,
-        {
-            "bridge_runtime_script",
-            "allow_existing_ros_graph",
-            "bridge_params_file",
-            "controller_manager_name",
-            "controllers_file",
-            "entity_name",
-            "franka_hand",
-            "gz_args",
-            "inertials_file",
-            "lfc_params_file",
-            "load_gripper",
-            "pixi_env",
-            "robot_type",
-            "sbmpc_dir",
-            "use_rviz",
-        },
-    )
-    defaults = declared_argument_defaults(launch_description)
-    assert defaults["load_gripper"] == "true"
-    assert defaults["gz_args"] == "empty.sdf -r -s"
-
-
-def test_sim_launch_has_self_contained_shutdown_handlers() -> None:
-    launch_text = (LAUNCH_DIR / "sbmpc_franka_lfc_sim.launch.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "on_exit_shutdown" in launch_text
-    assert "Shutdown(reason=" in launch_text
+def test_legacy_gazebo_sim_launch_is_removed() -> None:
+    assert not (LAUNCH_DIR / "sbmpc_franka_lfc_sim.launch.py").exists()
 
 
 def test_real_launch_imports_and_declares_expected_arguments() -> None:
