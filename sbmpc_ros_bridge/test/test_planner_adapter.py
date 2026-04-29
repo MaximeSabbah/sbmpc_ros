@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from sbmpc_ros_bridge.planner_adapter import (
     PlannerConfigOverrides,
     apply_config_overrides,
+    configure_jax_compilation_cache,
     planner_config_overrides_from_values,
 )
 
@@ -75,6 +78,21 @@ class FakePregraspPlanner(FakePlanner):
             }
         )
         return np.full((horizon, 7), float(dt), dtype=np.float32)
+
+
+class FakeJaxConfig:
+    def __init__(self) -> None:
+        self.values = {
+            "jax_compilation_cache_dir": None,
+            "jax_enable_compilation_cache": True,
+            "jax_persistent_cache_min_compile_time_secs": 1.0,
+            "jax_persistent_cache_min_entry_size_bytes": 0,
+        }
+        self.updates: list[tuple[str, object]] = []
+
+    def update(self, key: str, value: object) -> None:
+        self.updates.append((key, value))
+        self.values[key] = value
 
 
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:
@@ -217,3 +235,29 @@ def test_apply_config_overrides_supports_pregrasp_style_initial_guess() -> None:
         planner.initial_guess_calls[-1]["dt"],
         np.full((5,), 0.03, dtype=np.float32),
     )
+
+
+def test_configure_jax_compilation_cache_enables_persistent_cache(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    fake_config = FakeJaxConfig()
+    monkeypatch.setitem(sys.modules, "jax", SimpleNamespace(config=fake_config))
+
+    cache_dir = configure_jax_compilation_cache(tmp_path / "jax-cache")
+
+    assert cache_dir == str(tmp_path / "jax-cache")
+    assert (tmp_path / "jax-cache").is_dir()
+    assert fake_config.updates == [
+        ("jax_compilation_cache_dir", str(tmp_path / "jax-cache")),
+        ("jax_enable_compilation_cache", True),
+        ("jax_persistent_cache_min_compile_time_secs", 0.0),
+        ("jax_persistent_cache_min_entry_size_bytes", 0),
+    ]
+
+
+def test_configure_jax_compilation_cache_allows_env_disable(monkeypatch) -> None:
+    monkeypatch.setenv("SBMPC_JAX_CACHE_DIR", "off")
+    monkeypatch.delitem(sys.modules, "jax", raising=False)
+
+    assert configure_jax_compilation_cache() is None

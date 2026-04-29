@@ -296,6 +296,11 @@ class SbMpcLfcBridgeNode(Node):
                 self.get_logger().info(
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
+                jax_cache_dir = getattr(self._planner, "jax_cache_dir", None)
+                if jax_cache_dir:
+                    self.get_logger().info(
+                        f"JAX compilation cache enabled: {jax_cache_dir}"
+                    )
             if not self._nonzero_control_enabled():
                 self.get_logger().info(
                     "enable_nonzero_control is false: the bridge will stay silent "

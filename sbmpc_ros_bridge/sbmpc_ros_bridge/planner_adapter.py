@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
+import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 from linear_feedback_controller_msgs.msg import Sensor
+
+
+DEFAULT_CONTAINER_JAX_CACHE_DIR = Path("/workspace/sbmpc/.jax_cache")
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +178,9 @@ class SbMpcPlannerAdapter:
         self._config_overrides = (
             PlannerConfigOverrides() if config_overrides is None else config_overrides
         )
+        self.jax_cache_dir: str | None = None
         if controller is None:
+            self.jax_cache_dir = configure_jax_compilation_cache()
             controller = self._build_default_controller(self._config_overrides)
         self._controller = controller
         default_step_kwargs = self._build_step_kwargs(
@@ -320,6 +327,59 @@ class SbMpcPlannerAdapter:
 def _optional_positive_int(value: int) -> int | None:
     value = int(value)
     return value if value > 0 else None
+
+
+def configure_jax_compilation_cache(
+    cache_dir: str | os.PathLike[str] | None = None,
+) -> str | None:
+    """Enable JAX's persistent compilation cache before sbmpc creates jitted functions."""
+    requested_cache_dir = _resolve_jax_cache_dir(cache_dir)
+    if requested_cache_dir is None:
+        return None
+
+    requested_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    import jax
+
+    jax.config.update("jax_compilation_cache_dir", str(requested_cache_dir))
+    jax.config.update("jax_enable_compilation_cache", True)
+    _jax_config_update_if_present(
+        jax.config,
+        "jax_persistent_cache_min_compile_time_secs",
+        0.0,
+    )
+    _jax_config_update_if_present(
+        jax.config,
+        "jax_persistent_cache_min_entry_size_bytes",
+        0,
+    )
+    return str(requested_cache_dir)
+
+
+def _resolve_jax_cache_dir(cache_dir: str | os.PathLike[str] | None) -> Path | None:
+    if cache_dir is not None:
+        return _clean_jax_cache_dir(cache_dir)
+
+    env_cache_dir = os.environ.get("SBMPC_JAX_CACHE_DIR")
+    if env_cache_dir is not None:
+        return _clean_jax_cache_dir(env_cache_dir)
+
+    if DEFAULT_CONTAINER_JAX_CACHE_DIR.parent.is_dir():
+        return DEFAULT_CONTAINER_JAX_CACHE_DIR
+    return Path.cwd() / ".jax_cache"
+
+
+def _clean_jax_cache_dir(cache_dir: str | os.PathLike[str]) -> Path | None:
+    cache_dir_text = os.fspath(cache_dir).strip()
+    if cache_dir_text.lower() in {"", "0", "false", "no", "off", "none"}:
+        return None
+    return Path(cache_dir_text).expanduser().resolve()
+
+
+def _jax_config_update_if_present(config: Any, key: str, value: Any) -> None:
+    values = getattr(config, "values", {})
+    if key in values:
+        config.update(key, value)
 
 
 def _optional_positive_float(value: float) -> float | None:
