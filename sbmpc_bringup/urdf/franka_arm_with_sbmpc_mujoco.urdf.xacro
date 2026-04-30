@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fer_sbmpc_mujoco">
+  <xacro:arg name="headless" default="true"/>
+  <xacro:arg
+    name="mujoco_model"
+    default="$(find sbmpc_bringup)/mujoco/panda_pick_place_ros2_control_scene.xml"/>
+
+  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro"/>
+
+  <xacro:franka_robot
+    robot_type="fer"
+    joint_limits="${xacro.load_yaml('$(find franka_description)/robots/fer/joint_limits.yaml')}"
+    inertials="${xacro.load_yaml('$(find franka_description)/robots/fer/inertials.yaml')}"
+    kinematics="${xacro.load_yaml('$(find franka_description)/robots/fer/kinematics.yaml')}"
+    dynamics="${xacro.load_yaml('$(find franka_description)/robots/fer/dynamics.yaml')}"
+    hand="true"
+    ee_id="franka_hand"
+    special_connection=""
+    xyz_ee="0 0 0"
+    rpy_ee="0 0 ${-pi/4}"
+    tcp_xyz="0 0 0.1034"
+    tcp_rpy="0 0 0"
+    safety_distance="0.03"
+    with_sc="false"
+    robot_ip=""
+    use_fake_hardware="false"
+    fake_sensor_commands="false"
+    no_prefix="false"
+    arm_prefix=""
+    description_pkg="franka_description"
+    connected_to="base"/>
+
+  <ros2_control name="MujocoFrankaSystem" type="system">
+    <hardware>
+      <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
+      <param name="mujoco_model">$(arg mujoco_model)</param>
+      <param name="initial_keyframe">home</param>
+      <param name="headless">$(arg headless)</param>
+    </hardware>
+
+    <xacro:macro name="fer_effort_joint" params="name">
+      <joint name="${name}">
+        <command_interface name="effort"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:fer_effort_joint name="fer_joint1"/>
+    <xacro:fer_effort_joint name="fer_joint2"/>
+    <xacro:fer_effort_joint name="fer_joint3"/>
+    <xacro:fer_effort_joint name="fer_joint4"/>
+    <xacro:fer_effort_joint name="fer_joint5"/>
+    <xacro:fer_effort_joint name="fer_joint6"/>
+    <xacro:fer_effort_joint name="fer_joint7"/>
+
+    <joint name="fer_finger_joint1">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+</robot>

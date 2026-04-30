@@ -18,7 +18,7 @@ from sbmpc_bringup.constants import (
 STALE_SIM_NODE_NAMES: tuple[str, ...] = (
     "/controller_manager",
     "/joint_state_publisher",
-    "/mujoco_ros2_control",
+    "/mujoco_ros2_control_node",
     "/robot_state_publisher",
     "/rviz2",
     "/sbmpc_lfc_bridge_node",

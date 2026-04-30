@@ -76,6 +76,17 @@ def test_franka_lfc_params_match_the_expected_fer_interface_layout() -> None:
     assert tuple(controller["chainable_controller"]["command_interfaces"]) == (
         effort_command_interfaces()
     )
+    assert controller["remove_gravity_compensation_effort"] is True
+
+
+def test_sim_lfc_params_only_override_direct_effort_gravity_handling() -> None:
+    config = load_yaml("franka_lfc_params_sim.yaml")
+
+    assert config == {
+        LINEAR_FEEDBACK_CONTROLLER_NAME: {
+            "ros__parameters": {"remove_gravity_compensation_effort": False}
+        }
+    }
 
 
 def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> None:
@@ -103,6 +114,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_smoothing"] == "Spline"
     assert params["planner_gain_samples_per_cycle"] == 128
     assert params["planner_gain_buffer_size"] == 512
+
 
 def test_bridge_presets_cover_feedforward_and_exact_async_runs() -> None:
     feedforward = load_yaml("sbmpc_bridge_feedforward.yaml")

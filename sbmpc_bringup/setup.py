@@ -23,6 +23,7 @@ setup(
         (f"share/{package_name}/launch", existing_files("launch/*.py")),
         (f"share/{package_name}/config", existing_files("config/*.yaml")),
         (f"share/{package_name}/urdf", existing_files("urdf/*.xacro")),
+        (f"share/{package_name}/mujoco", existing_files("mujoco/*.xml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

@@ -224,8 +224,8 @@ ROS.
   `/workspace/ros2_ws/install/setup.bash` before entering the Pixi
   environment, so planner smoke commands can see both ROS packages and the
   `sbmpc` JAX stack.
-- Legacy Gazebo launch files and Gazebo-only inertial overrides have been removed.
-  Simulation bringup is being replatformed on `mujoco_ros2_control`.
+- Simulation bringup uses `sbmpc_franka_lfc_mujoco_sim.launch.py`, backed by
+  `mujoco_ros2_control` and the exact-async bridge preset.
 - The bridge diagnostics topic is `/sbmpc/diagnostics`; for async exact mode it
   includes foreground planning time, background gain timing, gain age, rolling
   window fill, completed/dropped gain batches, worker running state, and worker
