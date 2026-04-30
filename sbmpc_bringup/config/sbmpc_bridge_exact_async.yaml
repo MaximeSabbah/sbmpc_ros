@@ -1,14 +1,14 @@
 sbmpc_lfc_bridge_node:
   ros__parameters:
-    sensor_topic: /sbmpc/sensor
-    control_topic: /sbmpc/control
+    sensor_topic: /sensor
+    control_topic: /control
     diagnostics_topic: /sbmpc/diagnostics
     publish_rate_hz: 50.0
     planner_deadline_sec: 0.02
     enable_nonzero_control: false
     force_zero_control: false
     allow_joint_reordering: false
-    retime_control_initial_state: true
+    retime_control_initial_state: false
     control_initial_state_prediction_sec: 0.0
     planner_mode: exact_async_feedback
     planner_phase: PREGRASP
