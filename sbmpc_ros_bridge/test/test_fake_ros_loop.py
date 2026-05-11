@@ -68,6 +68,7 @@ class FakePlanner:
         self.warmup_calls = 0
         self.step_calls = 0
         self.close_calls = 0
+        self.step_inputs = []
         self.step_sleep_sec = step_sleep_sec
         self.on_step = on_step
 
@@ -83,7 +84,7 @@ class FakePlanner:
         )
 
     def step(self, planner_input) -> FakePlannerOutput:
-        del planner_input
+        self.step_inputs.append(planner_input)
         self.step_calls += 1
         if self.step_sleep_sec > 0.0:
             time.sleep(self.step_sleep_sec)
@@ -97,6 +98,37 @@ class FakePlanner:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class BadGainAfterFirstStepPlanner(FakePlanner):
+    def step(self, planner_input) -> FakePlannerOutput:
+        output = super().step(planner_input)
+        if self.step_calls == 1:
+            return output
+        return FakePlannerOutput(
+            tau_ff=output.tau_ff,
+            K=np.full((7, 14), np.nan, dtype=np.float64),
+            diagnostics=output.diagnostics,
+        )
+
+
+class BadGainOncePlanner(FakePlanner):
+    def step(self, planner_input) -> FakePlannerOutput:
+        output = super().step(planner_input)
+        if self.step_calls == 2:
+            return FakePlannerOutput(
+                tau_ff=output.tau_ff,
+                K=np.full((7, 14), np.nan, dtype=np.float64),
+                diagnostics=output.diagnostics,
+            )
+        return output
+
+
+class PredictingPlanner(FakePlanner):
+    def predict_state(self, planner_input, tau_ff, duration_sec):
+        del tau_ff
+        offset = 10.0 * float(duration_sec)
+        return planner_input.q + offset, planner_input.v + offset
 
 
 def make_sensor(position_offset: float = 0.0) -> Sensor:
@@ -226,6 +258,8 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.valid_sensor_count >= 1
         assert snapshot.published_control_count >= 2
         assert snapshot.nonzero_control_count >= 1
+        assert snapshot.accepted_planner_output_count >= 1
+        assert snapshot.rejected_planner_output_count == 0
         assert snapshot.last_phase == "PREGRASP"
         assert snapshot.last_next_phase == "DESCEND"
         assert snapshot.last_planner_output_time_ms == pytest.approx(12.5)
@@ -276,9 +310,42 @@ def test_fake_ros_loop_publishes_controls_near_target_rate_and_diagnostics() -> 
         mean_interval = float(np.mean(intervals))
         assert 0.01 <= mean_interval <= 0.05
 
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.published_control_count + 1 >= len(collector.controls)
         last_diag = collector.diagnostics_payloads[-1]
-        assert int(last_diag["published_control_count"]) >= len(collector.controls)
         assert "deadline_miss_count" in last_diag
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_control_thread_publishes_controls() -> None:
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(
+        planner=planner,
+        publish_period_sec=0.02,
+    )
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            )
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.30)
+
+        assert len(collector.controls) >= 4
+        assert planner.step_calls >= 1
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.state == "running"
+        assert snapshot.published_control_count >= len(collector.controls)
+        assert snapshot.accepted_planner_output_count >= 1
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -306,14 +373,82 @@ def test_fake_ros_loop_counts_deadline_misses() -> None:
     try:
         spin_for(executor, 0.22)
 
+        assert len(collector.controls) >= 3
+        intervals = np.diff(collector.control_receive_times[1:])
+        assert intervals.size >= 1
+        assert float(np.mean(intervals)) <= 0.04
+
         snapshot = bridge.diagnostics_snapshot()
         assert snapshot.deadline_miss_count >= 1
+        assert snapshot.accepted_planner_output_count >= 1
+        assert snapshot.rejected_planner_output_count == 0
         assert snapshot.last_planning_time_ms is not None
         assert snapshot.last_planning_time_ms > 20.0
         assert snapshot.last_bridge_loop_time_ms == pytest.approx(
             snapshot.last_planning_time_ms
         )
         assert snapshot.last_planner_output_time_ms == pytest.approx(12.5)
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_keeps_last_valid_control_after_bad_gain() -> None:
+    planner = BadGainAfterFirstStepPlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            )
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.24)
+
+        assert planner.step_calls >= 2
+        assert len(collector.controls) >= 3
+        for control in collector.controls:
+            assert np.all(np.isfinite(control.feedback_gain.data))
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.accepted_planner_output_count >= 1
+        assert snapshot.rejected_planner_output_count >= 1
+        assert "feedback_gain contains non-finite values" in (
+            snapshot.last_error
+        )
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_clears_error_after_next_valid_control() -> None:
+    planner = BadGainOncePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            )
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.30)
+
+        snapshot = bridge.diagnostics_snapshot()
+        assert planner.step_calls >= 3
+        assert snapshot.accepted_planner_output_count >= 2
+        assert snapshot.rejected_planner_output_count == 1
+        assert snapshot.last_error == ""
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -396,6 +531,84 @@ def test_fake_ros_loop_retimes_control_initial_state_to_latest_sensor() -> None:
         np.testing.assert_allclose(
             collector.controls[-1].initial_state.joint_state.position,
             [1.0 + 0.1 * i for i in range(7)],
+        )
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_can_keep_planned_initial_state_for_delayed_control() -> None:
+    bridge: SbMpcLfcBridgeNode | None = None
+
+    def publish_new_sensor_during_planning() -> None:
+        assert bridge is not None
+        bridge._on_sensor(make_sensor(position_offset=1.0))
+
+    planner = FakePlanner(on_step=publish_new_sensor_during_planning)
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            ),
+            Parameter(
+                "retime_control_initial_state",
+                Parameter.Type.BOOL,
+                False,
+            ),
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=False)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        bridge._on_sensor(make_sensor(position_offset=0.0))
+        spin_for(executor, 0.12)
+
+        assert collector.controls
+        np.testing.assert_allclose(
+            collector.controls[0].initial_state.joint_state.position,
+            [0.1 * i for i in range(7)],
+        )
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_predicts_delayed_planning_state_when_not_retiming() -> None:
+    planner = PredictingPlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            ),
+            Parameter(
+                "retime_control_initial_state",
+                Parameter.Type.BOOL,
+                False,
+            ),
+            Parameter(
+                "control_initial_state_prediction_sec",
+                Parameter.Type.DOUBLE,
+                0.02,
+            ),
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.18)
+
+        assert planner.step_calls >= 2
+        np.testing.assert_allclose(
+            planner.step_inputs[-1].q,
+            np.asarray([0.1 * i for i in range(7)], dtype=np.float64) + 0.2,
         )
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)

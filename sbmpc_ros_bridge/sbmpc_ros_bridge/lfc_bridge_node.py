@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
+import os
 import signal
 from threading import Event, Lock, Thread
 from time import perf_counter
@@ -37,7 +39,20 @@ from sbmpc_ros_bridge.safety import (
     PlanningDeadlineMonitor,
     UnsafeControlError,
     make_default_safety_profile,
+    validate_planner_output,
 )
+
+
+CONTROL_QOS_DEPTH = 10
+SENSOR_QOS_DEPTH = 1
+EXECUTOR_NUM_THREADS = 1
+CONTROLLER_MANAGER_CPU_COUNT = 2
+
+
+@dataclass(frozen=True, slots=True)
+class _PlannedControl:
+    planner_input: PlannerInput
+    planner_output: object
 
 
 class _NoopPlannerAdapter:
@@ -47,11 +62,33 @@ class _NoopPlannerAdapter:
         del kwargs
 
 
-LFC_QOS = QoSProfile(
-    history=HistoryPolicy.KEEP_LAST,
-    depth=10,
-    reliability=ReliabilityPolicy.BEST_EFFORT,
-)
+def best_effort_qos(*, depth: int) -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=max(1, int(depth)),
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+    )
+
+
+def _prefer_bridge_cpu_affinity() -> tuple[int, ...] | None:
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+    sched_setaffinity = getattr(os, "sched_setaffinity", None)
+    if not callable(sched_getaffinity) or not callable(sched_setaffinity):
+        return None
+
+    current = set(int(cpu) for cpu in sched_getaffinity(0))
+    if len(current) <= CONTROLLER_MANAGER_CPU_COUNT:
+        return None
+
+    preferred = {cpu for cpu in current if cpu >= CONTROLLER_MANAGER_CPU_COUNT}
+    if not preferred or preferred == current:
+        return None
+
+    try:
+        sched_setaffinity(0, preferred)
+    except OSError:
+        return None
+    return tuple(sorted(preferred))
 
 
 class SbMpcLfcBridgeNode(Node):
@@ -105,6 +142,7 @@ class SbMpcLfcBridgeNode(Node):
         if publish_rate_hz <= 0.0:
             raise ValueError("publish_rate_hz must be strictly positive.")
         publish_period_sec = 1.0 / publish_rate_hz
+        self._publish_period_sec = publish_period_sec
 
         configured_planner_deadline_sec = (
             self.get_parameter("planner_deadline_sec")
@@ -128,6 +166,10 @@ class SbMpcLfcBridgeNode(Node):
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._sensor_lock = Lock()
         self._last_sensor: Sensor | None = None
+        self._latest_planner_output_lock = Lock()
+        self._latest_planned_control: _PlannedControl | None = None
+        self._planner_request = Event()
+        self._planner_thread: Thread | None = None
         self._planner_warmup_iterations = max(
             1,
             int(
@@ -199,12 +241,15 @@ class SbMpcLfcBridgeNode(Node):
             fail_closed=False,
         )
         self._state = "waiting_for_sensor"
+        self._received_sensor_count = 0
         self._valid_sensor_count = 0
         self._rejected_sensor_count = 0
         self._published_control_count = 0
         self._nonzero_control_count = 0
         self._warmup_count = 0
         self._planner_step_count = 0
+        self._accepted_planner_output_count = 0
+        self._rejected_planner_output_count = 0
         self._last_planning_time_ms: float | None = None
         self._last_planner_output_time_ms: float | None = None
         self._last_bridge_loop_time_ms: float | None = None
@@ -246,23 +291,24 @@ class SbMpcLfcBridgeNode(Node):
         self._control_publisher = self.create_publisher(
             Control,
             control_topic,
-            LFC_QOS,
+            best_effort_qos(depth=CONTROL_QOS_DEPTH),
         )
         self._diagnostics_publisher = self.create_publisher(String, diagnostics_topic, 10)
         self._sensor_callback_group = MutuallyExclusiveCallbackGroup()
-        self._timer_callback_group = MutuallyExclusiveCallbackGroup()
         self._sensor_subscription = self.create_subscription(
             Sensor,
             sensor_topic,
             self._on_sensor,
-            LFC_QOS,
+            best_effort_qos(depth=SENSOR_QOS_DEPTH),
             callback_group=self._sensor_callback_group,
         )
-        self._timer = self.create_timer(
-            publish_period_sec,
-            self._on_timer,
-            callback_group=self._timer_callback_group,
+        self._timer = self.create_timer(publish_period_sec, self._on_timer)
+        self._planner_thread = Thread(
+            target=self._run_planner_worker,
+            name="sbmpc_planner_worker",
+            daemon=True,
         )
+        self._planner_thread.start()
 
         self.get_logger().info(
             "SB-MPC LFC bridge active: waiting for valid sensors before warmup "
@@ -353,6 +399,7 @@ class SbMpcLfcBridgeNode(Node):
             return None
 
     def _on_sensor(self, message: Sensor) -> None:
+        self._received_sensor_count += 1
         with self._sensor_lock:
             self._last_sensor = message
 
@@ -361,12 +408,15 @@ class SbMpcLfcBridgeNode(Node):
             state=self._state,
             control_enabled=self._nonzero_control_enabled(),
             force_zero_control=self._force_zero_control_enabled(),
+            received_sensor_count=self._received_sensor_count,
             valid_sensor_count=self._valid_sensor_count,
             rejected_sensor_count=self._rejected_sensor_count,
             published_control_count=self._published_control_count,
             nonzero_control_count=self._nonzero_control_count,
             warmup_count=self._warmup_count,
             planner_step_count=self._planner_step_count,
+            accepted_planner_output_count=self._accepted_planner_output_count,
+            rejected_planner_output_count=self._rejected_planner_output_count,
             deadline_miss_count=self._deadline_monitor.deadline_miss_count,
             last_planning_time_ms=self._last_planning_time_ms,
             last_planner_output_time_ms=self._last_planner_output_time_ms,
@@ -420,6 +470,7 @@ class SbMpcLfcBridgeNode(Node):
             # Explicit test mode: caller deliberately wants LFC in LF mode with
             # zero torques (e.g. to verify the robot holds under PD-only).
             self._state = "gated_zero_control"
+            self._clear_latest_planner_output()
             self._publish_control(zero_control_from_sensor(planner_input))
             self._publish_diagnostics()
             return
@@ -428,42 +479,17 @@ class SbMpcLfcBridgeNode(Node):
             # Not armed yet — do NOT publish. Keeping silent here leaves LFC in
             # PD mode (stiff hold) until the operator explicitly arms the bridge.
             self._state = "armed_idle"
+            self._clear_latest_planner_output()
             self._publish_diagnostics()
             return
 
         self._state = "running"
-        start = perf_counter()
         try:
-            step_start = perf_counter()
-            with self._planner_lock:
-                planner_output = self._planner.step(planner_input)
-            step_end = perf_counter()
-            self._last_planner_step_wall_time_ms = 1000.0 * (step_end - step_start)
-            self._planner_step_count += 1
-            prepare_start = perf_counter()
-            self._record_planner_diagnostics(planner_output)
-            control_initial_state = planner_input
-            if self._retime_control_initial_state_enabled():
-                control_initial_state = self._snapshot_planner_input() or planner_input
-            control_initial_state = self._predict_control_initial_state(
-                control_initial_state,
-                planner_output,
-            )
-            control = planner_output_to_control(
-                planner_output,
-                control_initial_state,
-                safety_profile=self._safety_profile,
-            )
-            prepare_end = perf_counter()
-            self._last_control_prepare_time_ms = 1000.0 * (prepare_end - prepare_start)
-            publish_start = perf_counter()
-            self._publish_control(control)
-            publish_end = perf_counter()
-            self._last_control_publish_time_ms = 1000.0 * (publish_end - publish_start)
-            planning_duration_sec = publish_end - start
-            self._record_planning_duration(planning_duration_sec)
+            self._publish_latest_control(planner_input)
+            self._planner_request.set()
         except UnsafeControlError as exc:
             self._state = "error"
+            self._rejected_planner_output_count += 1
             self._last_error = str(exc)
             self.get_logger().error(f"Rejected planner output: {exc}")
         except Exception as exc:
@@ -472,6 +498,117 @@ class SbMpcLfcBridgeNode(Node):
             self.get_logger().error(f"Planner loop failed: {exc}")
         finally:
             self._publish_diagnostics()
+
+    def _publish_latest_control(self, planner_input: PlannerInput) -> None:
+        with self._latest_planner_output_lock:
+            planned_control = self._latest_planned_control
+        if planned_control is None:
+            return
+
+        prepare_start = perf_counter()
+        control_initial_state = planned_control.planner_input
+        if self._retime_control_initial_state_enabled():
+            control_initial_state = self._snapshot_planner_input() or planner_input
+            control_initial_state = self._predict_control_initial_state(
+                control_initial_state,
+                planned_control.planner_output,
+            )
+        control = planner_output_to_control(
+            planned_control.planner_output,
+            control_initial_state,
+            safety_profile=self._safety_profile,
+        )
+        if not self._retime_control_initial_state_enabled():
+            control.header = deepcopy(planner_input.sensor.header)
+        prepare_end = perf_counter()
+        self._last_control_prepare_time_ms = 1000.0 * (prepare_end - prepare_start)
+        publish_start = perf_counter()
+        self._publish_control(control)
+        publish_end = perf_counter()
+        self._last_control_publish_time_ms = 1000.0 * (publish_end - publish_start)
+
+    def _clear_latest_planner_output(self) -> None:
+        with self._latest_planner_output_lock:
+            self._latest_planned_control = None
+
+    def _store_latest_planner_output(
+        self,
+        planner_input: PlannerInput,
+        planner_output: object,
+    ) -> None:
+        with self._latest_planner_output_lock:
+            self._latest_planned_control = _PlannedControl(
+                planner_input=planner_input,
+                planner_output=planner_output,
+            )
+
+    def _run_planner_worker(self) -> None:
+        while not self._closing.is_set():
+            if not self._planner_request.wait(timeout=0.1):
+                continue
+            self._planner_request.clear()
+            if self._closing.is_set():
+                return
+            if (
+                not self._warmup_complete
+                or self._force_zero_control_enabled()
+                or not self._nonzero_control_enabled()
+            ):
+                continue
+
+            planner_input = self._snapshot_planner_input()
+            if planner_input is None:
+                continue
+            if not self._retime_control_initial_state_enabled():
+                planner_input = self._predict_delayed_planner_input(planner_input)
+
+            start = perf_counter()
+            try:
+                step_start = perf_counter()
+                with self._planner_lock:
+                    planner_output = self._planner.step(planner_input)
+                step_end = perf_counter()
+                self._last_planner_step_wall_time_ms = 1000.0 * (
+                    step_end - step_start
+                )
+                self._planner_step_count += 1
+                self._record_planner_diagnostics(planner_output)
+                validate_planner_output(
+                    np.asarray(getattr(planner_output, "tau_ff")),
+                    np.asarray(getattr(planner_output, "K")),
+                    limits=self._safety_profile.planner_output_limits(),
+                )
+                self._store_latest_planner_output(planner_input, planner_output)
+                self._accepted_planner_output_count += 1
+                self._last_error = ""
+                self._state = "running"
+                self._record_planning_duration(perf_counter() - start)
+            except UnsafeControlError as exc:
+                self._state = "error"
+                self._rejected_planner_output_count += 1
+                self._last_error = str(exc)
+                self.get_logger().error(f"Rejected planner output: {exc}")
+            except Exception as exc:
+                self._state = "error"
+                self._last_error = str(exc)
+                self.get_logger().error(f"Planner loop failed: {exc}")
+
+    def _predict_delayed_planner_input(
+        self,
+        planner_input: PlannerInput,
+    ) -> PlannerInput:
+        if self._control_initial_state_prediction_sec() <= 0.0:
+            return planner_input
+
+        with self._latest_planner_output_lock:
+            planned_control = self._latest_planned_control
+        if planned_control is None:
+            return planner_input
+
+        return self._predict_control_initial_state(
+            planner_input,
+            planned_control.planner_output,
+        )
 
     def _start_warmup_thread(self) -> None:
         with self._warmup_lock:
@@ -675,6 +812,10 @@ class SbMpcLfcBridgeNode(Node):
     def destroy_node(self) -> None:
         try:
             self._closing.set()
+            self._planner_request.set()
+            planner_thread = self._planner_thread
+            if planner_thread is not None and planner_thread.is_alive():
+                planner_thread.join(timeout=1.0)
             warmup_thread = self._warmup_thread
             if warmup_thread is not None and warmup_thread.is_alive():
                 warmup_thread.join(timeout=1.0)
@@ -718,11 +859,16 @@ class SbMpcLfcBridgeNode(Node):
             return None
         return bool(value)
 
-
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
+    bridge_cpu_affinity = _prefer_bridge_cpu_affinity()
     node = SbMpcLfcBridgeNode()
-    executor = MultiThreadedExecutor(num_threads=2)
+    if bridge_cpu_affinity is not None:
+        node.get_logger().info(
+            "SB-MPC bridge CPU affinity set to "
+            f"{list(bridge_cpu_affinity)}."
+        )
+    executor = MultiThreadedExecutor(num_threads=EXECUTOR_NUM_THREADS)
     executor.add_node(node)
     previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
 

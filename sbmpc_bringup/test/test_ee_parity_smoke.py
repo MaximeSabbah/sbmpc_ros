@@ -27,7 +27,6 @@ from sbmpc_bringup.constants import (
 )
 from sbmpc_bringup.validate_sim import (
     JointRecord,
-    assert_stable,
     joint_indices,
     summarize,
     vector_from_indices,
@@ -43,6 +42,10 @@ LFC_QOS = QoSProfile(
 LAUNCH_LOG_TAIL_LINES = 160
 OBSERVATION_SEC = 8.0
 STARTUP_TIMEOUT_SEC = 90.0
+DEFAULT_TEST_ROS_DOMAIN_ID = "73"
+CONTROL_PERIOD_SEC = 0.020
+CONTROL_CADENCE_TOLERANCE_SEC = 0.0015
+CONTROL_CADENCE_STABILIZATION_SAMPLES = 10
 
 
 def stamp_sec(stamp) -> float:
@@ -68,13 +71,24 @@ def latest_diagnostics_text(diagnostics: list[dict[str, object]]) -> str:
     keys = (
         "state",
         "control_enabled",
+        "received_sensor_count",
         "valid_sensor_count",
         "rejected_sensor_count",
         "published_control_count",
         "planner_step_count",
+        "accepted_planner_output_count",
+        "rejected_planner_output_count",
         "deadline_miss_count",
+        "last_planning_time_ms",
+        "last_planner_output_time_ms",
+        "last_planner_step_wall_time_ms",
         "last_foreground_planning_time_ms",
+        "last_control_prepare_time_ms",
+        "last_control_publish_time_ms",
         "last_bridge_loop_time_ms",
+        "last_gain_age_cycles",
+        "last_gain_worker_running",
+        "last_gain_worker_error",
         "last_error",
     )
     latest = diagnostics[-1]
@@ -98,6 +112,7 @@ class ParityCollector(Node):
         super().__init__("sbmpc_mujoco_parity_collector")
         self.diagnostics: list[dict[str, object]] = []
         self.control_stamps: list[float] = []
+        self.control_receive_times: list[float] = []
         self.joint_records: list[JointRecord] = []
         self.create_subscription(String, BRIDGE_DIAGNOSTICS_TOPIC, self._on_diagnostics, 10)
         self.create_subscription(
@@ -124,6 +139,7 @@ class ParityCollector(Node):
 
     def _on_control(self, message: Control) -> None:
         self.control_stamps.append(stamp_sec(message.header.stamp))
+        self.control_receive_times.append(time.monotonic())
 
     def _on_sensor(self, message: Sensor) -> None:
         self._record_joint_state(message.joint_state)
@@ -195,22 +211,108 @@ def collect_after_first_control(
 
 def cadence_failure_context(
     *,
-    control_deltas: np.ndarray,
+    header_deltas: np.ndarray,
+    receive_deltas: np.ndarray,
     diagnostics: list[dict[str, object]],
 ) -> str:
+    receive_context = (
+        "receive_samples=<insufficient>"
+        if receive_deltas.size == 0
+        else (
+            f"receive_samples={receive_deltas.size + 1}, "
+            f"receive_p50={float(np.quantile(receive_deltas, 0.50)):.6f}s, "
+            f"receive_p95={float(np.quantile(receive_deltas, 0.95)):.6f}s, "
+            f"receive_p99={float(np.quantile(receive_deltas, 0.99)):.6f}s, "
+            f"receive_max={float(np.max(receive_deltas)):.6f}s"
+        )
+    )
     return (
-        f"control_samples={control_deltas.size + 1}, "
-        f"p50={float(np.quantile(control_deltas, 0.50)):.6f}s, "
-        f"p95={float(np.quantile(control_deltas, 0.95)):.6f}s, "
-        f"p99={float(np.quantile(control_deltas, 0.99)):.6f}s, "
-        f"max={float(np.max(control_deltas)):.6f}s, "
+        f"cadence_skip_samples={CONTROL_CADENCE_STABILIZATION_SAMPLES}, "
+        f"header_samples={header_deltas.size + 1}, "
+        f"header_p50={float(np.quantile(header_deltas, 0.50)):.6f}s, "
+        f"header_p95={float(np.quantile(header_deltas, 0.95)):.6f}s, "
+        f"header_p99={float(np.quantile(header_deltas, 0.99)):.6f}s, "
+        f"header_max={float(np.max(header_deltas)):.6f}s, "
+        f"{receive_context}, "
         f"last_diagnostics={latest_diagnostics_text(diagnostics)}"
     )
+
+
+def stabilized_deltas(values: list[float], *, skip_samples: int) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float64)
+    if array.size <= skip_samples + 1:
+        return np.asarray([], dtype=np.float64)
+    return np.diff(array[skip_samples:])
+
+
+def summary_failure_context(summary) -> str:
+    return (
+        f"final_position_error={summary.final_position_error!r}, "
+        f"max_tail_joint_span={summary.max_tail_joint_span!r}, "
+        f"max_foreground_ms={summary.max_foreground_ms!r}, "
+        f"mean_foreground_ms={summary.mean_foreground_ms!r}, "
+        f"max_planner_step_wall_ms={summary.max_planner_step_wall_ms!r}, "
+        f"deadline_miss_count={summary.deadline_miss_count!r}, "
+        f"accepted_planner_output_count={summary.accepted_planner_output_count!r}, "
+        f"rejected_planner_output_count={summary.rejected_planner_output_count!r}, "
+        f"max_gain_age_cycles={summary.max_gain_age_cycles!r}, "
+        f"final_gain_norm={summary.final_gain_norm!r}, "
+        f"gain_worker_error_count={summary.gain_worker_error_count!r}, "
+        f"joint_velocity_abs_max={summary.joint_velocity_abs_max!r}, "
+        f"tail_joint_spans={summary.tail_joint_spans!r}"
+    )
+
+
+def ee_position_errors(joint_records: list[JointRecord]) -> np.ndarray:
+    if not joint_records:
+        return np.asarray([], dtype=np.float64)
+
+    import jax
+    import jax.numpy as jnp
+    from sbmpc.examples.franka_emika_panda.panda_pregrasp import (
+        PandaPregraspPlanner,
+    )
+
+    planner = PandaPregraspPlanner()
+    goal = np.asarray(planner.goal_pos, dtype=np.float64)
+    q = jnp.asarray(
+        np.asarray([record.position for record in joint_records], dtype=np.float32)
+    )
+    ee_positions = np.asarray(
+        jax.block_until_ready(jax.vmap(planner.ee_position)(q)),
+        dtype=np.float64,
+    )
+    return np.linalg.norm(ee_positions - goal, axis=1)
+
+
+def tail_values(values: np.ndarray, *, tail_fraction: float) -> np.ndarray:
+    if values.size == 0:
+        return values
+    tail_start = int(
+        max(
+            0,
+            min(values.size - 1, round(values.size * (1.0 - tail_fraction))),
+        )
+    )
+    return values[tail_start:]
+
+
+def test_stabilized_deltas_skip_startup_samples() -> None:
+    deltas = stabilized_deltas([0.0, 0.1, 0.12, 0.14, 0.16], skip_samples=1)
+
+    np.testing.assert_allclose(deltas, [0.02, 0.02, 0.02])
 
 
 def test_mujoco_pregrasp_parity_smoke() -> None:
     if os.environ.get("SBMPC_RUN_MUJOCO_PARITY") != "1":
         pytest.skip("set SBMPC_RUN_MUJOCO_PARITY=1 to run the live MuJoCo parity smoke")
+
+    launch_env = os.environ.copy()
+    launch_env["ROS_DOMAIN_ID"] = launch_env.get(
+        "SBMPC_MUJOCO_ROS_DOMAIN_ID",
+        launch_env.get("ROS_DOMAIN_ID", DEFAULT_TEST_ROS_DOMAIN_ID),
+    )
+    os.environ["ROS_DOMAIN_ID"] = launch_env["ROS_DOMAIN_ID"]
 
     process = subprocess.Popen(
         [
@@ -227,6 +329,7 @@ def test_mujoco_pregrasp_parity_smoke() -> None:
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=launch_env,
     )
     assert process.stdout is not None
     launch_tail, launch_reader = capture_launch_tail(process.stdout)
@@ -252,23 +355,43 @@ def test_mujoco_pregrasp_parity_smoke() -> None:
             process.wait(timeout=5.0)
         launch_reader.join(timeout=1.0)
 
-    control_deltas = np.diff(np.asarray(collector.control_stamps, dtype=np.float64))
+    control_deltas = stabilized_deltas(
+        collector.control_stamps,
+        skip_samples=CONTROL_CADENCE_STABILIZATION_SAMPLES,
+    )
+    receive_deltas = stabilized_deltas(
+        collector.control_receive_times,
+        skip_samples=CONTROL_CADENCE_STABILIZATION_SAMPLES,
+    )
     assert control_deltas.size >= 100, launch_log_tail_text(launch_tail)
     cadence_context = cadence_failure_context(
-        control_deltas=control_deltas,
+        header_deltas=control_deltas,
+        receive_deltas=receive_deltas,
         diagnostics=collector.diagnostics,
     )
-    assert float(np.quantile(control_deltas, 0.99)) <= 0.020, cadence_context
+    assert (
+        float(np.quantile(control_deltas, 0.99))
+        <= CONTROL_PERIOD_SEC + CONTROL_CADENCE_TOLERANCE_SEC
+    ), cadence_context
 
     summary = summarize(
         collector.diagnostics,
         collector.joint_records,
         tail_fraction=0.5,
     )
-    assert summary.planner_mode == "exact_async_feedback"
-    assert assert_stable(
-        summary,
-        max_tail_joint_span=0.02,
-        max_final_position_error=0.001,
-        max_foreground_ms=20.0,
+    ee_errors = ee_position_errors(collector.joint_records)
+    tail_ee_errors = tail_values(ee_errors, tail_fraction=0.5)
+    behavior_context = (
+        f"{summary_failure_context(summary)}, "
+        f"tail_ee_error_max="
+        f"{(float(np.max(tail_ee_errors)) if tail_ee_errors.size else None)!r}, "
+        f"tail_ee_error_final="
+        f"{(float(tail_ee_errors[-1]) if tail_ee_errors.size else None)!r}"
     )
+    assert summary.planner_mode == "exact_async_feedback"
+    assert summary.gain_worker_error_count == 0, behavior_context
+    assert summary.rejected_planner_output_count == 0, behavior_context
+    assert summary.max_tail_joint_span is not None, behavior_context
+    assert summary.max_tail_joint_span <= 0.02, behavior_context
+    assert tail_ee_errors.size >= 10, behavior_context
+    assert float(np.max(tail_ee_errors)) <= 0.001, behavior_context

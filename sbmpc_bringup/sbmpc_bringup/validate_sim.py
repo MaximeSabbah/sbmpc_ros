@@ -42,6 +42,8 @@ class ValidationSummary:
     max_control_publish_ms: float | None
     mean_background_gain_ms: float | None
     max_background_gain_ms: float | None
+    accepted_planner_output_count: int | None
+    rejected_planner_output_count: int | None
     max_gain_norm: float | None
     final_gain_norm: float | None
     max_gain_age_cycles: float | None
@@ -219,6 +221,14 @@ def summarize(
         max_background_gain_ms=(
             float(np.max(background_gain_ms)) if background_gain_ms.size else None
         ),
+        accepted_planner_output_count=last_finite_int(
+            running,
+            "accepted_planner_output_count",
+        ),
+        rejected_planner_output_count=last_finite_int(
+            running,
+            "rejected_planner_output_count",
+        ),
         max_gain_norm=float(np.max(gain_norm)) if gain_norm.size else None,
         final_gain_norm=float(gain_norm[-1]) if gain_norm.size else None,
         max_gain_age_cycles=float(np.max(gain_age_cycles)) if gain_age_cycles.size else None,
@@ -297,6 +307,11 @@ def print_summary(summary: ValidationSummary) -> None:
         f"publish_max={format_optional(summary.max_control_publish_ms, precision=2)}"
     )
     print(
+        "planner_outputs: "
+        f"accepted={format_optional(summary.accepted_planner_output_count)} "
+        f"rejected={format_optional(summary.rejected_planner_output_count)}"
+    )
+    print(
         "gain_norm: "
         f"final={format_optional(summary.final_gain_norm)} "
         f"max={format_optional(summary.max_gain_norm)}"
@@ -331,18 +346,26 @@ def assert_stable(
     *,
     max_tail_joint_span: float,
     max_final_position_error: float,
-    max_foreground_ms: float,
+    max_foreground_ms: float | None = None,
 ) -> bool:
     if (
         summary.final_position_error is None
         or summary.max_tail_joint_span is None
-        or summary.max_foreground_ms is None
     ):
         return False
+    foreground_ok = (
+        True
+        if max_foreground_ms is None
+        else (
+            summary.max_foreground_ms is not None
+            and summary.max_foreground_ms <= max_foreground_ms
+        )
+    )
     return (
         summary.final_position_error <= max_final_position_error
         and summary.max_tail_joint_span <= max_tail_joint_span
-        and summary.max_foreground_ms <= max_foreground_ms
+        and foreground_ok
+        and summary.rejected_planner_output_count == 0
         and summary.gain_worker_error_count == 0
     )
 
@@ -356,7 +379,16 @@ def main() -> None:
     parser.add_argument("--assert-stable", action="store_true")
     parser.add_argument("--max-tail-joint-span", type=float, default=0.1)
     parser.add_argument("--max-final-position-error", type=float, default=0.001)
-    parser.add_argument("--max-foreground-ms", type=float, default=20.0)
+    parser.add_argument(
+        "--max-foreground-ms",
+        type=float,
+        default=None,
+        help=(
+            "Optional controller-only foreground timing gate. Leave unset for "
+            "MuJoCo behavior/visual checks, where simulation load is not part "
+            "of the real robot controller budget."
+        ),
+    )
     args = parser.parse_args()
 
     if args.duration_sec <= 0.0:

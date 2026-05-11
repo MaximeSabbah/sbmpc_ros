@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,7 @@ from sbmpc_bringup.constants import (
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+LAUNCH_DIR = Path(__file__).resolve().parents[1] / "launch"
 EXPECTED_CONFIG_FILES = {
     "franka_controllers.yaml",
     "franka_lfc_params.yaml",
@@ -36,6 +38,16 @@ def load_yaml(name: str) -> dict[str, object]:
         return yaml.safe_load(handle)
 
 
+def load_launch_module(name: str):
+    path = LAUNCH_DIR / name
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_config_directory_contains_only_supported_presets() -> None:
     assert {path.name for path in CONFIG_DIR.glob("*.yaml")} == EXPECTED_CONFIG_FILES
 
@@ -45,6 +57,7 @@ def test_franka_controllers_yaml_declares_expected_controller_types() -> None:
     cm_params = config["controller_manager"]["ros__parameters"]
 
     assert cm_params["update_rate"] == 1000
+    assert cm_params["cpu_affinity"] == [0, 1]
     assert cm_params[JOINT_STATE_BROADCASTER_NAME]["type"] == (
         "joint_state_broadcaster/JointStateBroadcaster"
     )
@@ -139,5 +152,21 @@ def test_bridge_presets_cover_feedforward_and_exact_async_runs() -> None:
     assert feedback_params["enable_nonzero_control"] is False
     assert exact_async_params["enable_nonzero_control"] is False
     assert exact_async_params["planner_mode"] == "exact_async_feedback"
+    assert exact_async_params["retime_control_initial_state"] is True
+    assert exact_async_params["control_initial_state_prediction_sec"] == 0.0
     assert exact_async_params["planner_gain_samples_per_cycle"] == 128
     assert exact_async_params["planner_gain_buffer_size"] == 512
+
+
+def test_mujoco_launch_partitions_simulation_and_bridge_cpus(monkeypatch) -> None:
+    launch_module = load_launch_module("sbmpc_franka_lfc_mujoco_sim.launch.py")
+    monkeypatch.setattr(
+        launch_module.os,
+        "sched_getaffinity",
+        lambda pid: {0, 1, 2, 3},
+    )
+
+    assert launch_module.simulation_cpu_prefixes() == (
+        "taskset -c 0,1",
+        "taskset -c 2,3",
+    )

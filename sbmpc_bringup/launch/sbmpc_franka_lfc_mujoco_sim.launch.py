@@ -3,8 +3,13 @@ from __future__ import annotations
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, Shutdown
-from launch.event_handlers import OnProcessExit
+from launch.actions import (
+    DeclareLaunchArgument,
+    OpaqueFunction,
+    RegisterEventHandler,
+    Shutdown,
+)
+from launch.event_handlers import OnProcessExit, OnProcessIO
 from launch.substitutions import (
     Command,
     EnvironmentVariable,
@@ -17,6 +22,7 @@ from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 from sbmpc_bringup.constants import (
+    BRIDGE_DIAGNOSTICS_TOPIC,
     GRIPPER_ACTION_CONTROLLER_NAME,
     JOINT_STATE_BROADCASTER_NAME,
     JOINT_STATE_ESTIMATOR_NAME,
@@ -24,7 +30,28 @@ from sbmpc_bringup.constants import (
 )
 
 
+def available_cpus() -> tuple[int, ...]:
+    if hasattr(os, "sched_getaffinity"):
+        return tuple(sorted(int(cpu) for cpu in os.sched_getaffinity(0)))
+    cpu_count = os.cpu_count()
+    if cpu_count is None:
+        return ()
+    return tuple(range(cpu_count))
+
+
+def taskset_prefix(cpus: tuple[int, ...]) -> str:
+    return "taskset -c " + ",".join(str(cpu) for cpu in cpus)
+
+
+def simulation_cpu_prefixes() -> tuple[str, str]:
+    cpus = available_cpus()
+    if len(cpus) < 4:
+        return "", ""
+    return taskset_prefix(cpus[:2]), taskset_prefix(cpus[2:])
+
+
 def launch_setup(context, *args, **kwargs):
+    control_cpu_prefix, bridge_cpu_prefix = simulation_cpu_prefixes()
     robot_description_content = Command(
         [
             PathJoinSubstitution([FindExecutable(name="xacro")]),
@@ -49,22 +76,25 @@ def launch_setup(context, *args, **kwargs):
     lfc_params_file = LaunchConfiguration("lfc_params_file")
     sim_lfc_params_file = LaunchConfiguration("sim_lfc_params_file")
 
-    control_node = Node(
-        package="mujoco_ros2_control",
-        executable="ros2_control_node",
-        output="both",
-        emulate_tty=True,
-        parameters=[
+    control_node_kwargs = {
+        "package": "mujoco_ros2_control",
+        "executable": "ros2_control_node",
+        "output": "both",
+        "emulate_tty": True,
+        "parameters": [
             {"use_sim_time": True},
             controllers_file,
         ],
-        remappings=(
+        "remappings": (
             [("~/robot_description", "/robot_description")]
             if os.environ.get("ROS_DISTRO") == "humble"
             else []
         ),
-        on_exit=Shutdown(),
-    )
+        "on_exit": Shutdown(),
+    }
+    if control_cpu_prefix:
+        control_node_kwargs["prefix"] = control_cpu_prefix
+    control_node = Node(**control_node_kwargs)
 
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
@@ -108,7 +138,7 @@ def launch_setup(context, *args, **kwargs):
             "60",
             "--switch-timeout",
             "60",
-            "--activate-as-group",
+            "--inactive",
             "--param-file",
             LaunchConfiguration("controllers_file"),
             "--param-file",
@@ -118,11 +148,18 @@ def launch_setup(context, *args, **kwargs):
         ],
         output="screen",
     )
+    bridge_prefix = [LaunchConfiguration("bridge_runtime_script")]
+    if bridge_cpu_prefix:
+        bridge_prefix = [
+            bridge_cpu_prefix,
+            " ",
+            LaunchConfiguration("bridge_runtime_script"),
+        ]
 
     bridge = Node(
         executable="python",
         arguments=["-m", "sbmpc_ros_bridge.lfc_bridge_node"],
-        prefix=[LaunchConfiguration("bridge_runtime_script")],
+        prefix=bridge_prefix,
         parameters=[
             LaunchConfiguration("bridge_params_file"),
             {
@@ -141,6 +178,54 @@ def launch_setup(context, *args, **kwargs):
         on_exit=Shutdown(),
     )
 
+    reset_after_bridge_warmup = Node(
+        package="sbmpc_bringup",
+        executable="wait_for_bridge_warmup",
+        arguments=[
+            "--diagnostics-topic",
+            BRIDGE_DIAGNOSTICS_TOPIC,
+            "--timeout-sec",
+            "5",
+            "--reset-world-service",
+            "/mujoco_ros2_control_node/reset_world",
+            "--reset-keyframe",
+            "home",
+            "--controller-manager",
+            LaunchConfiguration("controller_manager_name"),
+            "--activate-controller",
+            JOINT_STATE_ESTIMATOR_NAME,
+            "--activate-controller",
+            LINEAR_FEEDBACK_CONTROLLER_NAME,
+            "--switch-timeout-sec",
+            "10",
+        ],
+        output="screen",
+    )
+    warmup_reset_started = {"value": False}
+
+    def on_bridge_output(event):
+        text = event.text.decode(errors="replace") if isinstance(event.text, bytes) else str(event.text)
+        if (
+            not warmup_reset_started["value"]
+            and "Planner warmup/JIT compilation complete" in text
+        ):
+            warmup_reset_started["value"] = True
+            return [reset_after_bridge_warmup]
+        return []
+
+    def on_reset_exit(event, context):
+        del context
+        if event.returncode == 0:
+            return []
+        return [
+            Shutdown(
+                reason=(
+                    "MuJoCo reset or LFC activation after SB-MPC bridge "
+                    "warmup failed."
+                )
+            )
+        ]
+
     return [
         Node(
             package="robot_state_publisher",
@@ -149,14 +234,18 @@ def launch_setup(context, *args, **kwargs):
             parameters=[robot_description, {"use_sim_time": True}],
         ),
         control_node,
+        bridge,
         joint_state_broadcaster_spawner,
         gripper_spawner,
         lfc_stack_spawner,
         RegisterEventHandler(
-            OnProcessExit(
-                target_action=lfc_stack_spawner,
-                on_exit=[bridge],
-            )
+            OnProcessIO(target_action=bridge, on_stdout=on_bridge_output)
+        ),
+        RegisterEventHandler(
+            OnProcessIO(target_action=bridge, on_stderr=on_bridge_output)
+        ),
+        RegisterEventHandler(
+            OnProcessExit(target_action=reset_after_bridge_warmup, on_exit=on_reset_exit)
         ),
     ]
 

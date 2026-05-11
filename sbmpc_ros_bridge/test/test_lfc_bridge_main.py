@@ -36,6 +36,7 @@ def test_main_shuts_down_context_after_a_clean_spin(monkeypatch) -> None:
     executors: list[FakeExecutor] = []
 
     monkeypatch.setattr(lfc_bridge_node.rclpy, "init", lambda args=None: None)
+    monkeypatch.setattr(lfc_bridge_node, "_prefer_bridge_cpu_affinity", lambda: None)
     monkeypatch.setattr(lfc_bridge_node, "SbMpcLfcBridgeNode", lambda: fake_node)
     monkeypatch.setattr(
         lfc_bridge_node,
@@ -52,6 +53,7 @@ def test_main_shuts_down_context_after_a_clean_spin(monkeypatch) -> None:
 
     lfc_bridge_node.main()
 
+    assert executors[0].num_threads == 1
     assert executors[0].nodes == [fake_node]
     assert executors[0].shutdown_called is True
     assert fake_node.destroyed is True
@@ -66,6 +68,7 @@ def test_main_avoids_double_shutdown_when_context_is_already_closed(
     executors: list[FakeExecutor] = []
 
     monkeypatch.setattr(lfc_bridge_node.rclpy, "init", lambda args=None: None)
+    monkeypatch.setattr(lfc_bridge_node, "_prefer_bridge_cpu_affinity", lambda: None)
     monkeypatch.setattr(lfc_bridge_node, "SbMpcLfcBridgeNode", lambda: fake_node)
 
     class RaisingExecutor(FakeExecutor):
@@ -100,6 +103,7 @@ def test_main_converts_sigterm_to_clean_shutdown(monkeypatch) -> None:
     installed_handlers = []
 
     monkeypatch.setattr(lfc_bridge_node.rclpy, "init", lambda args=None: None)
+    monkeypatch.setattr(lfc_bridge_node, "_prefer_bridge_cpu_affinity", lambda: None)
     monkeypatch.setattr(lfc_bridge_node, "SbMpcLfcBridgeNode", lambda: fake_node)
     monkeypatch.setattr(
         lfc_bridge_node.signal,
@@ -141,3 +145,21 @@ def test_main_converts_sigterm_to_clean_shutdown(monkeypatch) -> None:
         lfc_bridge_node.signal.SIGTERM,
         "previous-sigterm-handler",
     )
+
+
+def test_bridge_cpu_affinity_prefers_cpus_after_controller_pair(monkeypatch) -> None:
+    applied_affinities: list[set[int]] = []
+
+    monkeypatch.setattr(
+        lfc_bridge_node.os,
+        "sched_getaffinity",
+        lambda pid: {0, 1, 2, 3},
+    )
+    monkeypatch.setattr(
+        lfc_bridge_node.os,
+        "sched_setaffinity",
+        lambda pid, cpus: applied_affinities.append(set(cpus)),
+    )
+
+    assert lfc_bridge_node._prefer_bridge_cpu_affinity() == (2, 3)
+    assert applied_affinities == [{2, 3}]

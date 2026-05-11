@@ -32,6 +32,8 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
             "last_foreground_planning_time_ms": 18.0,
             "last_background_gain_time_ms": 35.0,
             "last_bridge_loop_time_ms": 19.0,
+            "accepted_planner_output_count": 3,
+            "rejected_planner_output_count": 0,
             "last_gain_norm": 5.0,
             "last_gain_age_cycles": 2.0,
             "last_gain_window_fill": 128,
@@ -47,6 +49,8 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
             "last_foreground_planning_time_ms": 17.0,
             "last_background_gain_time_ms": 33.0,
             "last_bridge_loop_time_ms": 18.0,
+            "accepted_planner_output_count": 4,
+            "rejected_planner_output_count": 0,
             "last_gain_norm": 3.0,
             "last_gain_age_cycles": 1.0,
             "last_gain_window_fill": 256,
@@ -73,10 +77,17 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
     assert summary.final_gain_window_fill == 256
     assert summary.final_gain_completed_batch_count == 4
     assert summary.final_gain_dropped_snapshot_count == 1
+    assert summary.accepted_planner_output_count == 4
+    assert summary.rejected_planner_output_count == 0
     assert summary.gain_worker_running_samples == 2
     assert summary.gain_worker_error_count == 0
     assert summary.max_tail_joint_span == pytest.approx(0.01)
     assert summary.joint_velocity_abs_max == 0.3
+    assert assert_stable(
+        summary,
+        max_tail_joint_span=0.02,
+        max_final_position_error=0.05,
+    )
     assert assert_stable(
         summary,
         max_tail_joint_span=0.02,

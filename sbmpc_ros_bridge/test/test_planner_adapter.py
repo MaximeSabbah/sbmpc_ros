@@ -9,6 +9,7 @@ import pytest
 
 from sbmpc_ros_bridge.planner_adapter import (
     PlannerConfigOverrides,
+    SbMpcPlannerAdapter,
     apply_config_overrides,
     configure_jax_compilation_cache,
     planner_config_overrides_from_values,
@@ -90,6 +91,21 @@ class FakeJaxConfig:
     def update(self, key: str, value: object) -> None:
         self.updates.append((key, value))
         self.values[key] = value
+
+
+class FakeRuntimeController:
+    def __init__(self) -> None:
+        self.start_count = 0
+        self.reset_after_warmup_count = 0
+
+    def start(self) -> None:
+        self.start_count += 1
+
+    def warmup(self, **kwargs):
+        return {"kwargs": kwargs}
+
+    def reset_runtime_state_after_warmup(self) -> None:
+        self.reset_after_warmup_count += 1
 
 
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:
@@ -243,3 +259,28 @@ def test_configure_jax_compilation_cache_allows_env_disable(monkeypatch) -> None
     monkeypatch.delitem(sys.modules, "jax", raising=False)
 
     assert configure_jax_compilation_cache() is None
+
+
+def test_adapter_resets_runtime_state_after_warmup_by_default() -> None:
+    controller = FakeRuntimeController()
+    adapter = SbMpcPlannerAdapter(controller=controller)
+
+    output = adapter.warmup(num_steps=3)
+
+    assert output["kwargs"]["num_steps"] == 3
+    assert controller.start_count == 1
+    assert controller.reset_after_warmup_count == 1
+    assert adapter._started is False
+
+
+def test_adapter_can_keep_warmup_runtime_state_for_manual_diagnostics() -> None:
+    controller = FakeRuntimeController()
+    adapter = SbMpcPlannerAdapter(
+        controller=controller,
+        reset_runtime_after_warmup=False,
+    )
+
+    adapter.warmup()
+
+    assert controller.reset_after_warmup_count == 0
+    assert adapter._started is True

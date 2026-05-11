@@ -8,7 +8,7 @@ sbmpc_lfc_bridge_node:
     enable_nonzero_control: false
     force_zero_control: false
     allow_joint_reordering: false
-    retime_control_initial_state: false
+    retime_control_initial_state: true
     control_initial_state_prediction_sec: 0.0
     planner_mode: exact_async_feedback
     planner_phase: PREGRASP

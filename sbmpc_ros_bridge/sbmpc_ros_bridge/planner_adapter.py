@@ -155,6 +155,7 @@ class SbMpcPlannerAdapter:
         config_overrides: PlannerConfigOverrides | None = None,
         warmup_kwargs: dict[str, Any] | None = None,
         step_kwargs: dict[str, Any] | None = None,
+        reset_runtime_after_warmup: bool = True,
     ) -> None:
         self._config_overrides = (
             PlannerConfigOverrides() if config_overrides is None else config_overrides
@@ -178,6 +179,7 @@ class SbMpcPlannerAdapter:
             if step_kwargs is None
             else dict(step_kwargs)
         )
+        self._reset_runtime_after_warmup = bool(reset_runtime_after_warmup)
         self._started = False
 
     def start(self) -> None:
@@ -198,7 +200,16 @@ class SbMpcPlannerAdapter:
         self.start()
         call_kwargs = dict(self._warmup_kwargs)
         call_kwargs.update(kwargs)
-        return self._controller.warmup(**call_kwargs)
+        output = self._controller.warmup(**call_kwargs)
+        reset_runtime = getattr(
+            self._controller,
+            "reset_runtime_state_after_warmup",
+            None,
+        )
+        if self._reset_runtime_after_warmup and callable(reset_runtime):
+            reset_runtime()
+            self._started = False
+        return output
 
     def step(self, planner_input: PlannerInput, **kwargs: Any) -> Any:
         self.start()
@@ -256,6 +267,7 @@ class SbMpcPlannerAdapter:
             reseed_every_step=True,
             gain_mode=config_overrides.mode,
             compute_running_cost=False,
+            compute_task_diagnostics=False,
         )
 
     @staticmethod

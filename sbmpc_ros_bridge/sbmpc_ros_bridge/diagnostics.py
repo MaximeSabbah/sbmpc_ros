@@ -9,12 +9,15 @@ class BridgeDiagnostics:
     state: str
     control_enabled: bool
     force_zero_control: bool
+    received_sensor_count: int
     valid_sensor_count: int
     rejected_sensor_count: int
     published_control_count: int
     nonzero_control_count: int
     warmup_count: int
     planner_step_count: int
+    accepted_planner_output_count: int
+    rejected_planner_output_count: int
     deadline_miss_count: int
     last_planning_time_ms: float | None
     last_planner_output_time_ms: float | None

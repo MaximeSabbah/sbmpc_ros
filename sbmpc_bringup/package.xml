@@ -9,6 +9,7 @@
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>controller_manager</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
   <exec_depend>franka_bringup</exec_depend>
   <exec_depend>franka_description</exec_depend>
   <exec_depend>joint_state_publisher</exec_depend>
@@ -16,6 +17,7 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>linear_feedback_controller</exec_depend>
   <exec_depend>mujoco_ros2_control</exec_depend>
+  <exec_depend>mujoco_ros2_control_msgs</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>sbmpc_ros_bridge</exec_depend>

@@ -39,6 +39,7 @@ setup(
         "console_scripts": [
             "sbmpc_pixi_supervisor = sbmpc_bringup.pixi_supervisor:main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
+            "wait_for_bridge_warmup = sbmpc_bringup.warmup_wait:main",
         ],
     },
 )
