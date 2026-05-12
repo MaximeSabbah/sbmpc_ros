@@ -20,8 +20,9 @@ sbmpc_lfc_bridge_node:
     planner_dt: 0.025
     planner_noise_scale: 0.05
     planner_smoothing: Spline
-    planner_gain_samples_per_cycle: 128
+    planner_gain_samples_per_cycle: 64
     planner_gain_buffer_size: 512
+    planner_reseed_every_step: true
     joint_names:
       - fer_joint1
       - fer_joint2

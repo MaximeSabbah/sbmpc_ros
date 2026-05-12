@@ -413,9 +413,69 @@ def summarize_payload(
                 timing_rows,
                 "last_planner_step_wall_time_ms",
             ),
+            "planner_step_overhead": _diagnostic_stats(
+                timing_rows,
+                "last_planner_step_overhead_time_ms",
+            ),
+            "planner_api_wall": _diagnostic_stats(
+                timing_rows,
+                "last_planner_api_wall_time_ms",
+            ),
+            "planner_bridge_adapter_overhead": _diagnostic_stats(
+                timing_rows,
+                "last_planner_bridge_adapter_overhead_time_ms",
+            ),
+            "planner_prepare": _diagnostic_stats(
+                timing_rows,
+                "last_planner_prepare_time_ms",
+            ),
+            "planner_command": _diagnostic_stats(
+                timing_rows,
+                "last_planner_command_time_ms",
+            ),
+            "planner_tau_extract": _diagnostic_stats(
+                timing_rows,
+                "last_planner_tau_extract_time_ms",
+            ),
+            "planner_gain_fetch": _diagnostic_stats(
+                timing_rows,
+                "last_planner_gain_fetch_time_ms",
+            ),
+            "planner_task_diagnostics": _diagnostic_stats(
+                timing_rows,
+                "last_planner_task_diagnostics_time_ms",
+            ),
+            "planner_output_build": _diagnostic_stats(
+                timing_rows,
+                "last_planner_output_build_time_ms",
+            ),
+            "planner_loop_residual": _diagnostic_stats(
+                timing_rows,
+                "last_planner_loop_residual_time_ms",
+            ),
             "background_gain": _diagnostic_stats(
                 timing_rows,
                 "last_background_gain_time_ms",
+            ),
+            "background_gain_wall": _diagnostic_stats(
+                timing_rows,
+                "last_background_gain_wall_time_ms",
+            ),
+            "gain_subset_select": _diagnostic_stats(
+                timing_rows,
+                "last_gain_subset_select_time_ms",
+            ),
+            "gain_snapshot_pack": _diagnostic_stats(
+                timing_rows,
+                "last_gain_snapshot_pack_time_ms",
+            ),
+            "gain_gradient": _diagnostic_stats(
+                timing_rows,
+                "last_gain_gradient_time_ms",
+            ),
+            "gain_synthesis": _diagnostic_stats(
+                timing_rows,
+                "last_gain_synthesis_time_ms",
             ),
             "control_prepare": _diagnostic_stats(
                 timing_rows,
@@ -651,7 +711,11 @@ def _print_record_summary(payload: dict[str, object], output_path: Path) -> None
         "full_stack_timing: "
         f"bridge_p99_ms={timing['bridge_loop']['p99']} "
         f"planner_wall_p99_ms={timing['planner_step_wall']['p99']} "
+        f"planner_api_p99_ms={timing['planner_api_wall']['p99']} "
+        f"adapter_overhead_p99_ms={timing['planner_bridge_adapter_overhead']['p99']} "
         f"background_gain_p99_ms={timing['background_gain']['p99']} "
+        f"background_gain_wall_p99_ms={timing['background_gain_wall']['p99']} "
+        f"planner_residual_p99_ms={timing['planner_loop_residual']['p99']} "
         f"control_receive_p99_sec={cadence['p99']} "
         f"deadline_misses={summary['deadline_miss_count']}"
     )

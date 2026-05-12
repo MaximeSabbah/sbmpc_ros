@@ -88,6 +88,7 @@ sbmpc_ros/
   sbmpc_bringup/
     package.xml
     launch/
+      sbmpc_franka_lfc_mujoco_sim.launch.py
       sbmpc_franka_lfc_real.launch.py
     config/
       franka_controllers.yaml
@@ -95,6 +96,7 @@ sbmpc_ros/
       franka_lfc_params_sim.yaml
       sbmpc_bridge.yaml
       sbmpc_bridge_exact_async.yaml
+      sbmpc_bridge_exact_async_40hz.yaml
       sbmpc_bridge_feedforward.yaml
     test/
 ```
@@ -138,6 +140,119 @@ Exact async planner smoke:
   --joint-set fer --planner-mode exact_async_feedback
 ```
 
+## MuJoCo Simulation Validation
+
+The main simulation launch runs the MuJoCo ROS2-control stack, the
+`linear_feedback_controller`, and the SB-MPC bridge. Rebuild and source the ROS
+workspace after changing launch files, configs, or Python packages:
+
+```bash
+cd /workspace/ros2_ws
+colcon build --symlink-install --packages-select sbmpc_ros_bridge sbmpc_bringup
+source install/setup.bash
+```
+
+Run the current conservative 40 Hz simulation preset and record a replay:
+
+```bash
+cd /workspace/ros2_ws
+source install/setup.bash
+
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_mujoco_sim.launch.py \
+  headless:=true \
+  enable_nonzero_control:=true \
+  bridge_params_file:=/workspace/sbmpc_ros/sbmpc_bringup/config/sbmpc_bridge_exact_async_40hz.yaml \
+  record_replay:=true \
+  record_replay_output:=/tmp/sbmpc_ros_40hz_replay.json \
+  record_replay_duration_sec:=30
+```
+
+The relevant bridge presets are:
+
+- `sbmpc_bridge_exact_async_40hz.yaml`: conservative simulation/deployment
+  rehearsal preset, currently `40 Hz`, `planner_dt=0.025`, and `64/512`
+  rolling exact-gain chunks.
+- `sbmpc_bridge_exact_async.yaml`: more aggressive `50 Hz` exact-async preset,
+  currently `planner_dt=0.02` and `128/512` rolling exact-gain chunks.
+- `sbmpc_bridge_feedforward.yaml`: feedforward-only comparison, useful to
+  isolate MPPI torque behavior from feedback-gain behavior.
+
+To test another preset, change only `bridge_params_file`:
+
+```bash
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_mujoco_sim.launch.py \
+  headless:=true \
+  enable_nonzero_control:=true \
+  bridge_params_file:=/workspace/sbmpc_ros/sbmpc_bringup/config/sbmpc_bridge_exact_async.yaml \
+  record_replay:=true \
+  record_replay_output:=/tmp/sbmpc_ros_50hz_replay.json \
+  record_replay_duration_sec:=30
+```
+
+Before opening the viewer, check the replay summary:
+
+```bash
+/workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+  python -m sbmpc_bringup.trajectory_replay \
+  /tmp/sbmpc_ros_40hz_replay.json --dry-run
+```
+
+Then replay the recorded trajectory offline:
+
+```bash
+/workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+  python -m sbmpc_bringup.trajectory_replay \
+  /tmp/sbmpc_ros_40hz_replay.json
+```
+
+The replay file contains recorded `/sensor`, `/control`, and
+`/sbmpc/diagnostics` data. The viewer replays recorded joint positions after
+the live run has stopped, so visualization does not add rendering load to the
+timing-sensitive SB-MPC/JAX process.
+
+Useful simulation launch arguments:
+
+- `headless:=true`: run without a live viewer. Use this for timing runs.
+- `enable_nonzero_control:=true`: arm the bridge so nonzero SB-MPC torques are
+  sent to LFC after warmup.
+- `bridge_params_file:=...`: choose the SB-MPC bridge preset.
+- `record_replay:=true`: start the replay recorder as part of the launch.
+- `record_replay_output:=/tmp/name.json`: choose the replay output path.
+- `record_replay_duration_sec:=30`: record a fixed window. Use `0` to record
+  until launch shutdown.
+- `record_replay_include_warmup:=true`: include startup/JAX warmup in the
+  recording. Leave this false for normal controller timing review.
+- `record_replay_autosave_period_sec:=5`: autosave period while recording.
+
+The dry-run summary is the quickest sanity check. For controller timing, look
+at `/control` cadence, fresh planner output rate, deadline misses, foreground
+time, background gain timing, gain age, completed gain batches, rejected
+planner outputs, and joint velocity. For visual validation, check that the
+offline replay duration matches the recording and that the arm motion is
+smooth, bounded, and consistent with the PREGRASP behavior.
+
+Standalone recording is also available through `ros2 run` while the stack is
+already running:
+
+```bash
+ros2 run sbmpc_bringup record_sbmpc_replay \
+  --duration-sec 8 --output /tmp/sbmpc_ros_replay.json
+```
+
+Direct shell commands such as `record_sbmpc_replay` are not guaranteed to be
+on `PATH` in ROS 2; `ros2 run sbmpc_bringup ...` is the portable form. During
+source-tree development, the modules can also be run without rebuilding:
+
+```bash
+PYTHONPATH=/workspace/sbmpc_ros/sbmpc_bringup:$PYTHONPATH \
+  python3 -m sbmpc_bringup.record_replay \
+  --duration-sec 8 --output /tmp/sbmpc_ros_replay.json
+
+PYTHONPATH=/workspace/sbmpc_ros/sbmpc_bringup:$PYTHONPATH \
+  python3 -m sbmpc_bringup.trajectory_replay \
+  /tmp/sbmpc_ros_replay.json
+```
+
 Real or fake-hardware bringup:
 
 ```bash
@@ -175,11 +290,13 @@ The bridge reads planner overrides from:
 ```
 
 This lets you tune the ROS-side runtime without editing the `sbmpc` codebase.
-Only three bridge presets are kept:
+The bridge presets are:
 
 - `sbmpc_bridge.yaml`: default exact async feedback.
 - `sbmpc_bridge_feedforward.yaml`: feedforward baseline.
 - `sbmpc_bridge_exact_async.yaml`: background exact-gain validation.
+- `sbmpc_bridge_exact_async_40hz.yaml`: conservative 40 Hz exact-async
+  simulation/deployment rehearsal preset.
 
 The preferred controller selector is `planner_mode`:
 
@@ -230,65 +347,3 @@ ROS.
   includes foreground planning time, background gain timing, gain age, rolling
   window fill, completed/dropped gain batches, worker running state, and worker
   errors.
-- To visualize a full ROS-stack run without adding viewer load to the live
-  controller/MuJoCo process, let the launch file record a replay and open it
-  afterward:
-
-  ```bash
-  # Run the full stack headless and write a replay when the launch exits.
-  ros2 launch sbmpc_bringup sbmpc_franka_lfc_mujoco_sim.launch.py \
-    headless:=true enable_nonzero_control:=true \
-    record_replay:=true \
-    record_replay_output:=/tmp/sbmpc_ros_replay.json
-
-  # After stopping the live stack, open the offline MuJoCo replay viewer.
-  /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
-    python -m sbmpc_bringup.trajectory_replay /tmp/sbmpc_ros_replay.json
-  ```
-
-  The replay file contains `/sbmpc/joint_states`, `/sensor`, `/control`
-  summaries, and `/sbmpc/diagnostics`. The viewer only replays recorded joint
-  positions, so it does not contend with the SB-MPC/JAX controller during the
-  timing-sensitive run. By default the recorder waits for the first `/control`
-  message before starting, so warmup/JAX compilation is excluded. Set
-  `record_replay_include_warmup:=true` to capture the startup phase too, or
-  `record_replay_duration_sec:=8` to record a fixed-length window instead of
-  recording until launch shutdown. The launch recorder autosaves every
-  `record_replay_autosave_period_sec:=5` seconds and writes an empty file as
-  soon as it starts, so an old replay file cannot silently survive a failed or
-  interrupted recording.
-
-  Standalone recording is also available through `ros2 run`:
-
-  ```bash
-  ros2 run sbmpc_bringup record_sbmpc_replay \
-    --duration-sec 8 --output /tmp/sbmpc_ros_replay.json
-  ```
-
-  Use the Pixi wrapper for replay and dry-run replay validation, because that
-  environment provides the MuJoCo Python viewer stack. Replay pacing defaults
-  to `--time-source auto`, which uses recorder wall-clock receive time when
-  available and falls back to control cadence for older files whose state
-  header stamps did not advance.
-
-  Direct shell commands such as `record_sbmpc_replay` are not guaranteed to be
-  on `PATH` in ROS 2; `ros2 run sbmpc_bringup ...` is the portable form. If
-  `ros2 run` cannot find the executable, rebuild and source the ROS workspace:
-
-  ```bash
-  cd /workspace/ros2_ws
-  colcon build --packages-select sbmpc_bringup
-  source install/setup.bash
-  ```
-
-  During development, the source module can also be run without rebuilding:
-
-  ```bash
-  PYTHONPATH=/workspace/sbmpc_ros/sbmpc_bringup:$PYTHONPATH \
-    python3 -m sbmpc_bringup.record_replay \
-    --duration-sec 8 --output /tmp/sbmpc_ros_replay.json
-
-  PYTHONPATH=/workspace/sbmpc_ros/sbmpc_bringup:$PYTHONPATH \
-    python3 -m sbmpc_bringup.trajectory_replay \
-    /tmp/sbmpc_ros_replay.json
-  ```

@@ -147,6 +147,7 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_smoothing", "Spline")
         self.declare_parameter("planner_gain_samples_per_cycle", 0)
         self.declare_parameter("planner_gain_buffer_size", 0)
+        self.declare_parameter("planner_reseed_every_step", True)
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -238,6 +239,11 @@ class SbMpcLfcBridgeNode(Node):
                 .get_parameter_value()
                 .integer_value
             ),
+            reseed_every_step=(
+                self.get_parameter("planner_reseed_every_step")
+                .get_parameter_value()
+                .bool_value
+            ),
         )
         self._planner = (
             planner
@@ -269,6 +275,16 @@ class SbMpcLfcBridgeNode(Node):
         self._last_planner_output_time_ms: float | None = None
         self._last_bridge_loop_time_ms: float | None = None
         self._last_planner_step_wall_time_ms: float | None = None
+        self._last_planner_step_overhead_time_ms: float | None = None
+        self._last_planner_loop_residual_time_ms: float | None = None
+        self._last_planner_api_wall_time_ms: float | None = None
+        self._last_planner_bridge_adapter_overhead_time_ms: float | None = None
+        self._last_planner_prepare_time_ms: float | None = None
+        self._last_planner_command_time_ms: float | None = None
+        self._last_planner_tau_extract_time_ms: float | None = None
+        self._last_planner_gain_fetch_time_ms: float | None = None
+        self._last_planner_task_diagnostics_time_ms: float | None = None
+        self._last_planner_output_build_time_ms: float | None = None
         self._last_control_prepare_time_ms: float | None = None
         self._last_control_publish_time_ms: float | None = None
         self._last_phase: str | None = None
@@ -285,6 +301,11 @@ class SbMpcLfcBridgeNode(Node):
         self._planner_mode: str | None = planner_config.mode
         self._last_foreground_planning_time_ms: float | None = None
         self._last_background_gain_time_ms: float | None = None
+        self._last_background_gain_wall_time_ms: float | None = None
+        self._last_gain_subset_select_time_ms: float | None = None
+        self._last_gain_snapshot_pack_time_ms: float | None = None
+        self._last_gain_gradient_time_ms: float | None = None
+        self._last_gain_synthesis_time_ms: float | None = None
         self._last_gain_age_cycles: float | None = None
         self._last_gain_window_fill: int | None = None
         self._last_gain_completed_batch_count: int | None = None
@@ -443,6 +464,26 @@ class SbMpcLfcBridgeNode(Node):
             last_planner_output_time_ms=self._last_planner_output_time_ms,
             last_bridge_loop_time_ms=self._last_bridge_loop_time_ms,
             last_planner_step_wall_time_ms=self._last_planner_step_wall_time_ms,
+            last_planner_step_overhead_time_ms=(
+                self._last_planner_step_overhead_time_ms
+            ),
+            last_planner_loop_residual_time_ms=(
+                self._last_planner_loop_residual_time_ms
+            ),
+            last_planner_api_wall_time_ms=self._last_planner_api_wall_time_ms,
+            last_planner_bridge_adapter_overhead_time_ms=(
+                self._last_planner_bridge_adapter_overhead_time_ms
+            ),
+            last_planner_prepare_time_ms=self._last_planner_prepare_time_ms,
+            last_planner_command_time_ms=self._last_planner_command_time_ms,
+            last_planner_tau_extract_time_ms=self._last_planner_tau_extract_time_ms,
+            last_planner_gain_fetch_time_ms=self._last_planner_gain_fetch_time_ms,
+            last_planner_task_diagnostics_time_ms=(
+                self._last_planner_task_diagnostics_time_ms
+            ),
+            last_planner_output_build_time_ms=(
+                self._last_planner_output_build_time_ms
+            ),
             last_control_prepare_time_ms=self._last_control_prepare_time_ms,
             last_control_publish_time_ms=self._last_control_publish_time_ms,
             last_phase=self._last_phase,
@@ -460,6 +501,13 @@ class SbMpcLfcBridgeNode(Node):
             planner_mode=self._planner_mode,
             last_foreground_planning_time_ms=self._last_foreground_planning_time_ms,
             last_background_gain_time_ms=self._last_background_gain_time_ms,
+            last_background_gain_wall_time_ms=(
+                self._last_background_gain_wall_time_ms
+            ),
+            last_gain_subset_select_time_ms=self._last_gain_subset_select_time_ms,
+            last_gain_snapshot_pack_time_ms=self._last_gain_snapshot_pack_time_ms,
+            last_gain_gradient_time_ms=self._last_gain_gradient_time_ms,
+            last_gain_synthesis_time_ms=self._last_gain_synthesis_time_ms,
             last_gain_age_cycles=self._last_gain_age_cycles,
             last_gain_window_fill=self._last_gain_window_fill,
             last_gain_completed_batch_count=self._last_gain_completed_batch_count,
@@ -636,6 +684,7 @@ class SbMpcLfcBridgeNode(Node):
                 )
                 self._planner_step_count += 1
                 self._record_planner_diagnostics(planner_output)
+                self._update_planner_step_overhead()
                 candidate_gain = (
                     np.asarray(getattr(planner_output, "K"))
                     if hasattr(planner_output, "K")
@@ -826,6 +875,7 @@ class SbMpcLfcBridgeNode(Node):
     ) -> None:
         self._last_planning_time_ms = 1000.0 * planning_duration_sec
         self._last_bridge_loop_time_ms = self._last_planning_time_ms
+        self._update_planner_loop_residual()
         if not observe_deadline:
             return
         try:
@@ -833,6 +883,44 @@ class SbMpcLfcBridgeNode(Node):
         except UnsafeControlError as exc:
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
+
+    def _update_planner_step_overhead(self) -> None:
+        if (
+            self._last_planner_step_wall_time_ms is None
+            or self._last_foreground_planning_time_ms is None
+        ):
+            self._last_planner_step_overhead_time_ms = None
+            self._last_planner_bridge_adapter_overhead_time_ms = None
+            return
+        self._last_planner_step_overhead_time_ms = max(
+            0.0,
+            self._last_planner_step_wall_time_ms
+            - self._last_foreground_planning_time_ms,
+        )
+        if self._last_planner_api_wall_time_ms is None:
+            self._last_planner_bridge_adapter_overhead_time_ms = None
+            return
+        self._last_planner_bridge_adapter_overhead_time_ms = max(
+            0.0,
+            self._last_planner_step_wall_time_ms
+            - self._last_planner_api_wall_time_ms,
+        )
+
+    def _update_planner_loop_residual(self) -> None:
+        if (
+            self._last_bridge_loop_time_ms is None
+            or self._last_planner_step_wall_time_ms is None
+        ):
+            self._last_planner_loop_residual_time_ms = None
+            return
+        gain_ms = self._last_background_gain_wall_time_ms
+        if gain_ms is None:
+            gain_ms = self._last_background_gain_time_ms or 0.0
+        self._last_planner_loop_residual_time_ms = (
+            self._last_bridge_loop_time_ms
+            - self._last_planner_step_wall_time_ms
+            - gain_ms
+        )
 
     def _control_initial_state_prediction_sec(self) -> float:
         value = (
@@ -906,8 +994,44 @@ class SbMpcLfcBridgeNode(Node):
         self._last_foreground_planning_time_ms = self._maybe_float(
             getattr(diagnostics, "foreground_planning_time_ms", None)
         )
+        self._last_planner_api_wall_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_api_wall_time_ms", None)
+        )
+        self._last_planner_prepare_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_prepare_time_ms", None)
+        )
+        self._last_planner_command_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_command_time_ms", None)
+        )
+        self._last_planner_tau_extract_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_tau_extract_time_ms", None)
+        )
+        self._last_planner_gain_fetch_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_gain_fetch_time_ms", None)
+        )
+        self._last_planner_task_diagnostics_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_task_diagnostics_time_ms", None)
+        )
+        self._last_planner_output_build_time_ms = self._maybe_float(
+            getattr(diagnostics, "planner_output_build_time_ms", None)
+        )
         self._last_background_gain_time_ms = self._maybe_float(
             getattr(diagnostics, "background_gain_time_ms", None)
+        )
+        self._last_background_gain_wall_time_ms = self._maybe_float(
+            getattr(diagnostics, "background_gain_wall_time_ms", None)
+        )
+        self._last_gain_subset_select_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_subset_select_time_ms", None)
+        )
+        self._last_gain_snapshot_pack_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_snapshot_pack_time_ms", None)
+        )
+        self._last_gain_gradient_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_gradient_time_ms", None)
+        )
+        self._last_gain_synthesis_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_synthesis_time_ms", None)
         )
         self._last_gain_age_cycles = self._maybe_float(
             getattr(diagnostics, "gain_age_cycles", None)
@@ -944,6 +1068,21 @@ class SbMpcLfcBridgeNode(Node):
         )
         self._last_background_gain_time_ms = self._maybe_float(
             getattr(diagnostics, "background_gain_time_ms", None)
+        )
+        self._last_background_gain_wall_time_ms = self._maybe_float(
+            getattr(diagnostics, "background_gain_wall_time_ms", None)
+        )
+        self._last_gain_subset_select_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_subset_select_time_ms", None)
+        )
+        self._last_gain_snapshot_pack_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_snapshot_pack_time_ms", None)
+        )
+        self._last_gain_gradient_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_gradient_time_ms", None)
+        )
+        self._last_gain_synthesis_time_ms = self._maybe_float(
+            getattr(diagnostics, "gain_synthesis_time_ms", None)
         )
         self._last_gain_age_cycles = self._maybe_float(
             getattr(diagnostics, "gain_age_cycles", None)

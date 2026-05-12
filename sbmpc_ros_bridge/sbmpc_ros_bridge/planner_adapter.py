@@ -39,6 +39,7 @@ class PlannerConfigOverrides:
     smoothing: str | None = None
     gain_samples_per_cycle: int | None = None
     gain_buffer_size: int | None = None
+    reseed_every_step: bool | None = None
 
     def active_items(self) -> dict[str, object]:
         values: dict[str, object] = {}
@@ -67,6 +68,7 @@ def planner_config_overrides_from_values(
     smoothing: str | None = None,
     gain_samples_per_cycle: int = 0,
     gain_buffer_size: int = 0,
+    reseed_every_step: bool | None = None,
 ) -> PlannerConfigOverrides:
     sample_count = _optional_positive_int(num_samples)
     if sample_count is None:
@@ -94,6 +96,7 @@ def planner_config_overrides_from_values(
         smoothing=_normalize_smoothing_value(smoothing),
         gain_samples_per_cycle=_optional_positive_int(gain_samples_per_cycle),
         gain_buffer_size=_optional_positive_int(gain_buffer_size),
+        reseed_every_step=reseed_every_step,
     )
 
 
@@ -295,7 +298,11 @@ class SbMpcPlannerAdapter:
         return PandaPregraspController(
             planner=planner,
             config=config,
-            reseed_every_step=True,
+            reseed_every_step=(
+                True
+                if config_overrides.reseed_every_step is None
+                else bool(config_overrides.reseed_every_step)
+            ),
             gain_mode=config_overrides.mode,
             compute_running_cost=False,
             compute_task_diagnostics=False,
