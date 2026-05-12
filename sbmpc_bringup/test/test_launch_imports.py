@@ -56,10 +56,13 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
         launch_description,
         {
             "arm_prefix",
+            "bridge_warmup_timeout_sec",
             "bridge_runtime_script",
             "bridge_params_file",
+            "controller_switch_timeout_sec",
             "controller_manager_name",
             "controllers_file",
+            "enable_nonzero_control",
             "fake_sensor_commands",
             "joint_state_rate",
             "lfc_params_file",
@@ -72,3 +75,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "use_fake_hardware",
         },
     )
+    defaults = declared_argument_defaults(launch_description)
+    assert defaults["robot_ip"] == "172.17.0.1"
+    assert defaults["enable_nonzero_control"] == "true"
+    assert "sbmpc_bridge_exact_async_40hz.yaml" in defaults["bridge_params_file"]

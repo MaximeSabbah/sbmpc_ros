@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    LogInfo,
+    RegisterEventHandler,
+    Shutdown,
+)
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    EnvironmentVariable,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 from sbmpc_bringup.constants import (
+    BRIDGE_DIAGNOSTICS_TOPIC,
     JOINT_STATE_ESTIMATOR_NAME,
     LINEAR_FEEDBACK_CONTROLLER_NAME,
 )
@@ -46,7 +58,7 @@ def generate_launch_description() -> LaunchDescription:
             "60",
             "--switch-timeout",
             "60",
-            "--activate-as-group",
+            "--inactive",
             "--param-file",
             LaunchConfiguration("controllers_file"),
             "--param-file",
@@ -59,24 +71,81 @@ def generate_launch_description() -> LaunchDescription:
         executable="python",
         arguments=["-m", "sbmpc_ros_bridge.lfc_bridge_node"],
         prefix=[LaunchConfiguration("bridge_runtime_script")],
-        parameters=[LaunchConfiguration("bridge_params_file"), {"use_sim_time": False}],
+        parameters=[
+            LaunchConfiguration("bridge_params_file"),
+            {
+                "use_sim_time": False,
+                "enable_nonzero_control": ParameterValue(
+                    LaunchConfiguration("enable_nonzero_control"),
+                    value_type=bool,
+                ),
+            },
+        ],
         additional_env={
             "PIXI_ENV": LaunchConfiguration("pixi_env"),
             "SBMPC_DIR": LaunchConfiguration("sbmpc_dir"),
         },
         output="screen",
+        on_exit=Shutdown(),
     )
+
+    activate_after_bridge_warmup = Node(
+        package="sbmpc_bringup",
+        executable="wait_for_bridge_warmup",
+        arguments=[
+            "--diagnostics-topic",
+            BRIDGE_DIAGNOSTICS_TOPIC,
+            "--timeout-sec",
+            LaunchConfiguration("bridge_warmup_timeout_sec"),
+            "--controller-manager",
+            LaunchConfiguration("controller_manager_name"),
+            "--activate-controller",
+            JOINT_STATE_ESTIMATOR_NAME,
+            "--activate-controller",
+            LINEAR_FEEDBACK_CONTROLLER_NAME,
+            "--switch-timeout-sec",
+            LaunchConfiguration("controller_switch_timeout_sec"),
+        ],
+        output="screen",
+    )
+
+    def on_lfc_stack_spawner_exit(event, context):
+        del context
+        if event.returncode != 0:
+            return [
+                Shutdown(
+                    reason=(
+                        "Failed to load the SB-MPC LFC controllers in inactive "
+                        "state."
+                    )
+                )
+            ]
+        return [bridge, activate_after_bridge_warmup]
+
+    def on_activation_exit(event, context):
+        del context
+        if event.returncode == 0:
+            return []
+        return [
+            Shutdown(
+                reason=(
+                    "SB-MPC bridge warmup or real-robot LFC controller activation "
+                    "failed."
+                )
+            )
+        ]
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_type", default_value="fer"),
             DeclareLaunchArgument("arm_prefix", default_value=""),
             DeclareLaunchArgument("namespace", default_value=""),
-            DeclareLaunchArgument("robot_ip", default_value="172.16.0.3"),
+            DeclareLaunchArgument("robot_ip", default_value="172.17.0.1"),
             DeclareLaunchArgument("load_gripper", default_value="false"),
             DeclareLaunchArgument("use_fake_hardware", default_value="false"),
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
             DeclareLaunchArgument("joint_state_rate", default_value="30"),
+            DeclareLaunchArgument("enable_nonzero_control", default_value="true"),
             DeclareLaunchArgument(
                 "bridge_runtime_script",
                 default_value=EnvironmentVariable(
@@ -87,6 +156,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "controller_manager_name",
                 default_value="/controller_manager",
+            ),
+            DeclareLaunchArgument(
+                "bridge_warmup_timeout_sec",
+                default_value="120",
+            ),
+            DeclareLaunchArgument(
+                "controller_switch_timeout_sec",
+                default_value="10",
             ),
             DeclareLaunchArgument(
                 "pixi_env",
@@ -105,7 +182,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "controllers_file",
                 default_value=PathJoinSubstitution(
-                    [FindPackageShare("sbmpc_bringup"), "config", "franka_controllers.yaml"]
+                    [
+                        FindPackageShare("sbmpc_bringup"),
+                        "config",
+                        "franka_controllers.yaml",
+                    ]
                 ),
             ),
             DeclareLaunchArgument(
@@ -117,15 +198,43 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "bridge_params_file",
                 default_value=PathJoinSubstitution(
-                    [FindPackageShare("sbmpc_bringup"), "config", "sbmpc_bridge.yaml"]
+                    [
+                        FindPackageShare("sbmpc_bringup"),
+                        "config",
+                        "sbmpc_bridge_exact_async_40hz.yaml",
+                    ]
                 ),
+            ),
+            LogInfo(
+                msg=[
+                    "SB-MPC real launch: LFC controllers are loaded inactive, "
+                    "the bridge warms up, then activation is requested.",
+                ]
+            ),
+            LogInfo(
+                msg=[
+                    "SB-MPC bridge params: ",
+                    LaunchConfiguration("bridge_params_file"),
+                ]
+            ),
+            LogInfo(
+                msg=[
+                    "SB-MPC nonzero control after readiness: ",
+                    LaunchConfiguration("enable_nonzero_control"),
+                ]
             ),
             franka_core,
             lfc_stack_spawner,
             RegisterEventHandler(
                 OnProcessExit(
                     target_action=lfc_stack_spawner,
-                    on_exit=[bridge],
+                    on_exit=on_lfc_stack_spawner_exit,
+                )
+            ),
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=activate_after_bridge_warmup,
+                    on_exit=on_activation_exit,
                 )
             ),
         ]
