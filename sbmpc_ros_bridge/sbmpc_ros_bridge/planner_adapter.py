@@ -217,6 +217,37 @@ class SbMpcPlannerAdapter:
         call_kwargs.update(kwargs)
         return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
 
+    def step_feedforward(self, planner_input: PlannerInput, **kwargs: Any) -> Any:
+        self.start()
+        call_kwargs = dict(self._step_kwargs)
+        call_kwargs.update(kwargs)
+        step_feedforward = getattr(self._controller, "step_feedforward", None)
+        if callable(step_feedforward):
+            return step_feedforward(planner_input.q, planner_input.v, **call_kwargs)
+        return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
+
+    def latest_gain(self, diagnostics: Any | None = None) -> Any | None:
+        latest_gain = getattr(self._controller, "latest_gain", None)
+        if callable(latest_gain):
+            return latest_gain(diagnostics)
+        return None
+
+    @property
+    def gain_refresh_runs_in_planner_worker(self) -> bool:
+        gain_mode = getattr(self._controller, "gain_mode", None)
+        return gain_mode == "exact_async_feedback"
+
+    def refresh_gain_if_budget(
+        self,
+        diagnostics: Any | None = None,
+        *,
+        budget_sec: float | None = None,
+    ) -> Any | None:
+        refresh_gain = getattr(self._controller, "refresh_gain_if_budget", None)
+        if callable(refresh_gain):
+            return refresh_gain(diagnostics, budget_sec=budget_sec)
+        return None
+
     def predict_state(
         self,
         planner_input: PlannerInput,

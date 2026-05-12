@@ -39,7 +39,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
             "last_gain_window_fill": 128,
             "last_gain_completed_batch_count": 3,
             "last_gain_dropped_snapshot_count": 1,
-            "last_gain_worker_running": True,
+            "last_gain_worker_running": False,
             "deadline_miss_count": 0,
         },
         {
@@ -56,7 +56,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
             "last_gain_window_fill": 256,
             "last_gain_completed_batch_count": 4,
             "last_gain_dropped_snapshot_count": 1,
-            "last_gain_worker_running": True,
+            "last_gain_worker_running": False,
             "deadline_miss_count": 0,
         },
     ]
@@ -79,7 +79,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
     assert summary.final_gain_dropped_snapshot_count == 1
     assert summary.accepted_planner_output_count == 4
     assert summary.rejected_planner_output_count == 0
-    assert summary.gain_worker_running_samples == 2
+    assert summary.gain_worker_running_samples == 0
     assert summary.gain_worker_error_count == 0
     assert summary.max_tail_joint_span == pytest.approx(0.01)
     assert summary.joint_velocity_abs_max == 0.3

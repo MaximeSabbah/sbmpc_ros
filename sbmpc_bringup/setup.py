@@ -38,6 +38,8 @@ setup(
     entry_points={
         "console_scripts": [
             "sbmpc_pixi_supervisor = sbmpc_bringup.pixi_supervisor:main",
+            "record_sbmpc_replay = sbmpc_bringup.replay:record_main",
+            "replay_sbmpc_trajectory = sbmpc_bringup.replay:replay_main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
             "wait_for_bridge_warmup = sbmpc_bringup.warmup_wait:main",
         ],

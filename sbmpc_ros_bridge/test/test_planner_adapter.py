@@ -97,12 +97,22 @@ class FakeRuntimeController:
     def __init__(self) -> None:
         self.start_count = 0
         self.reset_after_warmup_count = 0
+        self.step_feedforward_calls = []
+        self.latest_gain_calls = []
 
     def start(self) -> None:
         self.start_count += 1
 
     def warmup(self, **kwargs):
         return {"kwargs": kwargs}
+
+    def step_feedforward(self, q, v, **kwargs):
+        self.step_feedforward_calls.append((q, v, kwargs))
+        return {"tau_ff": np.ones(7), "kwargs": kwargs}
+
+    def latest_gain(self, diagnostics=None):
+        self.latest_gain_calls.append(diagnostics)
+        return {"K": np.eye(7, 14), "diagnostics": diagnostics}
 
     def reset_runtime_state_after_warmup(self) -> None:
         self.reset_after_warmup_count += 1
@@ -284,3 +294,23 @@ def test_adapter_can_keep_warmup_runtime_state_for_manual_diagnostics() -> None:
 
     assert controller.reset_after_warmup_count == 0
     assert adapter._started is True
+
+
+def test_adapter_delegates_split_feedforward_and_gain_calls() -> None:
+    controller = FakeRuntimeController()
+    adapter = SbMpcPlannerAdapter(controller=controller)
+    planner_input = SimpleNamespace(
+        q=np.asarray([0.1] * 7, dtype=np.float64),
+        v=np.zeros(7, dtype=np.float64),
+    )
+
+    output = adapter.step_feedforward(planner_input, num_steps=2)
+    gain = adapter.latest_gain(output)
+
+    assert output["kwargs"]["num_steps"] == 2
+    assert controller.start_count == 1
+    assert len(controller.step_feedforward_calls) == 1
+    np.testing.assert_allclose(controller.step_feedforward_calls[0][0], planner_input.q)
+    np.testing.assert_allclose(controller.step_feedforward_calls[0][1], planner_input.v)
+    assert controller.latest_gain_calls == [output]
+    np.testing.assert_allclose(gain["K"], np.eye(7, 14))

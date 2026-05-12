@@ -230,5 +230,65 @@ ROS.
   includes foreground planning time, background gain timing, gain age, rolling
   window fill, completed/dropped gain batches, worker running state, and worker
   errors.
-- If X11 forwarding is available from `sbmpc_containers`, set `use_rviz:=true`
-  to visualize the FER model in RViz while iterating on planner quality.
+- To visualize a full ROS-stack run without adding viewer load to the live
+  controller/MuJoCo process, let the launch file record a replay and open it
+  afterward:
+
+  ```bash
+  # Run the full stack headless and write a replay when the launch exits.
+  ros2 launch sbmpc_bringup sbmpc_franka_lfc_mujoco_sim.launch.py \
+    headless:=true enable_nonzero_control:=true \
+    record_replay:=true \
+    record_replay_output:=/tmp/sbmpc_ros_replay.json
+
+  # After stopping the live stack, open the offline MuJoCo replay viewer.
+  /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+    python -m sbmpc_bringup.trajectory_replay /tmp/sbmpc_ros_replay.json
+  ```
+
+  The replay file contains `/sbmpc/joint_states`, `/sensor`, `/control`
+  summaries, and `/sbmpc/diagnostics`. The viewer only replays recorded joint
+  positions, so it does not contend with the SB-MPC/JAX controller during the
+  timing-sensitive run. By default the recorder waits for the first `/control`
+  message before starting, so warmup/JAX compilation is excluded. Set
+  `record_replay_include_warmup:=true` to capture the startup phase too, or
+  `record_replay_duration_sec:=8` to record a fixed-length window instead of
+  recording until launch shutdown. The launch recorder autosaves every
+  `record_replay_autosave_period_sec:=5` seconds and writes an empty file as
+  soon as it starts, so an old replay file cannot silently survive a failed or
+  interrupted recording.
+
+  Standalone recording is also available through `ros2 run`:
+
+  ```bash
+  ros2 run sbmpc_bringup record_sbmpc_replay \
+    --duration-sec 8 --output /tmp/sbmpc_ros_replay.json
+  ```
+
+  Use the Pixi wrapper for replay and dry-run replay validation, because that
+  environment provides the MuJoCo Python viewer stack. Replay pacing defaults
+  to `--time-source auto`, which uses recorder wall-clock receive time when
+  available and falls back to control cadence for older files whose state
+  header stamps did not advance.
+
+  Direct shell commands such as `record_sbmpc_replay` are not guaranteed to be
+  on `PATH` in ROS 2; `ros2 run sbmpc_bringup ...` is the portable form. If
+  `ros2 run` cannot find the executable, rebuild and source the ROS workspace:
+
+  ```bash
+  cd /workspace/ros2_ws
+  colcon build --packages-select sbmpc_bringup
+  source install/setup.bash
+  ```
+
+  During development, the source module can also be run without rebuilding:
+
+  ```bash
+  PYTHONPATH=/workspace/sbmpc_ros/sbmpc_bringup:$PYTHONPATH \
+    python3 -m sbmpc_bringup.record_replay \
+    --duration-sec 8 --output /tmp/sbmpc_ros_replay.json
+
+  PYTHONPATH=/workspace/sbmpc_ros/sbmpc_bringup:$PYTHONPATH \
+    python3 -m sbmpc_bringup.trajectory_replay \
+    /tmp/sbmpc_ros_replay.json
+  ```

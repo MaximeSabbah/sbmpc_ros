@@ -50,9 +50,21 @@ CONTROLLER_MANAGER_CPU_COUNT = 2
 
 
 @dataclass(frozen=True, slots=True)
-class _PlannedControl:
+class _LatestFeedforward:
     planner_input: PlannerInput
-    planner_output: object
+    feedforward_output: object
+
+
+@dataclass(frozen=True, slots=True)
+class _LatestGain:
+    K: np.ndarray
+    diagnostics: object | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ComposedPlannerOutput:
+    tau_ff: np.ndarray
+    K: np.ndarray
 
 
 class _NoopPlannerAdapter:
@@ -167,9 +179,12 @@ class SbMpcLfcBridgeNode(Node):
         self._sensor_lock = Lock()
         self._last_sensor: Sensor | None = None
         self._latest_planner_output_lock = Lock()
-        self._latest_planned_control: _PlannedControl | None = None
+        self._latest_feedforward: _LatestFeedforward | None = None
+        self._latest_gain: _LatestGain | None = None
         self._planner_request = Event()
+        self._gain_snapshot_request = Event()
         self._planner_thread: Thread | None = None
+        self._gain_snapshot_thread: Thread | None = None
         self._planner_warmup_iterations = max(
             1,
             int(
@@ -309,6 +324,12 @@ class SbMpcLfcBridgeNode(Node):
             daemon=True,
         )
         self._planner_thread.start()
+        self._gain_snapshot_thread = Thread(
+            target=self._run_gain_snapshot_worker,
+            name="sbmpc_gain_snapshot_worker",
+            daemon=True,
+        )
+        self._gain_snapshot_thread.start()
 
         self.get_logger().info(
             "SB-MPC LFC bridge active: waiting for valid sensors before warmup "
@@ -501,20 +522,31 @@ class SbMpcLfcBridgeNode(Node):
 
     def _publish_latest_control(self, planner_input: PlannerInput) -> None:
         with self._latest_planner_output_lock:
-            planned_control = self._latest_planned_control
-        if planned_control is None:
+            latest_feedforward = self._latest_feedforward
+            latest_gain = self._latest_gain
+        if latest_feedforward is None:
             return
 
         prepare_start = perf_counter()
-        control_initial_state = planned_control.planner_input
+        feedforward_output = latest_feedforward.feedforward_output
+        control_initial_state = latest_feedforward.planner_input
         if self._retime_control_initial_state_enabled():
             control_initial_state = self._snapshot_planner_input() or planner_input
             control_initial_state = self._predict_control_initial_state(
                 control_initial_state,
-                planned_control.planner_output,
+                feedforward_output,
             )
+        gain = (
+            latest_gain.K
+            if latest_gain is not None
+            else self._zero_gain_for_output(feedforward_output, control_initial_state)
+        )
+        composed_output = _ComposedPlannerOutput(
+            tau_ff=np.asarray(getattr(feedforward_output, "tau_ff"), dtype=np.float64),
+            K=np.asarray(gain, dtype=np.float64),
+        )
         control = planner_output_to_control(
-            planned_control.planner_output,
+            composed_output,
             control_initial_state,
             safety_profile=self._safety_profile,
         )
@@ -529,18 +561,45 @@ class SbMpcLfcBridgeNode(Node):
 
     def _clear_latest_planner_output(self) -> None:
         with self._latest_planner_output_lock:
-            self._latest_planned_control = None
+            self._latest_feedforward = None
 
-    def _store_latest_planner_output(
+    def _store_latest_feedforward(
         self,
         planner_input: PlannerInput,
-        planner_output: object,
+        feedforward_output: object,
     ) -> None:
         with self._latest_planner_output_lock:
-            self._latest_planned_control = _PlannedControl(
+            self._latest_feedforward = _LatestFeedforward(
                 planner_input=planner_input,
-                planner_output=planner_output,
+                feedforward_output=feedforward_output,
             )
+
+    def _store_latest_gain(self, gain: np.ndarray, diagnostics: object | None = None) -> None:
+        with self._latest_planner_output_lock:
+            self._latest_gain = _LatestGain(
+                K=np.asarray(gain, dtype=np.float64),
+                diagnostics=diagnostics,
+            )
+
+    def _latest_or_zero_gain(
+        self,
+        feedforward_output: object,
+        planner_input: PlannerInput,
+    ) -> np.ndarray:
+        with self._latest_planner_output_lock:
+            latest_gain = self._latest_gain
+        if latest_gain is not None:
+            return latest_gain.K
+        return self._zero_gain_for_output(feedforward_output, planner_input)
+
+    @staticmethod
+    def _zero_gain_for_output(
+        feedforward_output: object,
+        planner_input: PlannerInput,
+    ) -> np.ndarray:
+        tau = np.asarray(getattr(feedforward_output, "tau_ff"), dtype=np.float64).reshape(-1)
+        state_dim = int(planner_input.q.size + planner_input.v.size)
+        return np.zeros((tau.size, state_dim), dtype=np.float64)
 
     def _run_planner_worker(self) -> None:
         while not self._closing.is_set():
@@ -566,19 +625,45 @@ class SbMpcLfcBridgeNode(Node):
             try:
                 step_start = perf_counter()
                 with self._planner_lock:
-                    planner_output = self._planner.step(planner_input)
+                    step_feedforward = getattr(self._planner, "step_feedforward", None)
+                    if callable(step_feedforward):
+                        planner_output = step_feedforward(planner_input)
+                    else:
+                        planner_output = self._planner.step(planner_input)
                 step_end = perf_counter()
                 self._last_planner_step_wall_time_ms = 1000.0 * (
                     step_end - step_start
                 )
                 self._planner_step_count += 1
                 self._record_planner_diagnostics(planner_output)
+                candidate_gain = (
+                    np.asarray(getattr(planner_output, "K"))
+                    if hasattr(planner_output, "K")
+                    else self._latest_or_zero_gain(planner_output, planner_input)
+                )
                 validate_planner_output(
                     np.asarray(getattr(planner_output, "tau_ff")),
-                    np.asarray(getattr(planner_output, "K")),
+                    candidate_gain,
                     limits=self._safety_profile.planner_output_limits(),
                 )
-                self._store_latest_planner_output(planner_input, planner_output)
+                if hasattr(planner_output, "K"):
+                    self._store_latest_gain(
+                        candidate_gain,
+                        getattr(planner_output, "diagnostics", None),
+                    )
+                self._store_latest_feedforward(planner_input, planner_output)
+                if getattr(
+                    self._planner,
+                    "gain_refresh_runs_in_planner_worker",
+                    False,
+                ):
+                    self._refresh_latest_gain_if_budget(
+                        planner_output,
+                        planner_input,
+                        elapsed_sec=perf_counter() - start,
+                    )
+                else:
+                    self._gain_snapshot_request.set()
                 self._accepted_planner_output_count += 1
                 self._last_error = ""
                 self._state = "running"
@@ -593,6 +678,80 @@ class SbMpcLfcBridgeNode(Node):
                 self._last_error = str(exc)
                 self.get_logger().error(f"Planner loop failed: {exc}")
 
+    def _run_gain_snapshot_worker(self) -> None:
+        while not self._closing.is_set():
+            if not self._gain_snapshot_request.wait(timeout=0.1):
+                continue
+            self._gain_snapshot_request.clear()
+            if self._closing.is_set():
+                return
+            with self._latest_planner_output_lock:
+                latest_feedforward = self._latest_feedforward
+            if latest_feedforward is None:
+                continue
+            self._refresh_latest_gain(
+                latest_feedforward.feedforward_output,
+                latest_feedforward.planner_input,
+            )
+
+    def _refresh_latest_gain_if_budget(
+        self,
+        feedforward_output: object,
+        planner_input: PlannerInput,
+        *,
+        elapsed_sec: float,
+    ) -> None:
+        refresh_gain = getattr(self._planner, "refresh_gain_if_budget", None)
+        if not callable(refresh_gain):
+            return
+        budget_sec = max(0.0, self._publish_period_sec - elapsed_sec - 0.001)
+        try:
+            gain_snapshot = refresh_gain(
+                getattr(feedforward_output, "diagnostics", None),
+                budget_sec=budget_sec,
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            self.get_logger().error(f"Gain refresh failed: {exc}")
+            return
+        self._store_gain_snapshot(feedforward_output, gain_snapshot)
+
+    def _refresh_latest_gain(
+        self,
+        feedforward_output: object,
+        planner_input: PlannerInput,
+    ) -> None:
+        latest_gain = getattr(self._planner, "latest_gain", None)
+        if not callable(latest_gain):
+            return
+        gain_snapshot = latest_gain(getattr(feedforward_output, "diagnostics", None))
+        self._store_gain_snapshot(feedforward_output, gain_snapshot)
+
+    def _store_gain_snapshot(
+        self,
+        feedforward_output: object,
+        gain_snapshot: object | None,
+    ) -> None:
+        if gain_snapshot is None:
+            return
+        gain = np.asarray(getattr(gain_snapshot, "K", gain_snapshot), dtype=np.float64)
+        try:
+            validate_planner_output(
+                np.asarray(getattr(feedforward_output, "tau_ff")),
+                gain,
+                limits=self._safety_profile.planner_output_limits(),
+            )
+        except UnsafeControlError as exc:
+            self._rejected_planner_output_count += 1
+            self._last_error = str(exc)
+            self.get_logger().error(f"Rejected gain update: {exc}")
+            return
+        self._store_latest_gain(
+            gain,
+            getattr(gain_snapshot, "diagnostics", None),
+        )
+        self._record_gain_diagnostics(getattr(gain_snapshot, "diagnostics", None))
+
     def _predict_delayed_planner_input(
         self,
         planner_input: PlannerInput,
@@ -601,13 +760,13 @@ class SbMpcLfcBridgeNode(Node):
             return planner_input
 
         with self._latest_planner_output_lock:
-            planned_control = self._latest_planned_control
-        if planned_control is None:
+            latest_feedforward = self._latest_feedforward
+        if latest_feedforward is None:
             return planner_input
 
         return self._predict_control_initial_state(
             planner_input,
-            planned_control.planner_output,
+            latest_feedforward.feedforward_output,
         )
 
     def _start_warmup_thread(self) -> None:
@@ -777,6 +936,34 @@ class SbMpcLfcBridgeNode(Node):
         goal_array = np.asarray(goal_position, dtype=np.float64).reshape(-1)
         self._last_goal_position = goal_array.tolist()
 
+    def _record_gain_diagnostics(self, diagnostics: object | None) -> None:
+        if diagnostics is None:
+            return
+        self._last_gain_norm = self._maybe_float(
+            getattr(diagnostics, "gain_norm", None)
+        )
+        self._last_background_gain_time_ms = self._maybe_float(
+            getattr(diagnostics, "background_gain_time_ms", None)
+        )
+        self._last_gain_age_cycles = self._maybe_float(
+            getattr(diagnostics, "gain_age_cycles", None)
+        )
+        self._last_gain_window_fill = self._maybe_int(
+            getattr(diagnostics, "gain_window_fill", None)
+        )
+        self._last_gain_completed_batch_count = self._maybe_int(
+            getattr(diagnostics, "gain_completed_batch_count", None)
+        )
+        self._last_gain_dropped_snapshot_count = self._maybe_int(
+            getattr(diagnostics, "gain_dropped_snapshot_count", None)
+        )
+        self._last_gain_worker_running = self._maybe_bool(
+            getattr(diagnostics, "async_gain_worker_running", None)
+        )
+        self._last_gain_worker_error = self._maybe_text(
+            getattr(diagnostics, "async_gain_worker_error", None)
+        )
+
     def _publish_control(self, control: Control) -> None:
         try:
             self._control_publisher.publish(control)
@@ -813,9 +1000,13 @@ class SbMpcLfcBridgeNode(Node):
         try:
             self._closing.set()
             self._planner_request.set()
+            self._gain_snapshot_request.set()
             planner_thread = self._planner_thread
             if planner_thread is not None and planner_thread.is_alive():
                 planner_thread.join(timeout=1.0)
+            gain_snapshot_thread = self._gain_snapshot_thread
+            if gain_snapshot_thread is not None and gain_snapshot_thread.is_alive():
+                gain_snapshot_thread.join(timeout=1.0)
             warmup_thread = self._warmup_thread
             if warmup_thread is not None and warmup_thread.is_alive():
                 warmup_thread.join(timeout=1.0)

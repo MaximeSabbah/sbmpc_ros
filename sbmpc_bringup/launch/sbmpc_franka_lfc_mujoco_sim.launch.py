@@ -5,10 +5,12 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
     Shutdown,
 )
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit, OnProcessIO
 from launch.substitutions import (
     Command,
@@ -75,6 +77,23 @@ def launch_setup(context, *args, **kwargs):
     controllers_file = ParameterFile(LaunchConfiguration("controllers_file"))
     lfc_params_file = LaunchConfiguration("lfc_params_file")
     sim_lfc_params_file = LaunchConfiguration("sim_lfc_params_file")
+    record_replay_args = [
+        "--duration-sec",
+        LaunchConfiguration("record_replay_duration_sec"),
+        "--output",
+        LaunchConfiguration("record_replay_output"),
+        "--startup-timeout-sec",
+        LaunchConfiguration("record_replay_startup_timeout_sec"),
+        "--autosave-period-sec",
+        LaunchConfiguration("record_replay_autosave_period_sec"),
+    ]
+    if LaunchConfiguration("record_replay_include_warmup").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        record_replay_args.append("--include-warmup")
 
     control_node_kwargs = {
         "package": "mujoco_ros2_control",
@@ -201,6 +220,13 @@ def launch_setup(context, *args, **kwargs):
         ],
         output="screen",
     )
+    replay_recorder = Node(
+        package="sbmpc_bringup",
+        executable="record_sbmpc_replay",
+        arguments=record_replay_args,
+        condition=IfCondition(LaunchConfiguration("record_replay")),
+        output="screen",
+    )
     warmup_reset_started = {"value": False}
 
     def on_bridge_output(event):
@@ -227,6 +253,26 @@ def launch_setup(context, *args, **kwargs):
         ]
 
     return [
+        LogInfo(
+            msg=[
+                "SB-MPC bridge params: ",
+                LaunchConfiguration("bridge_params_file"),
+            ]
+        ),
+        LogInfo(
+            msg=[
+                "ros2_control controllers: ",
+                LaunchConfiguration("controllers_file"),
+            ]
+        ),
+        LogInfo(
+            msg=[
+                "LFC params: ",
+                LaunchConfiguration("lfc_params_file"),
+                " + ",
+                LaunchConfiguration("sim_lfc_params_file"),
+            ]
+        ),
         Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",
@@ -234,6 +280,7 @@ def launch_setup(context, *args, **kwargs):
             parameters=[robot_description, {"use_sim_time": True}],
         ),
         control_node,
+        replay_recorder,
         bridge,
         joint_state_broadcaster_spawner,
         gripper_spawner,
@@ -326,6 +373,28 @@ def generate_launch_description() -> LaunchDescription:
                         "panda_pick_place_ros2_control_scene.xml",
                     ]
                 ),
+            ),
+            DeclareLaunchArgument("record_replay", default_value="false"),
+            DeclareLaunchArgument(
+                "record_replay_output",
+                default_value="/tmp/sbmpc_ros_replay.json",
+            ),
+            DeclareLaunchArgument(
+                "record_replay_duration_sec",
+                default_value="0",
+                description="0 records until the launch is stopped.",
+            ),
+            DeclareLaunchArgument(
+                "record_replay_startup_timeout_sec",
+                default_value="120",
+            ),
+            DeclareLaunchArgument(
+                "record_replay_autosave_period_sec",
+                default_value="5",
+            ),
+            DeclareLaunchArgument(
+                "record_replay_include_warmup",
+                default_value="false",
             ),
             OpaqueFunction(function=launch_setup),
         ]

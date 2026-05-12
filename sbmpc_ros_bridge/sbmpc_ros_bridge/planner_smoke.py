@@ -75,10 +75,10 @@ def main(argv: list[str] | None = None) -> None:
     config_overrides = PlannerConfigOverrides(
         mode=args.planner_mode,
         gain_samples_per_cycle=(
-            128 if args.planner_mode == "exact_async_feedback" else None
+            128 if args.planner_mode != "feedforward" else None
         ),
         gain_buffer_size=(
-            512 if args.planner_mode == "exact_async_feedback" else None
+            512 if args.planner_mode != "feedforward" else None
         ),
     )
     adapter = SbMpcPlannerAdapter(config_overrides=config_overrides)
