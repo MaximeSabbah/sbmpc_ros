@@ -23,6 +23,7 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+from sbmpc_bringup.launch_preflight import assert_clean_ros_graph
 from sbmpc_bringup.constants import (
     BRIDGE_DIAGNOSTICS_TOPIC,
     GRIPPER_ACTION_CONTROLLER_NAME,
@@ -53,6 +54,7 @@ def simulation_cpu_prefixes() -> tuple[str, str]:
 
 
 def launch_setup(context, *args, **kwargs):
+    assert_clean_ros_graph(context)
     control_cpu_prefix, bridge_cpu_prefix = simulation_cpu_prefixes()
     robot_description_content = Command(
         [
@@ -114,6 +116,14 @@ def launch_setup(context, *args, **kwargs):
     if control_cpu_prefix:
         control_node_kwargs["prefix"] = control_cpu_prefix
     control_node = Node(**control_node_kwargs)
+
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        output="both",
+        parameters=[robot_description, {"use_sim_time": True}],
+        on_exit=Shutdown(),
+    )
 
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
@@ -252,6 +262,20 @@ def launch_setup(context, *args, **kwargs):
             )
         ]
 
+    def on_required_spawner_exit(event, context):
+        del context
+        if event.returncode == 0:
+            return []
+        return [
+            Shutdown(
+                reason=(
+                    "A required ros2_control controller spawner failed. "
+                    "Stopping the simulation so no stale controller_manager "
+                    "process is left for the next launch."
+                )
+            )
+        ]
+
     return [
         LogInfo(
             msg=[
@@ -273,12 +297,7 @@ def launch_setup(context, *args, **kwargs):
                 LaunchConfiguration("sim_lfc_params_file"),
             ]
         ),
-        Node(
-            package="robot_state_publisher",
-            executable="robot_state_publisher",
-            output="both",
-            parameters=[robot_description, {"use_sim_time": True}],
-        ),
+        robot_state_publisher,
         control_node,
         replay_recorder,
         bridge,
@@ -294,6 +313,24 @@ def launch_setup(context, *args, **kwargs):
         RegisterEventHandler(
             OnProcessExit(target_action=reset_after_bridge_warmup, on_exit=on_reset_exit)
         ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=joint_state_broadcaster_spawner,
+                on_exit=on_required_spawner_exit,
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=gripper_spawner,
+                on_exit=on_required_spawner_exit,
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=lfc_stack_spawner,
+                on_exit=on_required_spawner_exit,
+            )
+        ),
     ]
 
 
@@ -305,6 +342,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "controller_manager_name",
                 default_value="/controller_manager",
+            ),
+            DeclareLaunchArgument(
+                "allow_existing_ros_graph",
+                default_value="false",
+                description=(
+                    "Skip the SB-MPC simulation stale ROS graph/process "
+                    "preflight. Use only when intentionally sharing a ROS graph."
+                ),
             ),
             DeclareLaunchArgument(
                 "bridge_runtime_script",

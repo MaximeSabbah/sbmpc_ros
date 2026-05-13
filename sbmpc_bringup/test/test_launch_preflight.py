@@ -6,8 +6,11 @@ import pytest
 
 from sbmpc_bringup.launch_preflight import (
     check_clean_ros_graph,
+    check_clean_sim_runtime,
+    find_stale_sim_processes,
     find_stale_sim_nodes,
     parse_ros_node_list,
+    wait_for_clean_sim_runtime,
     wait_for_clean_ros_graph,
 )
 
@@ -39,6 +42,22 @@ def test_find_stale_sim_nodes_flags_known_sbmpc_sim_nodes_once() -> None:
     assert stale == ("/controller_manager", "/linear_feedback_controller")
 
 
+def test_find_stale_sim_processes_flags_orphaned_mujoco_control_node() -> None:
+    stale = find_stale_sim_processes(
+        "\n".join(
+            [
+                "11142 /opt/sbmpc_deps_ws/install/mujoco_ros2_control/lib/"
+                "mujoco_ros2_control/ros2_control_node --ros-args",
+                "22222 /usr/bin/python unrelated.py",
+            ]
+        )
+    )
+
+    assert len(stale) == 1
+    assert stale[0].pid == 11142
+    assert "ros2_control_node" in stale[0].command
+
+
 def test_check_clean_ros_graph_passes_when_only_unrelated_nodes_exist() -> None:
     def runner(*args, **kwargs) -> FakeRunResult:
         del args, kwargs
@@ -58,6 +77,29 @@ def test_check_clean_ros_graph_reports_stale_controller_manager() -> None:
     result = check_clean_ros_graph(runner=runner)
 
     assert result.stale_nodes == ("/controller_manager", "/joint_state_estimator")
+
+
+def test_check_clean_sim_runtime_reports_stale_nodes_and_processes() -> None:
+    def graph_runner(*args, **kwargs) -> FakeRunResult:
+        del args, kwargs
+        return FakeRunResult(stdout="/controller_manager\n")
+
+    def process_runner(*args, **kwargs) -> FakeRunResult:
+        del args, kwargs
+        return FakeRunResult(
+            stdout=(
+                "11142 /opt/sbmpc_deps_ws/install/mujoco_ros2_control/lib/"
+                "mujoco_ros2_control/ros2_control_node --ros-args\n"
+            )
+        )
+
+    result = check_clean_sim_runtime(
+        graph_runner=graph_runner,
+        process_runner=process_runner,
+    )
+
+    assert result.stale_nodes == ("/controller_manager",)
+    assert tuple(process.pid for process in result.stale_processes) == (11142,)
 
 
 def test_check_clean_ros_graph_errors_when_node_list_fails() -> None:
@@ -87,6 +129,37 @@ def test_wait_for_clean_ros_graph_rechecks_transient_stale_nodes() -> None:
     )
 
     assert result.stale_nodes == ()
+    assert calls == 2
+
+
+def test_wait_for_clean_sim_runtime_rechecks_transient_stale_processes() -> None:
+    calls = 0
+
+    def graph_runner(*args, **kwargs) -> FakeRunResult:
+        del args, kwargs
+        return FakeRunResult(stdout="")
+
+    def process_runner(*args, **kwargs) -> FakeRunResult:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls == 1:
+            return FakeRunResult(
+                stdout=(
+                    "11142 /opt/sbmpc_deps_ws/install/mujoco_ros2_control/lib/"
+                    "mujoco_ros2_control/ros2_control_node --ros-args\n"
+                )
+            )
+        return FakeRunResult(stdout="")
+
+    result = wait_for_clean_sim_runtime(
+        graph_runner=graph_runner,
+        process_runner=process_runner,
+        timeout_sec=1.0,
+        poll_sec=0.0,
+    )
+
+    assert result.stale_processes == ()
     assert calls == 2
 
 

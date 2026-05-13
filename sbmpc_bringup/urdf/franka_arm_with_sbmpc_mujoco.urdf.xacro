@@ -28,6 +28,7 @@
     robot_ip=""
     use_fake_hardware="false"
     fake_sensor_commands="false"
+    use_ft_sensor="${False}"
     no_prefix="false"
     arm_prefix=""
     connected_to="base"

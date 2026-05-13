@@ -59,6 +59,7 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
     assert isinstance(launch_description, LaunchDescription)
     defaults = declared_argument_defaults(launch_description)
     assert set(defaults) == {
+        "allow_existing_ros_graph",
         "bridge_params_file",
         "bridge_runtime_script",
         "controller_manager_name",
@@ -83,12 +84,14 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
     assert defaults["record_replay_output"] == "/tmp/sbmpc_ros_replay.json"
     assert defaults["record_replay_duration_sec"] == "0"
     assert defaults["controller_manager_name"] == "/controller_manager"
+    assert defaults["allow_existing_ros_graph"] == "false"
     assert "sbmpc_bridge_exact_async.yaml" in defaults["bridge_params_file"]
     assert "panda_pick_place_ros2_control_scene.xml" in defaults["mujoco_model"]
 
 
-def test_mujoco_launch_has_expected_node_set() -> None:
+def test_mujoco_launch_has_expected_node_set(monkeypatch) -> None:
     module = load_launch_module("sbmpc_franka_lfc_mujoco_sim.launch.py")
+    monkeypatch.setattr(module, "assert_clean_ros_graph", lambda context: [])
     launch_description = module.generate_launch_description()
     defaults = declared_argument_defaults(launch_description)
     setup = next(

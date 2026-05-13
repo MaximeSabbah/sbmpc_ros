@@ -62,6 +62,20 @@ def test_mujoco_xacro_renders_mujoco_system_with_existing_model() -> None:
     assert params["headless"] == "true"
 
 
+def test_mujoco_xacro_attaches_regular_hand_without_ft_sensor() -> None:
+    root = render_mujoco_urdf()
+    links = {link.attrib["name"] for link in root.findall("link")}
+    joints = {joint.attrib["name"]: joint for joint in root.findall("joint")}
+
+    assert "fer_link8" in links
+    assert "ati_mini45_tool_mount" not in links
+
+    hand_joint = joints["fer_hand_joint"]
+    parent = hand_joint.find("parent")
+    assert parent is not None
+    assert parent.attrib["link"] == "fer_link8"
+
+
 def test_mujoco_xacro_exposes_fer_arm_effort_interfaces_and_gripper_position() -> None:
     control = ros2_control(render_mujoco_urdf())
     joints = {joint.attrib["name"]: joint for joint in control.findall("joint")}
