@@ -68,11 +68,20 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
         "lfc_params_file",
         "mujoco_model",
         "pixi_env",
+        "record_replay",
+        "record_replay_autosave_period_sec",
+        "record_replay_duration_sec",
+        "record_replay_include_warmup",
+        "record_replay_output",
+        "record_replay_startup_timeout_sec",
         "sbmpc_dir",
         "sim_lfc_params_file",
     }
     assert defaults["headless"] == "true"
     assert defaults["enable_nonzero_control"] == "false"
+    assert defaults["record_replay"] == "false"
+    assert defaults["record_replay_output"] == "/tmp/sbmpc_ros_replay.json"
+    assert defaults["record_replay_duration_sec"] == "0"
     assert defaults["controller_manager_name"] == "/controller_manager"
     assert "sbmpc_bridge_exact_async.yaml" in defaults["bridge_params_file"]
     assert "panda_pick_place_ros2_control_scene.xml" in defaults["mujoco_model"]
@@ -99,6 +108,7 @@ def test_mujoco_launch_has_expected_node_set() -> None:
         ("mujoco_ros2_control", "ros2_control_node", None),
         ("controller_manager", "spawner", None),
         (None, "python", None),
+        ("sbmpc_bringup", "record_sbmpc_replay", None),
     }
     spawners = [node for node in nodes if node.node_package == "controller_manager"]
     assert len(spawners) == 3

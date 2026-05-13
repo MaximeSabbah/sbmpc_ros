@@ -4,31 +4,34 @@
   <xacro:arg
     name="mujoco_model"
     default="$(find sbmpc_bringup)/mujoco/panda_pick_place_ros2_control_scene.xml"/>
+  <xacro:arg name="ee_id" default="agimus_franka_hand"/>
+  <xacro:arg name="special_connection" default=""/>
+  <xacro:arg name="xyz_ee" default="0 0 0"/>
+  <xacro:arg name="rpy_ee" default="0 0 -0.7853981633974483"/>
+  <xacro:arg name="tcp_xyz" default="0 0 0.1034"/>
+  <xacro:arg name="tcp_rpy" default="0 0 0"/>
+  <xacro:arg name="safety_distance" default="0.03"/>
+  <xacro:arg name="description_pkg" default="agimus_franka_description"/>
 
-  <xacro:include filename="$(find franka_description)/robots/common/franka_robot.xacro"/>
+  <xacro:include filename="$(find agimus_franka_description)/robots/common/agimus_franka_robot.xacro"/>
 
-  <xacro:franka_robot
-    robot_type="fer"
-    joint_limits="${xacro.load_yaml('$(find franka_description)/robots/fer/joint_limits.yaml')}"
-    inertials="${xacro.load_yaml('$(find franka_description)/robots/fer/inertials.yaml')}"
-    kinematics="${xacro.load_yaml('$(find franka_description)/robots/fer/kinematics.yaml')}"
-    dynamics="${xacro.load_yaml('$(find franka_description)/robots/fer/dynamics.yaml')}"
+  <xacro:agimus_franka_robot
+    arm_id="fer"
+    joint_limits="${xacro.load_yaml('$(find agimus_franka_description)/robots/fer/joint_limits.yaml')}"
+    inertials="${xacro.load_yaml('$(find agimus_franka_description)/robots/fer/inertials.yaml')}"
+    kinematics="${xacro.load_yaml('$(find agimus_franka_description)/robots/fer/kinematics.yaml')}"
+    dynamics="${xacro.load_yaml('$(find agimus_franka_description)/robots/fer/dynamics.yaml')}"
     hand="true"
-    ee_id="franka_hand"
-    special_connection=""
-    xyz_ee="0 0 0"
-    rpy_ee="0 0 ${-pi/4}"
-    tcp_xyz="0 0 0.1034"
-    tcp_rpy="0 0 0"
-    safety_distance="0.03"
+    ee_id="$(arg ee_id)"
     with_sc="false"
+    ros2_control="false"
     robot_ip=""
     use_fake_hardware="false"
     fake_sensor_commands="false"
     no_prefix="false"
     arm_prefix=""
-    description_pkg="franka_description"
-    connected_to="base"/>
+    connected_to="base"
+    robot_safety_distance="$(arg safety_distance)"/>
 
   <ros2_control name="MujocoFrankaSystem" type="system">
     <hardware>

@@ -165,7 +165,7 @@ def test_bridge_presets_cover_feedforward_and_exact_async_runs() -> None:
     assert exact_async_params["control_initial_state_prediction_sec"] == 0.0
     assert exact_async_params["planner_gain_samples_per_cycle"] == 128
     assert exact_async_params["planner_gain_buffer_size"] == 512
-    assert exact_async_40hz_params["planner_gain_samples_per_cycle"] == 128
+    assert exact_async_40hz_params["planner_gain_samples_per_cycle"] == 64
     assert exact_async_40hz_params["planner_gain_buffer_size"] == 512
 
 
