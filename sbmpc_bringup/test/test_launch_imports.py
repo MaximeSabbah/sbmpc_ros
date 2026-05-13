@@ -76,6 +76,6 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
         },
     )
     defaults = declared_argument_defaults(launch_description)
-    assert defaults["robot_ip"] == "172.17.0.1"
+    assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["enable_nonzero_control"] == "true"
     assert "sbmpc_bridge_exact_async_40hz.yaml" in defaults["bridge_params_file"]

@@ -140,7 +140,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("robot_type", default_value="fer"),
             DeclareLaunchArgument("arm_prefix", default_value=""),
             DeclareLaunchArgument("namespace", default_value=""),
-            DeclareLaunchArgument("robot_ip", default_value="172.17.0.1"),
+            DeclareLaunchArgument("robot_ip", default_value="172.17.1.2"),
             DeclareLaunchArgument("load_gripper", default_value="false"),
             DeclareLaunchArgument("use_fake_hardware", default_value="false"),
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),

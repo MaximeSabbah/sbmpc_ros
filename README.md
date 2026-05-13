@@ -105,7 +105,7 @@ warmup, activate `joint_state_estimator` and `linear_feedback_controller`, then
 publish controller outputs. No separate arming command is needed for the normal
 run.
 
-Default real robot launch, using robot IP `172.17.0.1` and the 40 Hz preset:
+Default real robot launch, using robot IP `172.17.1.2` and the 40 Hz preset:
 
 ```bash
 cd /workspace/ros2_ws
@@ -118,7 +118,7 @@ Equivalent explicit command:
 
 ```bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
-  robot_ip:=172.17.0.1 \
+  robot_ip:=172.17.1.2 \
   bridge_params_file:=/workspace/sbmpc_ros/sbmpc_bringup/config/sbmpc_bridge_exact_async_40hz.yaml
 ```
 
@@ -126,7 +126,7 @@ Try the 50 Hz preset:
 
 ```bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
-  robot_ip:=172.17.0.1 \
+  robot_ip:=172.17.1.2 \
   bridge_params_file:=/workspace/sbmpc_ros/sbmpc_bringup/config/sbmpc_bridge_exact_async.yaml
 ```
 
@@ -134,13 +134,13 @@ Dry hardware bringup without SB-MPC commands:
 
 ```bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
-  robot_ip:=172.17.0.1 \
+  robot_ip:=172.17.1.2 \
   enable_nonzero_control:=false
 ```
 
 Useful real launch arguments:
 
-- `robot_ip:=172.17.0.1`: Franka FCI address.
+- `robot_ip:=172.17.1.2`: Franka FCI address.
 - `bridge_params_file:=...`: select 40 Hz, 50 Hz, or feedforward-only config.
 - `enable_nonzero_control:=true`: default; publish SB-MPC outputs after
   readiness. Set false only for dry bringup.
