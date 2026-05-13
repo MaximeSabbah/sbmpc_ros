@@ -62,6 +62,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "controller_switch_timeout_sec",
             "controller_manager_name",
             "controllers_file",
+            "ee_id",
             "enable_nonzero_control",
             "fake_sensor_commands",
             "joint_state_rate",
@@ -69,13 +70,18 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "load_gripper",
             "namespace",
             "pixi_env",
+            "robot_description_file",
             "robot_ip",
             "robot_type",
+            "safety_distance",
             "sbmpc_dir",
+            "use_camera",
             "use_fake_hardware",
+            "use_ft_sensor",
         },
     )
     defaults = declared_argument_defaults(launch_description)
     assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["enable_nonzero_control"] == "true"
     assert "sbmpc_bridge_exact_async_40hz.yaml" in defaults["bridge_params_file"]
+    assert "franka_arm_with_sbmpc_real.urdf.xacro" in defaults["robot_description_file"]

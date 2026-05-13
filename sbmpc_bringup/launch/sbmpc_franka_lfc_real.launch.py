@@ -8,10 +8,13 @@ from launch.actions import (
     RegisterEventHandler,
     Shutdown,
 )
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
+    Command,
     EnvironmentVariable,
+    FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
 )
@@ -27,23 +30,130 @@ from sbmpc_bringup.constants import (
 
 
 def generate_launch_description() -> LaunchDescription:
-    franka_core = IncludeLaunchDescription(
+    robot_description_file = LaunchConfiguration("robot_description_file")
+    robot_description = ParameterValue(
+        Command(
+            [
+                PathJoinSubstitution([FindExecutable(name="xacro")]),
+                " ",
+                robot_description_file,
+                " robot_ip:=",
+                LaunchConfiguration("robot_ip"),
+                " mount_end_effector:=",
+                LaunchConfiguration("load_gripper"),
+                " use_fake_hardware:=",
+                LaunchConfiguration("use_fake_hardware"),
+                " fake_sensor_commands:=",
+                LaunchConfiguration("fake_sensor_commands"),
+                " ee_id:=",
+                LaunchConfiguration("ee_id"),
+                " use_camera:=",
+                LaunchConfiguration("use_camera"),
+                " use_ft_sensor:=",
+                LaunchConfiguration("use_ft_sensor"),
+                " safety_distance:=",
+                LaunchConfiguration("safety_distance"),
+            ]
+        ),
+        value_type=str,
+    )
+
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        namespace=LaunchConfiguration("namespace"),
+        parameters=[{"robot_description": robot_description}],
+        output="screen",
+        on_exit=Shutdown(),
+    )
+
+    controller_manager = Node(
+        package="controller_manager",
+        executable="ros2_control_node",
+        namespace=LaunchConfiguration("namespace"),
+        parameters=[
+            LaunchConfiguration("controllers_file"),
+            {"robot_description": robot_description},
+            {"robot_type": LaunchConfiguration("robot_type")},
+            {
+                "load_gripper": ParameterValue(
+                    LaunchConfiguration("load_gripper"),
+                    value_type=bool,
+                )
+            },
+            {"arm_prefix": LaunchConfiguration("arm_prefix")},
+        ],
+        output="screen",
+        on_exit=Shutdown(),
+    )
+
+    joint_state_publisher = Node(
+        package="joint_state_publisher",
+        executable="joint_state_publisher",
+        name="joint_state_publisher",
+        namespace=LaunchConfiguration("namespace"),
+        parameters=[
+            {
+                "source_list": [
+                    "franka/joint_states",
+                    "franka_gripper/joint_states",
+                ],
+                "rate": ParameterValue(
+                    LaunchConfiguration("joint_state_rate"),
+                    value_type=int,
+                ),
+            }
+        ],
+        output="screen",
+    )
+
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        namespace=LaunchConfiguration("namespace"),
+        arguments=[
+            "joint_state_broadcaster",
+            "--controller-manager",
+            LaunchConfiguration("controller_manager_name"),
+            "--controller-manager-timeout",
+            "60",
+            "--param-file",
+            LaunchConfiguration("controllers_file"),
+            "--controller-ros-args",
+            "--remap",
+            "joint_states:=franka/joint_states",
+        ],
+        output="screen",
+    )
+
+    franka_robot_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        namespace=LaunchConfiguration("namespace"),
+        arguments=[
+            "franka_robot_state_broadcaster",
+            "--controller-manager",
+            LaunchConfiguration("controller_manager_name"),
+            "--controller-manager-timeout",
+            "60",
+            "--param-file",
+            LaunchConfiguration("controllers_file"),
+        ],
+        output="screen",
+    )
+
+    franka_gripper = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("franka_bringup"), "launch", "franka.launch.py"]
+                [FindPackageShare("franka_gripper"), "launch", "gripper.launch.py"]
             )
         ),
         launch_arguments={
-            "robot_type": LaunchConfiguration("robot_type"),
-            "arm_prefix": LaunchConfiguration("arm_prefix"),
             "namespace": LaunchConfiguration("namespace"),
             "robot_ip": LaunchConfiguration("robot_ip"),
-            "load_gripper": LaunchConfiguration("load_gripper"),
             "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
-            "fake_sensor_commands": LaunchConfiguration("fake_sensor_commands"),
-            "joint_state_rate": LaunchConfiguration("joint_state_rate"),
-            "controllers_yaml": LaunchConfiguration("controllers_file"),
         }.items(),
+        condition=IfCondition(LaunchConfiguration("load_gripper")),
     )
 
     lfc_stack_spawner = Node(
@@ -135,6 +245,15 @@ def generate_launch_description() -> LaunchDescription:
             )
         ]
 
+    def shutdown_if_spawner_failed(name: str):
+        def on_exit(event, context):
+            del context
+            if event.returncode == 0:
+                return []
+            return [Shutdown(reason=f"Failed to spawn {name}.")]
+
+        return on_exit
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_type", default_value="fer"),
@@ -142,10 +261,24 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("namespace", default_value=""),
             DeclareLaunchArgument("robot_ip", default_value="172.17.1.2"),
             DeclareLaunchArgument("load_gripper", default_value="false"),
+            DeclareLaunchArgument("ee_id", default_value="agimus_franka_hand"),
+            DeclareLaunchArgument("use_camera", default_value="false"),
+            DeclareLaunchArgument("use_ft_sensor", default_value="false"),
+            DeclareLaunchArgument("safety_distance", default_value="0.03"),
             DeclareLaunchArgument("use_fake_hardware", default_value="false"),
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
             DeclareLaunchArgument("joint_state_rate", default_value="30"),
             DeclareLaunchArgument("enable_nonzero_control", default_value="true"),
+            DeclareLaunchArgument(
+                "robot_description_file",
+                default_value=PathJoinSubstitution(
+                    [
+                        FindPackageShare("sbmpc_bringup"),
+                        "urdf",
+                        "franka_arm_with_sbmpc_real.urdf.xacro",
+                    ]
+                ),
+            ),
             DeclareLaunchArgument(
                 "bridge_runtime_script",
                 default_value=EnvironmentVariable(
@@ -219,12 +352,37 @@ def generate_launch_description() -> LaunchDescription:
             ),
             LogInfo(
                 msg=[
+                    "SB-MPC real robot description: ",
+                    LaunchConfiguration("robot_description_file"),
+                ]
+            ),
+            LogInfo(
+                msg=[
                     "SB-MPC nonzero control after readiness: ",
                     LaunchConfiguration("enable_nonzero_control"),
                 ]
             ),
-            franka_core,
+            robot_state_publisher,
+            controller_manager,
+            joint_state_publisher,
+            joint_state_broadcaster_spawner,
+            franka_robot_state_broadcaster_spawner,
+            franka_gripper,
             lfc_stack_spawner,
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=joint_state_broadcaster_spawner,
+                    on_exit=shutdown_if_spawner_failed("joint_state_broadcaster"),
+                )
+            ),
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=franka_robot_state_broadcaster_spawner,
+                    on_exit=shutdown_if_spawner_failed(
+                        "franka_robot_state_broadcaster"
+                    ),
+                )
+            ),
             RegisterEventHandler(
                 OnProcessExit(
                     target_action=lfc_stack_spawner,

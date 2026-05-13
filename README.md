@@ -149,6 +149,10 @@ Useful real launch arguments:
 - `bridge_warmup_timeout_sec:=120`: maximum time to wait for planner/JAX warmup.
 - `controller_switch_timeout_sec:=10`: controller activation timeout.
 - `load_gripper:=false`: arm-only bringup.
+- `use_camera:=false`: set true to add the Agimus calibrated camera mount to
+  the robot description.
+- `ee_id:=agimus_franka_hand`: end-effector model used when `load_gripper` or
+  `use_camera` requires one.
 - `use_fake_hardware:=true`: controller-manager check without the robot.
 
 Monitor the run:
