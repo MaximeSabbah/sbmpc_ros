@@ -62,6 +62,9 @@ def test_franka_controllers_yaml_declares_expected_controller_types() -> None:
     assert cm_params[JOINT_STATE_BROADCASTER_NAME]["type"] == (
         "joint_state_broadcaster/JointStateBroadcaster"
     )
+    assert cm_params["franka_robot_state_broadcaster"]["type"] == (
+        "agimus_franka_robot_state_broadcaster/AgimusFrankaRobotStateBroadcaster"
+    )
     assert cm_params[JOINT_STATE_ESTIMATOR_NAME]["type"] == (
         "linear_feedback_controller/JointStateEstimator"
     )
@@ -76,6 +79,9 @@ def test_franka_controllers_yaml_declares_expected_controller_types() -> None:
     assert gripper["type"] == "position_controllers/GripperActionController"
     assert gripper["joint"] == FER_GRIPPER_JOINT_NAME
     assert gripper["allow_stalling"] is True
+
+    state_broadcaster = config["franka_robot_state_broadcaster"]["ros__parameters"]
+    assert state_broadcaster == {"arm_id": "fer"}
 
 
 def test_franka_lfc_params_match_the_expected_fer_interface_layout() -> None:

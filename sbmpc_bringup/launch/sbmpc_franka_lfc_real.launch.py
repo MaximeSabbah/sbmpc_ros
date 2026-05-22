@@ -96,7 +96,7 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "source_list": [
                     "franka/joint_states",
-                    "franka_gripper/joint_states",
+                    "fer_gripper/joint_states",
                 ],
                 "rate": ParameterValue(
                     LaunchConfiguration("joint_state_rate"),
@@ -145,13 +145,13 @@ def generate_launch_description() -> LaunchDescription:
     franka_gripper = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
-                [FindPackageShare("franka_gripper"), "launch", "gripper.launch.py"]
+                [FindPackageShare("agimus_franka_gripper"), "launch", "gripper.launch.py"]
             )
         ),
         launch_arguments={
-            "namespace": LaunchConfiguration("namespace"),
             "robot_ip": LaunchConfiguration("robot_ip"),
             "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
+            "arm_id": LaunchConfiguration("robot_type"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("load_gripper")),
     )

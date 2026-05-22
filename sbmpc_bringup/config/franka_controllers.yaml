@@ -11,7 +11,7 @@ controller_manager:
       type: joint_state_broadcaster/JointStateBroadcaster
 
     franka_robot_state_broadcaster:
-      type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+      type: agimus_franka_robot_state_broadcaster/AgimusFrankaRobotStateBroadcaster
 
     joint_state_estimator:
       type: linear_feedback_controller/JointStateEstimator
@@ -24,12 +24,7 @@ controller_manager:
 
 franka_robot_state_broadcaster:
   ros__parameters:
-    robot_type: fer
-    arm_prefix: ""
-    lock_try_count: 5
-    lock_sleep_interval: 5
-    lock_log_error: false
-    lock_update_success: true
+    arm_id: fer
 
 gripper_action_controller:
   ros__parameters:

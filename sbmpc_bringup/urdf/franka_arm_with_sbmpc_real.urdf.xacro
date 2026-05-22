@@ -37,10 +37,10 @@
     use_camera="$(arg use_camera)"
     robot_safety_distance="$(arg safety_distance)"/>
 
-  <ros2_control name="FrankaHardwareInterface" type="system">
+  <ros2_control name="AgimusFrankaHardwareInterface" type="system">
     <hardware>
       <param name="version">1.0.0</param>
-      <param name="robot_type">fer</param>
+      <param name="arm_id">fer</param>
       <param name="prefix"></param>
       <xacro:if value="$(arg use_fake_hardware)">
         <plugin>mock_components/GenericSystem</plugin>
@@ -48,7 +48,7 @@
         <param name="state_following_offset">0.0</param>
       </xacro:if>
       <xacro:unless value="$(arg use_fake_hardware)">
-        <plugin>franka_hardware/FrankaHardwareInterface</plugin>
+        <plugin>agimus_franka_hardware/AgimusFrankaHardwareInterface</plugin>
         <param name="robot_ip">$(arg robot_ip)</param>
         <param name="arm_prefix"></param>
       </xacro:unless>

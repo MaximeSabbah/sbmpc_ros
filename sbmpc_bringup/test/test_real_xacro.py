@@ -39,20 +39,23 @@ def interface_names(joint: ET.Element, tag: str) -> tuple[str, ...]:
     return tuple(child.attrib["name"] for child in joint.findall(tag))
 
 
-def test_real_xacro_uses_regular_franka_hardware_plugin() -> None:
+def test_real_xacro_uses_agimus_franka_hardware_plugin() -> None:
     control = ros2_control(render_real_urdf())
     hardware = control.find("hardware")
     assert hardware is not None
 
     plugin = hardware.find("plugin")
     assert plugin is not None
-    assert plugin.text == "franka_hardware/FrankaHardwareInterface"
+    assert plugin.text == "agimus_franka_hardware/AgimusFrankaHardwareInterface"
 
     params = params_by_name(hardware)
     assert params["version"] == "1.0.0"
-    assert params["robot_type"] == "fer"
+    assert params["arm_id"] == "fer"
     assert params["robot_ip"] == "172.17.1.2"
-    assert "agimus_franka_hardware" not in ET.tostring(control, encoding="unicode")
+    assert "franka_hardware/FrankaHardwareInterface" not in ET.tostring(
+        control,
+        encoding="unicode",
+    )
 
 
 def test_real_xacro_can_render_fake_hardware_for_dry_checks() -> None:
@@ -71,7 +74,7 @@ def test_real_xacro_can_render_fake_hardware_for_dry_checks() -> None:
 
     params = params_by_name(hardware)
     assert params["fake_sensor_commands"] == "true"
-    assert "franka_hardware/FrankaHardwareInterface" not in ET.tostring(
+    assert "agimus_franka_hardware/AgimusFrankaHardwareInterface" not in ET.tostring(
         control,
         encoding="unicode",
     )
