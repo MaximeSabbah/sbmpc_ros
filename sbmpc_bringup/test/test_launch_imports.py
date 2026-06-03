@@ -61,6 +61,8 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "bridge_params_file",
             "controller_switch_timeout_sec",
             "controller_manager_name",
+            "controller_watchdog_period_sec",
+            "controller_watchdog_service_timeout_sec",
             "controllers_file",
             "ee_id",
             "enable_nonzero_control",
@@ -68,6 +70,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "joint_state_rate",
             "lfc_params_file",
             "load_gripper",
+            "max_abs_torque",
             "namespace",
             "pixi_env",
             "robot_description_file",
@@ -75,6 +78,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "robot_type",
             "safety_distance",
             "sbmpc_dir",
+            "torque_limit_mode",
             "use_camera",
             "use_fake_hardware",
             "use_ft_sensor",
@@ -83,5 +87,24 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
     defaults = declared_argument_defaults(launch_description)
     assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["enable_nonzero_control"] == "true"
+    assert defaults["max_abs_torque"] == "12.0"
+    assert defaults["torque_limit_mode"] == "clip"
     assert "sbmpc_bridge_exact_async_40hz.yaml" in defaults["bridge_params_file"]
     assert "franka_arm_with_sbmpc_real.urdf.xacro" in defaults["robot_description_file"]
+
+
+def test_real_launch_joint_state_broadcaster_remap_is_spawner_safe() -> None:
+    module = load_launch_module("sbmpc_franka_lfc_real.launch.py")
+    launch_description = module.generate_launch_description()
+
+    matching_spawners = [
+        entity
+        for entity in launch_description.entities
+        if getattr(entity, "_Node__arguments", None)
+        and getattr(entity, "_Node__arguments")[0] == "joint_state_broadcaster"
+    ]
+
+    assert len(matching_spawners) == 1
+    arguments = getattr(matching_spawners[0], "_Node__arguments")
+    assert "--controller-ros-args=--remap" in arguments
+    assert "--controller-ros-args=joint_states:=franka/joint_states" in arguments

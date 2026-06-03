@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fer_sbmpc_real">
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fer">
   <xacro:arg name="robot_ip" default=""/>
   <xacro:arg name="mount_end_effector" default="false"/>
   <xacro:arg name="use_fake_hardware" default="false"/>
@@ -41,7 +41,6 @@
     <hardware>
       <param name="version">1.0.0</param>
       <param name="arm_id">fer</param>
-      <param name="prefix"></param>
       <xacro:if value="$(arg use_fake_hardware)">
         <plugin>mock_components/GenericSystem</plugin>
         <param name="fake_sensor_commands">$(arg fake_sensor_commands)</param>
@@ -50,7 +49,6 @@
       <xacro:unless value="$(arg use_fake_hardware)">
         <plugin>agimus_franka_hardware/AgimusFrankaHardwareInterface</plugin>
         <param name="robot_ip">$(arg robot_ip)</param>
-        <param name="arm_prefix"></param>
       </xacro:unless>
     </hardware>
 

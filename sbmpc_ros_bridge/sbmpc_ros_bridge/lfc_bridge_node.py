@@ -38,6 +38,7 @@ from sbmpc_ros_bridge.safety import (
     BridgeSafetyProfile,
     PlanningDeadlineMonitor,
     UnsafeControlError,
+    make_conservative_bringup_profile,
     make_default_safety_profile,
     validate_planner_output,
 )
@@ -128,6 +129,10 @@ class SbMpcLfcBridgeNode(Node):
             "planner_deadline_sec",
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
+        self.declare_parameter("max_abs_torque", 0.0)
+        self.declare_parameter("torque_limit_mode", "clip")
+        self.declare_parameter("max_gain_norm", 0.0)
+        self.declare_parameter("gain_limit_mode", "scale")
         self.declare_parameter("planner_warmup_iterations", 10)
         self.declare_parameter("planner_warmup_on_start", True)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
@@ -255,7 +260,9 @@ class SbMpcLfcBridgeNode(Node):
             )
         )
         self._safety_profile = (
-            make_default_safety_profile() if safety_profile is None else safety_profile
+            self._safety_profile_from_parameters()
+            if safety_profile is None
+            else safety_profile
         )
         self._deadline_monitor = PlanningDeadlineMonitor(
             max_planning_duration_sec=planner_deadline_sec,
@@ -366,6 +373,7 @@ class SbMpcLfcBridgeNode(Node):
                 self.get_logger().info(
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
+                self._log_safety_limits()
                 jax_cache_dir = getattr(self._planner, "jax_cache_dir", None)
                 if jax_cache_dir:
                     self.get_logger().info(
@@ -381,6 +389,47 @@ class SbMpcLfcBridgeNode(Node):
                 and self._planner_warmup_on_start_enabled()
             ):
                 self._start_warmup_thread()
+
+    def _safety_profile_from_parameters(self) -> BridgeSafetyProfile:
+        max_abs_torque = self._optional_positive_double_parameter("max_abs_torque")
+        max_gain_norm = self._optional_positive_double_parameter("max_gain_norm")
+        if max_abs_torque is None and max_gain_norm is None:
+            return make_default_safety_profile()
+
+        return make_conservative_bringup_profile(
+            max_abs_torque=max_abs_torque,
+            torque_limit_mode=(
+                self.get_parameter("torque_limit_mode")
+                .get_parameter_value()
+                .string_value
+                .strip()
+                .lower()
+            ),
+            max_gain_norm=max_gain_norm,
+            gain_limit_mode=(
+                self.get_parameter("gain_limit_mode")
+                .get_parameter_value()
+                .string_value
+                .strip()
+                .lower()
+            ),
+        )
+
+    def _optional_positive_double_parameter(self, name: str) -> float | None:
+        value = self.get_parameter(name).get_parameter_value().double_value
+        return float(value) if value > 0.0 else None
+
+    def _log_safety_limits(self) -> None:
+        limits = self._safety_profile.planner_output_limits()
+        active_items = {}
+        if limits.max_abs_torque is not None:
+            active_items["max_abs_torque"] = limits.max_abs_torque
+            active_items["torque_limit_mode"] = limits.torque_limit_mode
+        if limits.max_gain_norm is not None:
+            active_items["max_gain_norm"] = limits.max_gain_norm
+            active_items["gain_limit_mode"] = limits.gain_limit_mode
+        if active_items:
+            self.get_logger().info(f"Bridge safety limits: {active_items}")
 
     def _force_zero_control_enabled(self) -> bool:
         self._force_zero_control = (

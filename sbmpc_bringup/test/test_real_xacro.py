@@ -39,6 +39,15 @@ def interface_names(joint: ET.Element, tag: str) -> tuple[str, ...]:
     return tuple(child.attrib["name"] for child in joint.findall(tag))
 
 
+def test_real_xacro_robot_name_matches_agimus_arm_id() -> None:
+    root = render_real_urdf()
+    hardware = ros2_control(root).find("hardware")
+    assert hardware is not None
+
+    params = params_by_name(hardware)
+    assert root.attrib["name"] == params["arm_id"] == "fer"
+
+
 def test_real_xacro_uses_agimus_franka_hardware_plugin() -> None:
     control = ros2_control(render_real_urdf())
     hardware = control.find("hardware")
@@ -52,6 +61,8 @@ def test_real_xacro_uses_agimus_franka_hardware_plugin() -> None:
     assert params["version"] == "1.0.0"
     assert params["arm_id"] == "fer"
     assert params["robot_ip"] == "172.17.1.2"
+    assert "prefix" not in params
+    assert "arm_prefix" not in params
     assert "franka_hardware/FrankaHardwareInterface" not in ET.tostring(
         control,
         encoding="unicode",

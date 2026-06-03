@@ -119,9 +119,8 @@ def generate_launch_description() -> LaunchDescription:
             "60",
             "--param-file",
             LaunchConfiguration("controllers_file"),
-            "--controller-ros-args",
-            "--remap",
-            "joint_states:=franka/joint_states",
+            "--controller-ros-args=--remap",
+            "--controller-ros-args=joint_states:=franka/joint_states",
         ],
         output="screen",
     )
@@ -189,6 +188,11 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration("enable_nonzero_control"),
                     value_type=bool,
                 ),
+                "max_abs_torque": ParameterValue(
+                    LaunchConfiguration("max_abs_torque"),
+                    value_type=float,
+                ),
+                "torque_limit_mode": LaunchConfiguration("torque_limit_mode"),
             },
         ],
         additional_env={
@@ -219,6 +223,26 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
+    controller_watchdog = Node(
+        package="sbmpc_bringup",
+        executable="monitor_controller_state",
+        arguments=[
+            "--controller-manager",
+            LaunchConfiguration("controller_manager_name"),
+            "--required-controller",
+            JOINT_STATE_ESTIMATOR_NAME,
+            "--required-controller",
+            LINEAR_FEEDBACK_CONTROLLER_NAME,
+            "--required-hardware",
+            "AgimusFrankaHardwareInterface",
+            "--period-sec",
+            LaunchConfiguration("controller_watchdog_period_sec"),
+            "--service-timeout-sec",
+            LaunchConfiguration("controller_watchdog_service_timeout_sec"),
+        ],
+        output="screen",
+    )
+
     def on_lfc_stack_spawner_exit(event, context):
         del context
         if event.returncode != 0:
@@ -235,7 +259,7 @@ def generate_launch_description() -> LaunchDescription:
     def on_activation_exit(event, context):
         del context
         if event.returncode == 0:
-            return []
+            return [controller_watchdog]
         return [
             Shutdown(
                 reason=(
@@ -254,6 +278,19 @@ def generate_launch_description() -> LaunchDescription:
 
         return on_exit
 
+    def on_controller_watchdog_exit(event, context):
+        del context
+        if event.returncode == 0:
+            return []
+        return [
+            Shutdown(
+                reason=(
+                    "SB-MPC controller/hardware watchdog detected a post-arming "
+                    "fault."
+                )
+            )
+        ]
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_type", default_value="fer"),
@@ -269,6 +306,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
             DeclareLaunchArgument("joint_state_rate", default_value="30"),
             DeclareLaunchArgument("enable_nonzero_control", default_value="true"),
+            DeclareLaunchArgument("max_abs_torque", default_value="12.0"),
+            DeclareLaunchArgument("torque_limit_mode", default_value="clip"),
             DeclareLaunchArgument(
                 "robot_description_file",
                 default_value=PathJoinSubstitution(
@@ -297,6 +336,14 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "controller_switch_timeout_sec",
                 default_value="10",
+            ),
+            DeclareLaunchArgument(
+                "controller_watchdog_period_sec",
+                default_value="0.25",
+            ),
+            DeclareLaunchArgument(
+                "controller_watchdog_service_timeout_sec",
+                default_value="2.0",
             ),
             DeclareLaunchArgument(
                 "pixi_env",
@@ -362,6 +409,15 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration("enable_nonzero_control"),
                 ]
             ),
+            LogInfo(
+                msg=[
+                    "SB-MPC feedforward torque cap: ",
+                    LaunchConfiguration("max_abs_torque"),
+                    " Nm (mode ",
+                    LaunchConfiguration("torque_limit_mode"),
+                    ")",
+                ]
+            ),
             robot_state_publisher,
             controller_manager,
             joint_state_publisher,
@@ -393,6 +449,12 @@ def generate_launch_description() -> LaunchDescription:
                 OnProcessExit(
                     target_action=activate_after_bridge_warmup,
                     on_exit=on_activation_exit,
+                )
+            ),
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=controller_watchdog,
+                    on_exit=on_controller_watchdog_exit,
                 )
             ),
         ]

@@ -28,6 +28,7 @@ setup(
     entry_points={
         "console_scripts": [
             "sbmpc_lfc_bridge_node = sbmpc_ros_bridge.lfc_bridge_node:main",
+            "sbmpc_lfc_control_probe = sbmpc_ros_bridge.lfc_control_probe:main",
             "sbmpc_planner_smoke = sbmpc_ros_bridge.planner_smoke:main",
         ],
     },

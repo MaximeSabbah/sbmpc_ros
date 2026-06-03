@@ -103,7 +103,9 @@ The real launch now follows the same readiness order as the simulation stack:
 load LFC controllers inactive, start the SB-MPC bridge, wait for planner/JAX
 warmup, activate `joint_state_estimator` and `linear_feedback_controller`, then
 publish controller outputs. No separate arming command is needed for the normal
-run.
+run. After arming, a controller watchdog monitors the LFC controllers and the
+Agimus hardware component; if controller_manager deactivates them after a robot
+reflex or hardware fault, the launch shuts down instead of hanging.
 
 Default real robot launch, using robot IP `172.17.1.2` and the 40 Hz preset:
 
@@ -130,7 +132,7 @@ ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
   bridge_params_file:=/workspace/sbmpc_ros/sbmpc_bringup/config/sbmpc_bridge_exact_async.yaml
 ```
 
-Dry hardware bringup without SB-MPC commands:
+Dry arming check without SB-MPC commands:
 
 ```bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
@@ -138,16 +140,27 @@ ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py \
   enable_nonzero_control:=false
 ```
 
+This still waits for planner/JAX warmup and activates the LFC stack, but the
+bridge remains silent after warmup so LFC stays in its PD holding mode. Use this
+first when checking the live FCI control loop, then rerun with
+`enable_nonzero_control:=true` once the controller stays active.
+
 Useful real launch arguments:
 
 - `robot_ip:=172.17.1.2`: Franka FCI address.
 - `bridge_params_file:=...`: select 40 Hz, 50 Hz, or feedforward-only config.
 - `enable_nonzero_control:=true`: default; publish SB-MPC outputs after
   readiness. Set false only for dry bringup.
+- `max_abs_torque:=12.0`: default real-robot feedforward cap in Nm. Raise only
+  after checking `/control` with the LFC command probe.
+- `torque_limit_mode:=clip`: clip over-limit planner feedforward. Use `reject`
+  to fail closed instead of publishing a clipped command.
 - `controllers_file:=...`: ROS2-control controller config.
 - `lfc_params_file:=...`: LFC/JSE parameters.
 - `bridge_warmup_timeout_sec:=120`: maximum time to wait for planner/JAX warmup.
 - `controller_switch_timeout_sec:=10`: controller activation timeout.
+- `controller_watchdog_period_sec:=0.25`: post-arming controller/hardware state
+  polling period.
 - `load_gripper:=false`: arm-only bringup.
 - `use_camera:=false`: set true to add the Agimus calibrated camera mount to
   the robot description.
@@ -165,6 +178,42 @@ ros2 topic echo /sbmpc/diagnostics
 Key diagnostics are `/control` cadence, fresh planner output rate, deadline
 misses, foreground time, background gain timing, gain age, completed gain
 batches, rejected planner outputs, and joint velocity.
+
+To diagnose a hard Franka reflex, start the LFC command probe before arming or
+before launching with automatic nonzero control:
+
+```bash
+ros2 run sbmpc_ros_bridge sbmpc_lfc_control_probe \
+  --sensor-topic /sensor \
+  --control-topic /control \
+  --warn-abs-effort 15.0 \
+  --json
+```
+
+The probe estimates the fixed-base LFC command from the actual ROS messages:
+`tau = feedforward + K * ([q_des - q, v_des - v])`. If `max_abs_feedforward` is
+large, the planner feedforward is the first suspect. If `max_abs_feedback_effort`
+is large while the feedforward is modest, inspect the initial-state mismatch,
+gain norm, and the PD-to-LF transition.
+
+To replay the planner from a measured robot state without touching the robot,
+copy `measured_position` and `measured_velocity` from one probe JSON line:
+
+```bash
+/workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+  ros2 run sbmpc_ros_bridge sbmpc_planner_smoke \
+  --joint-set fer \
+  --planner-mode exact_async_feedback \
+  --planner-horizon 8 \
+  --planner-dt 0.025 \
+  --planner-gain-samples-per-cycle 64 \
+  --planner-gain-buffer-size 512 \
+  --q '<measured_position JSON list>' \
+  --v '<measured_velocity JSON list>'
+```
+
+The smoke report includes `feedforward`, `max_abs_feedforward`,
+`predicted_q_delta_norm`, and `predicted_v_norm` for that state.
 
 ## Planner Smoke
 

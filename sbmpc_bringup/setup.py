@@ -42,6 +42,7 @@ setup(
             "replay_sbmpc_trajectory = sbmpc_bringup.replay:replay_main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
             "wait_for_bridge_warmup = sbmpc_bringup.warmup_wait:main",
+            "monitor_controller_state = sbmpc_bringup.controller_watchdog:main",
         ],
     },
 )

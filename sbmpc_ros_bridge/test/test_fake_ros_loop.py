@@ -23,6 +23,7 @@ from std_msgs.msg import Header, String
 from sbmpc_ros_bridge.joint_mapping import PANDA_ARM_JOINT_NAMES
 from sbmpc_ros_bridge.lfc_bridge_node import SbMpcLfcBridgeNode
 from sbmpc_ros_bridge.lfc_msg_adapter import float64_multi_array_to_numpy
+from sbmpc_ros_bridge.safety import make_conservative_bringup_profile
 
 
 LFC_QOS = QoSProfile(
@@ -160,6 +161,17 @@ class BadGainAfterFirstStepPlanner(FakePlanner):
             tau_ff=output.tau_ff,
             K=np.full((7, 14), np.nan, dtype=np.float64),
             diagnostics=output.diagnostics,
+        )
+
+
+class HighTorquePlanner(FakePlanner):
+    def step(self, planner_input) -> FakePlannerOutput:
+        self.step_inputs.append(planner_input)
+        self.step_calls += 1
+        return FakePlannerOutput(
+            tau_ff=np.asarray([20.0, -30.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            K=np.zeros((7, 14), dtype=np.float64),
+            diagnostics=FakePlannerDiagnostics(),
         )
 
 
@@ -397,6 +409,45 @@ def test_control_thread_publishes_controls() -> None:
         assert snapshot.state == "running"
         assert snapshot.published_control_count >= len(collector.controls)
         assert snapshot.accepted_planner_output_count >= 1
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_clips_feedforward_with_bringup_safety_profile() -> None:
+    planner = HighTorquePlanner()
+    bridge = SbMpcLfcBridgeNode(
+        planner=planner,
+        safety_profile=make_conservative_bringup_profile(
+            max_abs_torque=1.0,
+            torque_limit_mode="clip",
+        ),
+        publish_period_sec=0.02,
+    )
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            )
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.25)
+
+        assert collector.controls
+        feedforward = float64_multi_array_to_numpy(
+            collector.controls[-1].feedforward
+        ).reshape(-1)
+        np.testing.assert_allclose(
+            feedforward,
+            np.asarray([1.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0]),
+        )
+        assert bridge.diagnostics_snapshot().last_control_max_abs_feedforward == 1.0
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
