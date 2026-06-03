@@ -11,7 +11,12 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES, SBMPC_JOINT_STATES_TOPIC
+from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES
+
+
+# FR3 ("fer") per-joint limits, in FER_ARM_JOINT_NAMES order.
+FR3_TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
+FR3_VELOCITY_LIMITS = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +24,7 @@ class JointRecord:
     stamp_sec: float
     position: np.ndarray
     velocity: np.ndarray
+    effort: np.ndarray | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +62,10 @@ class ValidationSummary:
     joint_velocity_rms_mean: float | None
     joint_velocity_abs_max: float | None
     tail_joint_spans: tuple[float, ...]
+    joint_velocity_abs_max_per_joint: tuple[float, ...] = ()
+    joint_effort_abs_max_per_joint: tuple[float, ...] | None = None
+    worst_velocity_fraction: float | None = None
+    worst_torque_fraction: float | None = None
 
     @property
     def max_tail_joint_span(self) -> float | None:
@@ -74,16 +84,24 @@ class SimulationValidationCollector(Node):
         super().__init__("sbmpc_sim_validation_collector")
         self.diagnostics: list[dict[str, object]] = []
         self.joint_records: list[JointRecord] = []
+        # Only record joint samples while the controller is actively driving, so
+        # the torque/velocity limit gate ignores any pre-activation gravity sag.
+        self._armed = False
         self.create_subscription(String, diagnostics_topic, self._on_diagnostics, 10)
         self.create_subscription(JointState, joint_states_topic, self._on_joint_state, 10)
 
     def _on_diagnostics(self, message: String) -> None:
         try:
-            self.diagnostics.append(json.loads(message.data))
+            row = json.loads(message.data)
         except json.JSONDecodeError:
             return
+        if row.get("state") == "running" or int(row.get("accepted_planner_output_count") or 0) > 0:
+            self._armed = True
+        self.diagnostics.append(row)
 
     def _on_joint_state(self, message: JointState) -> None:
+        if not self._armed:
+            return
         indices = joint_indices(message.name)
         if indices is None:
             return
@@ -93,11 +111,20 @@ class SimulationValidationCollector(Node):
             velocity = vector_from_indices(message.velocity, indices)
         else:
             velocity = np.zeros(len(indices), dtype=np.float64)
+        if len(message.effort) >= len(message.name):
+            effort = vector_from_indices(message.effort, indices)
+        else:
+            effort = None
         stamp_sec = float(message.header.stamp.sec) + 1e-9 * float(
             message.header.stamp.nanosec
         )
         self.joint_records.append(
-            JointRecord(stamp_sec=stamp_sec, position=position, velocity=velocity)
+            JointRecord(
+                stamp_sec=stamp_sec,
+                position=position,
+                velocity=velocity,
+                effort=effort,
+            )
         )
 
 
@@ -168,6 +195,10 @@ def summarize(
     tail_joint_spans: tuple[float, ...] = ()
     velocity_rms_mean: float | None = None
     velocity_abs_max: float | None = None
+    vel_per_joint: tuple[float, ...] = ()
+    eff_per_joint: tuple[float, ...] | None = None
+    worst_velocity_fraction: float | None = None
+    worst_torque_fraction: float | None = None
     if joint_records:
         positions = np.asarray([record.position for record in joint_records])
         velocities = np.asarray([record.velocity for record in joint_records])
@@ -184,6 +215,14 @@ def summarize(
             np.mean(np.sqrt(np.mean(velocities * velocities, axis=1)))
         )
         velocity_abs_max = float(np.max(np.abs(velocities), initial=0.0))
+        velocity_peaks = np.max(np.abs(velocities), axis=0)
+        vel_per_joint = tuple(float(value) for value in velocity_peaks)
+        worst_velocity_fraction = float(np.max(velocity_peaks / FR3_VELOCITY_LIMITS))
+        if all(record.effort is not None for record in joint_records):
+            efforts = np.asarray([record.effort for record in joint_records])
+            effort_peaks = np.max(np.abs(efforts), axis=0)
+            eff_per_joint = tuple(float(value) for value in effort_peaks)
+            worst_torque_fraction = float(np.max(effort_peaks / FR3_TORQUE_LIMITS))
 
     return ValidationSummary(
         diagnostics_count=len(diagnostics),
@@ -245,6 +284,10 @@ def summarize(
         joint_velocity_rms_mean=velocity_rms_mean,
         joint_velocity_abs_max=velocity_abs_max,
         tail_joint_spans=tail_joint_spans,
+        joint_velocity_abs_max_per_joint=vel_per_joint,
+        joint_effort_abs_max_per_joint=eff_per_joint,
+        worst_velocity_fraction=worst_velocity_fraction,
+        worst_torque_fraction=worst_torque_fraction,
     )
 
 
@@ -339,6 +382,33 @@ def print_summary(summary: ValidationSummary) -> None:
             for index, span in enumerate(summary.tail_joint_spans)
         )
     )
+    wt = summary.worst_torque_fraction
+    wv = summary.worst_velocity_fraction
+    print(
+        "limit_usage_pct: "
+        f"worst_torque={'n/a' if wt is None else f'{wt * 100:.0f}'} "
+        f"worst_velocity={'n/a' if wv is None else f'{wv * 100:.0f}'}"
+    )
+    if summary.joint_effort_abs_max_per_joint is not None:
+        print(
+            "peak_torque_Nm: "
+            + ", ".join(
+                f"j{index + 1}={value:.1f}({value / limit * 100:.0f}%)"
+                for index, (value, limit) in enumerate(
+                    zip(summary.joint_effort_abs_max_per_joint, FR3_TORQUE_LIMITS)
+                )
+            )
+        )
+    if summary.joint_velocity_abs_max_per_joint:
+        print(
+            "peak_velocity_rad_s: "
+            + ", ".join(
+                f"j{index + 1}={value:.2f}({value / limit * 100:.0f}%)"
+                for index, (value, limit) in enumerate(
+                    zip(summary.joint_velocity_abs_max_per_joint, FR3_VELOCITY_LIMITS)
+                )
+            )
+        )
 
 
 def assert_stable(
@@ -347,6 +417,8 @@ def assert_stable(
     max_tail_joint_span: float,
     max_final_position_error: float,
     max_foreground_ms: float | None = None,
+    max_torque_fraction: float | None = None,
+    max_velocity_fraction: float | None = None,
 ) -> bool:
     if (
         summary.final_position_error is None
@@ -361,10 +433,30 @@ def assert_stable(
             and summary.max_foreground_ms <= max_foreground_ms
         )
     )
+    # Limit gates fail closed: if a bound is requested but the measurement is
+    # missing, the run is not certified.
+    torque_ok = (
+        True
+        if max_torque_fraction is None
+        else (
+            summary.worst_torque_fraction is not None
+            and summary.worst_torque_fraction <= max_torque_fraction
+        )
+    )
+    velocity_ok = (
+        True
+        if max_velocity_fraction is None
+        else (
+            summary.worst_velocity_fraction is not None
+            and summary.worst_velocity_fraction <= max_velocity_fraction
+        )
+    )
     return (
         summary.final_position_error <= max_final_position_error
         and summary.max_tail_joint_span <= max_tail_joint_span
         and foreground_ok
+        and torque_ok
+        and velocity_ok
         and summary.rejected_planner_output_count == 0
         and summary.gain_worker_error_count == 0
     )
@@ -374,7 +466,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration-sec", type=float, default=12.0)
     parser.add_argument("--diagnostics-topic", default="/sbmpc/diagnostics")
-    parser.add_argument("--joint-states-topic", default=SBMPC_JOINT_STATES_TOPIC)
+    parser.add_argument("--joint-states-topic", default="/joint_states")
     parser.add_argument("--tail-fraction", type=float, default=0.5)
     parser.add_argument("--assert-stable", action="store_true")
     parser.add_argument("--max-tail-joint-span", type=float, default=0.1)
@@ -387,6 +479,24 @@ def main() -> None:
             "Optional controller-only foreground timing gate. Leave unset for "
             "MuJoCo behavior/visual checks, where simulation load is not part "
             "of the real robot controller budget."
+        ),
+    )
+    parser.add_argument(
+        "--max-torque-fraction",
+        type=float,
+        default=0.9,
+        help=(
+            "Fail if peak measured joint effort exceeds this fraction of the "
+            "FR3 per-joint torque limit during active control. Set <=0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--max-velocity-fraction",
+        type=float,
+        default=0.9,
+        help=(
+            "Fail if peak measured joint velocity exceeds this fraction of the "
+            "FR3 per-joint velocity limit during active control. Set <=0 to disable."
         ),
     )
     args = parser.parse_args()
@@ -410,6 +520,12 @@ def main() -> None:
             max_tail_joint_span=args.max_tail_joint_span,
             max_final_position_error=args.max_final_position_error,
             max_foreground_ms=args.max_foreground_ms,
+            max_torque_fraction=(
+                args.max_torque_fraction if args.max_torque_fraction > 0 else None
+            ),
+            max_velocity_fraction=(
+                args.max_velocity_fraction if args.max_velocity_fraction > 0 else None
+            ),
         )
         print("verdict: " + ("stable" if stable else "unstable"))
         raise SystemExit(0 if stable else 1)
