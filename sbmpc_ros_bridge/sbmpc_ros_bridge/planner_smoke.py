@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--planner-horizon", type=int, default=8)
     parser.add_argument("--planner-dt", type=float, default=0.025)
     parser.add_argument("--planner-num-samples", type=int, default=1024)
-    parser.add_argument("--planner-noise-scale", type=float, default=0.05)
+    parser.add_argument("--planner-noise-scale", type=float, default=1.0)
     parser.add_argument("--planner-temperature", type=float, default=0.05)
     parser.add_argument("--planner-gain-samples-per-cycle", type=int, default=64)
     parser.add_argument("--planner-gain-buffer-size", type=int, default=512)

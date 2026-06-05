@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
 import os
 from pathlib import Path
 from typing import Any
@@ -276,6 +275,12 @@ class SbMpcPlannerAdapter:
 
     @staticmethod
     def _build_default_controller(config_overrides: PlannerConfigOverrides) -> Any:
+        if config_overrides.reseed_every_step:
+            raise ValueError(
+                "planner_reseed_every_step is no longer supported. "
+                "The ROS pregrasp planner warm-starts once, then optimizes the "
+                "shifted MPPI solution with torque-limit-scaled sampling."
+            )
         try:
             from sbmpc.examples.franka_emika_panda.planner_api import PandaPregraspController
             from sbmpc.examples.franka_emika_panda.panda_pregrasp import (
@@ -309,11 +314,6 @@ class SbMpcPlannerAdapter:
         return PandaPregraspController(
             planner=planner,
             config=config,
-            reseed_every_step=(
-                True
-                if config_overrides.reseed_every_step is None
-                else bool(config_overrides.reseed_every_step)
-            ),
             gain_mode=config_overrides.mode,
             compute_running_cost=False,
             compute_task_diagnostics=(
@@ -457,27 +457,10 @@ def _planner_initial_guess(
     dt: float,
     initial_guess_phase: Any,
 ) -> Any:
+    del dt, initial_guess_phase
     xp = _array_namespace()
-    state = xp.concatenate(
-        [
-            xp.asarray(planner.home_q, dtype=np.float32),
-            xp.zeros(planner.nv, dtype=np.float32),
-        ]
-    )
-
-    parameters = inspect.signature(planner.nominal_torque_sequence_from_state).parameters
-    if len(parameters) >= 4:
-        return planner.nominal_torque_sequence_from_state(
-            state,
-            horizon,
-            dt,
-            initial_guess_phase,
-        )
-    return planner.nominal_torque_sequence_from_state(
-        state,
-        horizon,
-        dt,
-    )
+    nu = int(getattr(planner, "nu", len(getattr(planner, "torque_limits"))))
+    return xp.zeros((int(horizon), nu), dtype=np.float32)
 
 
 def _array_namespace():

@@ -218,11 +218,9 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
     assert np.asarray(updated_config.MPC.initial_guess).shape == (12, 7)
     np.testing.assert_allclose(
         np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
-        np.full((12, 7), 0.04, dtype=np.float32),
+        np.zeros((12, 7), dtype=np.float32),
     )
-    assert planner.initial_guess_calls[-1]["horizon"] == 12
-    assert np.isclose(planner.initial_guess_calls[-1]["dt"], 0.04)
-    assert planner.initial_guess_calls[-1]["phase"] == "PREGRASP"
+    assert planner.initial_guess_calls == []
 
 
 def test_apply_config_overrides_rejects_control_points_above_horizon() -> None:
@@ -235,7 +233,7 @@ def test_apply_config_overrides_rejects_control_points_above_horizon() -> None:
         )
 
 
-def test_apply_config_overrides_supports_pregrasp_style_initial_guess() -> None:
+def test_apply_config_overrides_uses_neutral_initial_guess() -> None:
     config = FakeConfig()
     planner = FakePregraspPlanner()
 
@@ -249,12 +247,16 @@ def test_apply_config_overrides_supports_pregrasp_style_initial_guess() -> None:
     assert np.asarray(updated_config.MPC.initial_guess).shape == (5, 7)
     np.testing.assert_allclose(
         np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
-        np.full((5, 7), 0.03, dtype=np.float32),
+        np.zeros((5, 7), dtype=np.float32),
     )
-    np.testing.assert_allclose(
-        planner.initial_guess_calls[-1]["dt"],
-        np.full((5,), 0.03, dtype=np.float32),
-    )
+    assert planner.initial_guess_calls == []
+
+
+def test_default_adapter_rejects_per_step_trajectory_reseed() -> None:
+    with pytest.raises(ValueError, match="planner_reseed_every_step"):
+        SbMpcPlannerAdapter._build_default_controller(
+            PlannerConfigOverrides(reseed_every_step=True)
+        )
 
 
 def test_configure_jax_compilation_cache_enables_persistent_cache(
