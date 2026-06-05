@@ -1,5 +1,5 @@
 <mujoco model="panda_ros2_control">
-  <compiler angle="radian" meshdir="/workspace/sbmpc/examples/panda_pick_place/assets" autolimits="true"/>
+  <compiler angle="radian" meshdir="/workspace/sbmpc/models/panda_pick_place/assets" autolimits="true"/>
 
   <default>
     <default class="panda">

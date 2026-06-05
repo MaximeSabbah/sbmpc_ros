@@ -282,8 +282,8 @@ class SbMpcPlannerAdapter:
                 "shifted MPPI solution with torque-limit-scaled sampling."
             )
         try:
-            from sbmpc.examples.franka_emika_panda.planner_api import PandaPregraspController
-            from sbmpc.examples.franka_emika_panda.panda_pregrasp import (
+            from sbmpc.controller.franka_emika_panda.planner_api import PandaPregraspController
+            from sbmpc.controller.franka_emika_panda.panda_pregrasp import (
                 PandaPregraspPlanner,
                 make_panda_pregrasp_config,
             )
@@ -335,7 +335,7 @@ class SbMpcPlannerAdapter:
         num_steps: int | None = None,
     ) -> dict[str, Any]:
         try:
-            from sbmpc.examples.franka_emika_panda.panda_pick_and_place import Phase
+            from sbmpc.controller.franka_emika_panda.panda_pick_and_place import Phase
         except ImportError:
             kwargs: dict[str, Any] = {}
             if num_steps is not None:
@@ -354,7 +354,7 @@ class SbMpcPlannerAdapter:
         try:
             Phase = phase_enum
             if Phase is None:
-                from sbmpc.examples.franka_emika_panda.panda_pick_and_place import Phase
+                from sbmpc.controller.franka_emika_panda.panda_pick_and_place import Phase
         except ImportError as exc:
             raise RuntimeError(
                 "sbmpc is not importable, so the requested planner phase cannot be "

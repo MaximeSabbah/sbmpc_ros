@@ -16,7 +16,7 @@ XACRO_FILE = PACKAGE_DIR / "urdf" / "franka_arm_with_sbmpc_mujoco.urdf.xacro"
 MUJOCO_DIR = PACKAGE_DIR / "mujoco"
 ROS2_CONTROL_SCENE = MUJOCO_DIR / "panda_pick_place_ros2_control_scene.xml"
 ROS2_CONTROL_PANDA = MUJOCO_DIR / "panda_ros2_control.xml"
-BENCHMARK_DIR = Path("/workspace/sbmpc/examples/panda_pick_place")
+BENCHMARK_DIR = Path("/workspace/sbmpc/models/panda_pick_place")
 BENCHMARK_SCENE = BENCHMARK_DIR / "scene.xml"
 BENCHMARK_PANDA = BENCHMARK_DIR / "panda.xml"
 
@@ -102,7 +102,7 @@ def test_mujoco_xacro_exposes_fer_arm_effort_interfaces_and_gripper_position() -
 def without_approved_panda_changes(text: str) -> str:
     replacements = {
         "panda_ros2_control": "panda",
-        "/workspace/sbmpc/examples/panda_pick_place/assets": "assets",
+        "/workspace/sbmpc/models/panda_pick_place/assets": "assets",
         "fer_finger_joint1": "finger_joint1",
         "fer_finger_joint2": "finger_joint2",
     }
