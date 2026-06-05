@@ -152,6 +152,18 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
     )
 
 
+def test_planner_config_overrides_carry_compute_task_diagnostics() -> None:
+    assert (
+        planner_config_overrides_from_values().compute_task_diagnostics is None
+    )
+    assert (
+        planner_config_overrides_from_values(
+            compute_task_diagnostics=True
+        ).compute_task_diagnostics
+        is True
+    )
+
+
 def test_planner_config_overrides_support_legacy_aliases_for_existing_config_names() -> None:
     overrides = planner_config_overrides_from_values(
         num_steps=2,

@@ -197,6 +197,10 @@ def launch_setup(context, *args, **kwargs):
                     LaunchConfiguration("enable_nonzero_control"),
                     value_type=bool,
                 ),
+                # Sim validation needs the planner's EE position_error so the
+                # limit gate can also assert task success. Realtime/real launches
+                # leave this off (planner stays FK-free in the foreground loop).
+                "planner_compute_task_diagnostics": True,
             },
         ],
         additional_env={

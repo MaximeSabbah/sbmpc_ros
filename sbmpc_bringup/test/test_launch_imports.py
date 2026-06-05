@@ -70,7 +70,6 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "joint_state_rate",
             "lfc_params_file",
             "load_gripper",
-            "max_abs_torque",
             "namespace",
             "pixi_env",
             "robot_description_file",
@@ -78,7 +77,6 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "robot_type",
             "safety_distance",
             "sbmpc_dir",
-            "torque_limit_mode",
             "use_camera",
             "use_fake_hardware",
             "use_ft_sensor",
@@ -87,8 +85,6 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
     defaults = declared_argument_defaults(launch_description)
     assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["enable_nonzero_control"] == "true"
-    assert defaults["max_abs_torque"] == "12.0"
-    assert defaults["torque_limit_mode"] == "clip"
     assert "sbmpc_bridge_exact_async_40hz.yaml" in defaults["bridge_params_file"]
     assert "franka_arm_with_sbmpc_real.urdf.xacro" in defaults["robot_description_file"]
 

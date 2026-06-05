@@ -153,6 +153,8 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_gain_samples_per_cycle", 0)
         self.declare_parameter("planner_gain_buffer_size", 0)
         self.declare_parameter("planner_reseed_every_step", True)
+        self.declare_parameter("planner_compute_task_diagnostics", False)
+        self.declare_parameter("planner_ocp", "")
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -249,6 +251,12 @@ class SbMpcLfcBridgeNode(Node):
                 .get_parameter_value()
                 .bool_value
             ),
+            compute_task_diagnostics=(
+                self.get_parameter("planner_compute_task_diagnostics")
+                .get_parameter_value()
+                .bool_value
+            ),
+            ocp=self.get_parameter("planner_ocp").get_parameter_value().string_value,
         )
         self._planner = (
             planner

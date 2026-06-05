@@ -151,10 +151,6 @@ Useful real launch arguments:
 - `bridge_params_file:=...`: select 40 Hz, 50 Hz, or feedforward-only config.
 - `enable_nonzero_control:=true`: default; publish SB-MPC outputs after
   readiness. Set false only for dry bringup.
-- `max_abs_torque:=12.0`: default real-robot feedforward cap in Nm. Raise only
-  after checking `/control` with the LFC command probe.
-- `torque_limit_mode:=clip`: clip over-limit planner feedforward. Use `reject`
-  to fail closed instead of publishing a clipped command.
 - `controllers_file:=...`: ROS2-control controller config.
 - `lfc_params_file:=...`: LFC/JSE parameters.
 - `bridge_warmup_timeout_sec:=120`: maximum time to wait for planner/JAX warmup.

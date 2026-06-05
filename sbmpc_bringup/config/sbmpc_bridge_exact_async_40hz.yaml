@@ -7,8 +7,6 @@ sbmpc_lfc_bridge_node:
     planner_deadline_sec: 0.025
     enable_nonzero_control: false
     force_zero_control: false
-    max_abs_torque: 12.0
-    torque_limit_mode: clip
     allow_joint_reordering: false
     retime_control_initial_state: true
     control_initial_state_prediction_sec: 0.0

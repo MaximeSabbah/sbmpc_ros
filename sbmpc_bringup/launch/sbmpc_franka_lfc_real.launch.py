@@ -188,11 +188,6 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration("enable_nonzero_control"),
                     value_type=bool,
                 ),
-                "max_abs_torque": ParameterValue(
-                    LaunchConfiguration("max_abs_torque"),
-                    value_type=float,
-                ),
-                "torque_limit_mode": LaunchConfiguration("torque_limit_mode"),
             },
         ],
         additional_env={
@@ -306,8 +301,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
             DeclareLaunchArgument("joint_state_rate", default_value="30"),
             DeclareLaunchArgument("enable_nonzero_control", default_value="true"),
-            DeclareLaunchArgument("max_abs_torque", default_value="12.0"),
-            DeclareLaunchArgument("torque_limit_mode", default_value="clip"),
             DeclareLaunchArgument(
                 "robot_description_file",
                 default_value=PathJoinSubstitution(
@@ -407,15 +400,6 @@ def generate_launch_description() -> LaunchDescription:
                 msg=[
                     "SB-MPC nonzero control after readiness: ",
                     LaunchConfiguration("enable_nonzero_control"),
-                ]
-            ),
-            LogInfo(
-                msg=[
-                    "SB-MPC feedforward torque cap: ",
-                    LaunchConfiguration("max_abs_torque"),
-                    " Nm (mode ",
-                    LaunchConfiguration("torque_limit_mode"),
-                    ")",
                 ]
             ),
             robot_state_publisher,

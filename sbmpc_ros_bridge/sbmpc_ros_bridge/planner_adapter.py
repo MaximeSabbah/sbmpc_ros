@@ -40,6 +40,8 @@ class PlannerConfigOverrides:
     gain_samples_per_cycle: int | None = None
     gain_buffer_size: int | None = None
     reseed_every_step: bool | None = None
+    compute_task_diagnostics: bool | None = None
+    ocp: str | None = None
 
     def active_items(self) -> dict[str, object]:
         values: dict[str, object] = {}
@@ -69,6 +71,8 @@ def planner_config_overrides_from_values(
     gain_samples_per_cycle: int = 0,
     gain_buffer_size: int = 0,
     reseed_every_step: bool | None = None,
+    compute_task_diagnostics: bool | None = None,
+    ocp: str | None = None,
 ) -> PlannerConfigOverrides:
     sample_count = _optional_positive_int(num_samples)
     if sample_count is None:
@@ -97,6 +101,8 @@ def planner_config_overrides_from_values(
         gain_samples_per_cycle=_optional_positive_int(gain_samples_per_cycle),
         gain_buffer_size=_optional_positive_int(gain_buffer_size),
         reseed_every_step=reseed_every_step,
+        compute_task_diagnostics=compute_task_diagnostics,
+        ocp=_clean_optional_text(ocp),
     )
 
 
@@ -283,6 +289,11 @@ class SbMpcPlannerAdapter:
             ) from exc
         planner = PandaPregraspPlanner()
         gains = True if config_overrides.gains is None else config_overrides.gains
+        ocp_config = None
+        if config_overrides.ocp:
+            from sbmpc.ocp import load_ocp_config
+
+            ocp_config = load_ocp_config(config_overrides.ocp)
         config = make_panda_pregrasp_config(
             planner,
             visualize=False,
@@ -305,7 +316,12 @@ class SbMpcPlannerAdapter:
             ),
             gain_mode=config_overrides.mode,
             compute_running_cost=False,
-            compute_task_diagnostics=False,
+            compute_task_diagnostics=(
+                False
+                if config_overrides.compute_task_diagnostics is None
+                else bool(config_overrides.compute_task_diagnostics)
+            ),
+            ocp_config=ocp_config,
         )
 
     @staticmethod
