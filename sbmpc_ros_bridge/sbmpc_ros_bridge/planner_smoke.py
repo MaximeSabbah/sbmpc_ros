@@ -26,7 +26,7 @@ JOINT_NAME_SETS: dict[str, tuple[str, ...]] = {
 }
 PLANNER_MODES: tuple[str, ...] = (
     "feedforward",
-    "exact_async_feedback",
+    "exact_feedback",
 )
 VECTOR_SIZE = 7
 
@@ -82,18 +82,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--planner-mode",
         choices=PLANNER_MODES,
-        default="exact_async_feedback",
+        default="exact_feedback",
         help="Planner mode to smoke-test through the ROS adapter.",
     )
     parser.add_argument("--q", help="Comma-separated or JSON list of 7 joint positions.")
     parser.add_argument("--v", help="Comma-separated or JSON list of 7 joint velocities.")
-    parser.add_argument("--planner-horizon", type=int, default=8)
-    parser.add_argument("--planner-dt", type=float, default=0.025)
+    parser.add_argument("--planner-horizon", type=int, default=10)
+    parser.add_argument("--planner-dt", type=float, default=0.04)
     parser.add_argument("--planner-num-samples", type=int, default=1024)
-    parser.add_argument("--planner-noise-scale", type=float, default=1.0)
+    parser.add_argument("--planner-noise-scale", type=float, default=0.1)
     parser.add_argument("--planner-temperature", type=float, default=0.05)
-    parser.add_argument("--planner-gain-samples-per-cycle", type=int, default=64)
-    parser.add_argument("--planner-gain-buffer-size", type=int, default=512)
+    parser.add_argument("--planner-num-gain-samples", type=int, default=512)
     args = parser.parse_args(argv)
 
     config_overrides = PlannerConfigOverrides(
@@ -103,13 +102,8 @@ def main(argv: list[str] | None = None) -> None:
         num_parallel_computations=args.planner_num_samples,
         std_dev_scale=args.planner_noise_scale,
         lambda_mpc=args.planner_temperature,
-        gain_samples_per_cycle=(
-            args.planner_gain_samples_per_cycle
-            if args.planner_mode != "feedforward"
-            else None
-        ),
-        gain_buffer_size=(
-            args.planner_gain_buffer_size
+        num_gain_samples=(
+            args.planner_num_gain_samples
             if args.planner_mode != "feedforward"
             else None
         ),
@@ -148,12 +142,6 @@ def main(argv: list[str] | None = None) -> None:
             "next_phase": str(step_output.next_phase),
             "planning_time_ms": float(diagnostics.planning_time_ms),
             "foreground_planning_time_ms": diagnostics.foreground_planning_time_ms,
-            "background_gain_time_ms": diagnostics.background_gain_time_ms,
-            "gain_worker_running": diagnostics.async_gain_worker_running,
-            "gain_window_fill": diagnostics.gain_window_fill,
-            "gain_completed_batch_count": diagnostics.gain_completed_batch_count,
-            "gain_dropped_snapshot_count": diagnostics.gain_dropped_snapshot_count,
-            "gain_worker_error": diagnostics.async_gain_worker_error,
             "max_abs_feedforward": float(np.max(np.abs(feedforward), initial=0.0)),
             "feedforward": feedforward.tolist(),
             "predicted_q_delta_norm": float(np.linalg.norm(np.asarray(predicted_q) - q)),

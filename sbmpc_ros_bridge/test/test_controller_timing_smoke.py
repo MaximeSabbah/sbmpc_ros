@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import time
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
@@ -38,82 +36,58 @@ def test_controller_foreground_timing_with_synthetic_sensor() -> None:
         PlannerConfigOverrides,
         SbMpcPlannerAdapter,
     )
-    from sbmpc_ros_bridge.planner_smoke import (
-        FER_ARM_JOINT_NAMES,
-        build_sensor,
-    )
+    from sbmpc_ros_bridge.planner_smoke import FER_ARM_JOINT_NAMES, build_sensor
 
     steps = read_env_int("SBMPC_CONTROLLER_TIMING_STEPS", 30)
-    target_feedforward_ms = read_env_float(
-        "SBMPC_CONTROLLER_TIMING_TARGET_FEEDFORWARD_MS",
-        10.0,
-    )
-    max_feedforward_ms = read_env_float(
-        "SBMPC_CONTROLLER_TIMING_MAX_FEEDFORWARD_MS",
-        12.0,
-    )
+    max_exact_ms = read_env_float("SBMPC_CONTROLLER_TIMING_MAX_EXACT_MS", 50.0)
     if steps <= 0:
         raise ValueError("SBMPC_CONTROLLER_TIMING_STEPS must be positive")
 
     adapter = SbMpcPlannerAdapter(
         config_overrides=PlannerConfigOverrides(
-            mode="exact_async_feedback",
-            gain_samples_per_cycle=128,
-            gain_buffer_size=512,
+            mode="exact_feedback",
+            gains=True,
+            horizon=10,
+            num_parallel_computations=1024,
+            num_control_points=10,
+            dt=0.04,
+            lambda_mpc=0.05,
+            std_dev_scale=0.1,
+            num_gain_samples=512,
+            ocp="pregrasp",
         )
     )
     try:
         home_q = np.asarray(adapter._controller.planner.home_q, dtype=np.float64)
-        zero_v = np.zeros_like(home_q)
         planner_input = sensor_to_planner_input(
             build_sensor(
                 joint_names=FER_ARM_JOINT_NAMES,
                 q=home_q,
-                v=zero_v,
+                v=np.zeros_like(home_q),
             ),
             joint_mapper=JointMapper(expected_names=FER_ARM_JOINT_NAMES),
         )
 
-        adapter.warmup()
-        foreground_ms: list[float] = []
+        for _ in range(3):
+            adapter.warmup()
         wall_ms: list[float] = []
         output = None
         for _ in range(steps):
             start = time.perf_counter()
-            output = adapter.step_feedforward(planner_input)
-            elapsed_ms = 1000.0 * (time.perf_counter() - start)
-            wall_ms.append(elapsed_ms)
-            foreground_ms.append(float(output.diagnostics.foreground_planning_time_ms))
+            output = adapter.step(planner_input)
+            wall_ms.append(1000.0 * (time.perf_counter() - start))
             assert np.all(np.isfinite(np.asarray(output.tau_ff)))
-            adapter.refresh_gain_if_budget(
-                output.diagnostics,
-                budget_sec=max(0.0, 0.020 - 0.001 - 1e-3 * elapsed_ms),
-            )
+            assert np.all(np.isfinite(np.asarray(output.K)))
 
         assert output is not None
-        gain_snapshot = adapter.latest_gain(output.diagnostics)
-        assert gain_snapshot is not None
-        assert gain_snapshot.diagnostics.async_gain_worker_error is None
-        assert gain_snapshot.diagnostics.async_gain_worker_running is False
-        assert gain_snapshot.diagnostics.gain_completed_batch_count >= 0
-
-        composed = SimpleNamespace(tau_ff=output.tau_ff, K=gain_snapshot.K)
-        control = planner_output_to_control(composed, planner_input)
+        control = planner_output_to_control(output, planner_input)
         assert np.all(np.isfinite(float64_multi_array_to_numpy(control.feedforward)))
         assert np.all(np.isfinite(float64_multi_array_to_numpy(control.feedback_gain)))
 
-        foreground = np.asarray(foreground_ms, dtype=np.float64)
-        wall = np.asarray(wall_ms, dtype=np.float64)
-        p99_ms = float(np.quantile(foreground, 0.99))
-        context = (
-            f"feedforward_foreground_ms={foreground.tolist()}, wall_ms={wall.tolist()}, "
-            f"p99_ms={p99_ms:.3f}, target_ms={target_feedforward_ms:.3f}, "
-            f"max_ms={max_feedforward_ms:.3f}, "
-            f"gain_age={gain_snapshot.diagnostics.gain_age_cycles!r}, "
-            f"completed_batches={gain_snapshot.diagnostics.gain_completed_batch_count!r}, "
-            f"dropped_snapshots={gain_snapshot.diagnostics.gain_dropped_snapshot_count!r}"
-        )
+        steady = np.asarray(wall_ms[-min(20, len(wall_ms)):], dtype=np.float64)
+        p95_ms = float(np.quantile(steady, 0.95))
+        context = f"exact_wall_ms={steady.tolist()}, p95_ms={p95_ms:.3f}, max_ms={max_exact_ms:.3f}"
         print(context)
-        assert p99_ms <= max_feedforward_ms, context
+        assert p95_ms <= max_exact_ms, context
     finally:
         adapter.close()

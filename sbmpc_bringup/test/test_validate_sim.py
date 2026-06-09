@@ -27,36 +27,25 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
     diagnostics = [
         {
             "state": "running",
-            "planner_mode": "exact_async_feedback",
+            "planner_mode": "exact_feedback",
             "last_position_error": 0.04,
             "last_foreground_planning_time_ms": 18.0,
-            "last_background_gain_time_ms": 35.0,
             "last_bridge_loop_time_ms": 19.0,
             "accepted_planner_output_count": 3,
             "rejected_planner_output_count": 0,
+            "last_gain_norm": 2.0,
             "last_gain_norm": 5.0,
-            "last_gain_age_cycles": 2.0,
-            "last_gain_window_fill": 128,
-            "last_gain_completed_batch_count": 3,
-            "last_gain_dropped_snapshot_count": 1,
-            "last_gain_worker_running": False,
             "deadline_miss_count": 0,
         },
         {
             "state": "running",
-            "planner_mode": "exact_async_feedback",
+            "planner_mode": "exact_feedback",
             "last_position_error": 0.02,
             "last_foreground_planning_time_ms": 17.0,
-            "last_background_gain_time_ms": 33.0,
             "last_bridge_loop_time_ms": 18.0,
             "accepted_planner_output_count": 4,
             "rejected_planner_output_count": 0,
             "last_gain_norm": 3.0,
-            "last_gain_age_cycles": 1.0,
-            "last_gain_window_fill": 256,
-            "last_gain_completed_batch_count": 4,
-            "last_gain_dropped_snapshot_count": 1,
-            "last_gain_worker_running": False,
             "deadline_miss_count": 0,
         },
     ]
@@ -70,17 +59,11 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
     summary = summarize(diagnostics, joint_records, tail_fraction=0.5)
 
     assert summary.running_count == 2
-    assert summary.planner_mode == "exact_async_feedback"
+    assert summary.planner_mode == "exact_feedback"
     assert summary.final_position_error == 0.02
     assert summary.max_foreground_ms == 18.0
-    assert summary.max_background_gain_ms == 35.0
-    assert summary.final_gain_window_fill == 256
-    assert summary.final_gain_completed_batch_count == 4
-    assert summary.final_gain_dropped_snapshot_count == 1
     assert summary.accepted_planner_output_count == 4
     assert summary.rejected_planner_output_count == 0
-    assert summary.gain_worker_running_samples == 0
-    assert summary.gain_worker_error_count == 0
     assert summary.max_tail_joint_span == pytest.approx(0.01)
     assert summary.joint_velocity_abs_max == 0.3
     assert assert_stable(
@@ -103,6 +86,7 @@ def _running_diagnostics() -> list[dict]:
             "last_position_error": 0.0005,
             "accepted_planner_output_count": 2,
             "rejected_planner_output_count": 0,
+            "last_gain_norm": 2.0,
         }
     ]
 

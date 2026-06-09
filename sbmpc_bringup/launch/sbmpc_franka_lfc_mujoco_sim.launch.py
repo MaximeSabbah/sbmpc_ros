@@ -125,6 +125,16 @@ def launch_setup(context, *args, **kwargs):
         on_exit=Shutdown(),
     )
 
+    rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        arguments=["-d", LaunchConfiguration("rviz_config")],
+        parameters=[{"use_sim_time": True}],
+        additional_env={"LIBGL_ALWAYS_SOFTWARE": "1"},
+        condition=IfCondition(LaunchConfiguration("use_rviz")),
+        output="screen",
+    )
+
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -197,10 +207,6 @@ def launch_setup(context, *args, **kwargs):
                     LaunchConfiguration("enable_nonzero_control"),
                     value_type=bool,
                 ),
-                # Sim validation needs the planner's EE position_error so the
-                # limit gate can also assert task success. Realtime/real launches
-                # leave this off (planner stays FK-free in the foreground loop).
-                "planner_compute_task_diagnostics": True,
             },
         ],
         additional_env={
@@ -250,7 +256,7 @@ def launch_setup(context, *args, **kwargs):
             and "Planner warmup/JIT compilation complete" in text
         ):
             warmup_reset_started["value"] = True
-            return [reset_after_bridge_warmup]
+            return [reset_after_bridge_warmup, rviz]
         return []
 
     def on_reset_exit(event, context):
@@ -342,6 +348,17 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("headless", default_value="true"),
+            DeclareLaunchArgument("use_rviz", default_value="false"),
+            DeclareLaunchArgument(
+                "rviz_config",
+                default_value=PathJoinSubstitution(
+                    [
+                        FindPackageShare("sbmpc_bringup"),
+                        "rviz",
+                        "pregrasp.rviz",
+                    ]
+                ),
+            ),
             DeclareLaunchArgument("enable_nonzero_control", default_value="false"),
             DeclareLaunchArgument(
                 "controller_manager_name",
@@ -409,7 +426,7 @@ def generate_launch_description() -> LaunchDescription:
                     [
                         FindPackageShare("sbmpc_bringup"),
                         "config",
-                        "sbmpc_bridge_exact_async.yaml",
+                        "sbmpc_bridge.yaml",
                     ]
                 ),
             ),

@@ -29,8 +29,7 @@ class FakeMPCConfig:
     )
     smoothing: str | None = "Spline"
     gain_method: str = "exact"
-    gain_samples_per_cycle: int | None = None
-    gain_buffer_size: int | None = None
+    num_gain_samples: int | None = 512
     initial_guess: object = field(
         default_factory=lambda: np.zeros((8, 7), dtype=np.float32)
     )
@@ -96,31 +95,24 @@ class FakeJaxConfig:
 class FakeRuntimeController:
     def __init__(self) -> None:
         self.start_count = 0
-        self.reset_after_warmup_count = 0
-        self.step_feedforward_calls = []
-        self.latest_gain_calls = []
+        self.warmup_calls = []
+        self.step_calls = []
 
     def start(self) -> None:
         self.start_count += 1
 
     def warmup(self, **kwargs):
+        self.warmup_calls.append(kwargs)
         return {"kwargs": kwargs}
 
-    def step_feedforward(self, q, v, **kwargs):
-        self.step_feedforward_calls.append((q, v, kwargs))
-        return {"tau_ff": np.ones(7), "kwargs": kwargs}
-
-    def latest_gain(self, diagnostics=None):
-        self.latest_gain_calls.append(diagnostics)
-        return {"K": np.eye(7, 14), "diagnostics": diagnostics}
-
-    def reset_runtime_state_after_warmup(self) -> None:
-        self.reset_after_warmup_count += 1
+    def step(self, q, v, **kwargs):
+        self.step_calls.append((q, v, kwargs))
+        return {"tau_ff": np.ones(7), "K": np.eye(7, 14), "kwargs": kwargs}
 
 
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:
     overrides = planner_config_overrides_from_values(
-        mode=" exact_async_feedback ",
+        mode=" exact_feedback ",
         phase=" transport ",
         gains=False,
         num_steps=3,
@@ -131,12 +123,11 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         dt=0.05,
         noise_scale=0.08,
         smoothing="none",
-        gain_samples_per_cycle=64,
-        gain_buffer_size=256,
+        num_gain_samples=64,
     )
 
     assert overrides == PlannerConfigOverrides(
-        mode="exact_async_feedback",
+        mode="exact_feedback",
         phase="transport",
         gains=False,
         num_steps=3,
@@ -147,8 +138,7 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
         lambda_mpc=0.15,
         std_dev_scale=0.08,
         smoothing="__none__",
-        gain_samples_per_cycle=64,
-        gain_buffer_size=256,
+        num_gain_samples=64,
     )
 
 
@@ -190,8 +180,7 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         lambda_mpc=0.1,
         std_dev_scale=0.07,
         smoothing="__none__",
-        gain_samples_per_cycle=32,
-        gain_buffer_size=128,
+        num_gain_samples=32,
     )
 
     updated_config = apply_config_overrides(
@@ -213,8 +202,7 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
     )
     assert updated_config.MPC.smoothing is None
     assert updated_config.MPC.gain_method == "exact"
-    assert updated_config.MPC.gain_samples_per_cycle == 32
-    assert updated_config.MPC.gain_buffer_size == 128
+    assert updated_config.MPC.num_gain_samples == 32
     assert np.asarray(updated_config.MPC.initial_guess).shape == (12, 7)
     np.testing.assert_allclose(
         np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
@@ -285,32 +273,7 @@ def test_configure_jax_compilation_cache_allows_env_disable(monkeypatch) -> None
     assert configure_jax_compilation_cache() is None
 
 
-def test_adapter_resets_runtime_state_after_warmup_by_default() -> None:
-    controller = FakeRuntimeController()
-    adapter = SbMpcPlannerAdapter(controller=controller)
-
-    output = adapter.warmup(num_steps=3)
-
-    assert output["kwargs"]["num_steps"] == 3
-    assert controller.start_count == 1
-    assert controller.reset_after_warmup_count == 1
-    assert adapter._started is False
-
-
-def test_adapter_can_keep_warmup_runtime_state_for_manual_diagnostics() -> None:
-    controller = FakeRuntimeController()
-    adapter = SbMpcPlannerAdapter(
-        controller=controller,
-        reset_runtime_after_warmup=False,
-    )
-
-    adapter.warmup()
-
-    assert controller.reset_after_warmup_count == 0
-    assert adapter._started is True
-
-
-def test_adapter_delegates_split_feedforward_and_gain_calls() -> None:
+def test_adapter_preserves_warmup_state_and_delegates_coherent_steps() -> None:
     controller = FakeRuntimeController()
     adapter = SbMpcPlannerAdapter(controller=controller)
     planner_input = SimpleNamespace(
@@ -318,13 +281,15 @@ def test_adapter_delegates_split_feedforward_and_gain_calls() -> None:
         v=np.zeros(7, dtype=np.float64),
     )
 
-    output = adapter.step_feedforward(planner_input, num_steps=2)
-    gain = adapter.latest_gain(output)
+    warmup = adapter.warmup(num_steps=3)
+    output = adapter.step(planner_input, num_steps=2)
 
+    assert warmup["kwargs"]["num_steps"] == 3
     assert output["kwargs"]["num_steps"] == 2
     assert controller.start_count == 1
-    assert len(controller.step_feedforward_calls) == 1
-    np.testing.assert_allclose(controller.step_feedforward_calls[0][0], planner_input.q)
-    np.testing.assert_allclose(controller.step_feedforward_calls[0][1], planner_input.v)
-    assert controller.latest_gain_calls == [output]
-    np.testing.assert_allclose(gain["K"], np.eye(7, 14))
+    assert adapter._started is True
+    assert len(controller.warmup_calls) == 1
+    assert len(controller.step_calls) == 1
+    np.testing.assert_allclose(controller.step_calls[0][0], planner_input.q)
+    np.testing.assert_allclose(controller.step_calls[0][1], planner_input.v)
+    np.testing.assert_allclose(output["K"], np.eye(7, 14))

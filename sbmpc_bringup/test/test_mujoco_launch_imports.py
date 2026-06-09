@@ -66,6 +66,8 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
         "controllers_file",
         "enable_nonzero_control",
         "headless",
+        "use_rviz",
+        "rviz_config",
         "lfc_params_file",
         "mujoco_model",
         "pixi_env",
@@ -85,7 +87,7 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
     assert defaults["record_replay_duration_sec"] == "0"
     assert defaults["controller_manager_name"] == "/controller_manager"
     assert defaults["allow_existing_ros_graph"] == "false"
-    assert "sbmpc_bridge_exact_async.yaml" in defaults["bridge_params_file"]
+    assert "sbmpc_bridge.yaml" in defaults["bridge_params_file"]
     assert "panda_pick_place_ros2_control_scene.xml" in defaults["mujoco_model"]
 
 

@@ -24,6 +24,7 @@ setup(
         (f"share/{package_name}/config", existing_files("config/*.yaml")),
         (f"share/{package_name}/urdf", existing_files("urdf/*.xacro")),
         (f"share/{package_name}/mujoco", existing_files("mujoco/*.xml")),
+        (f"share/{package_name}/rviz", existing_files("rviz/*.rviz")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

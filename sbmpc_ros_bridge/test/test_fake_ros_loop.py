@@ -31,7 +31,7 @@ LFC_QOS = QoSProfile(
     depth=10,
     reliability=ReliabilityPolicy.BEST_EFFORT,
 )
-DEFAULT_WARMUP_ITERATIONS = 10
+DEFAULT_WARMUP_ITERATIONS = 3
 
 
 @dataclass(frozen=True)
@@ -40,20 +40,6 @@ class FakePlannerOutput:
     K: np.ndarray
     phase: str = "PREGRASP"
     next_phase: str = "DESCEND"
-    diagnostics: object | None = None
-
-
-@dataclass(frozen=True)
-class FakeFeedforwardOutput:
-    tau_ff: np.ndarray
-    phase: str = "PREGRASP"
-    next_phase: str = "DESCEND"
-    diagnostics: object | None = None
-
-
-@dataclass(frozen=True)
-class FakeGainSnapshot:
-    K: np.ndarray
     diagnostics: object | None = None
 
 
@@ -67,15 +53,8 @@ class FakePlannerDiagnostics:
     orientation_error: float = 0.01
     object_error: float | None = None
     goal_position: tuple[float, float, float] = (0.55, 0.0, 0.40)
-    gain_mode: str = "exact_async_feedback"
+    gain_mode: str = "exact_feedback"
     foreground_planning_time_ms: float = 9.5
-    background_gain_time_ms: float = 4.25
-    async_gain_worker_running: bool = True
-    gain_age_cycles: float = 1.0
-    gain_window_fill: int = 128
-    gain_completed_batch_count: int = 3
-    gain_dropped_snapshot_count: int = 1
-    async_gain_worker_error: str | None = None
 
 
 class FakePlanner:
@@ -113,43 +92,6 @@ class FakePlanner:
 
     def close(self) -> None:
         self.close_calls += 1
-
-
-class SplitFeedforwardGainPlanner(FakePlanner):
-    def __init__(self) -> None:
-        super().__init__()
-        self.feedforward_calls = 0
-        self.latest_gain_calls = 0
-
-    def step_feedforward(self, planner_input) -> FakeFeedforwardOutput:
-        self.step_inputs.append(planner_input)
-        self.feedforward_calls += 1
-        return FakeFeedforwardOutput(
-            tau_ff=np.asarray([0.75] * 7, dtype=np.float64),
-            diagnostics=FakePlannerDiagnostics(
-                planning_time_ms=8.0,
-                foreground_planning_time_ms=8.0,
-                gain_norm=0.0,
-                torque_norm=1.98,
-            ),
-        )
-
-    def latest_gain(self, diagnostics=None) -> FakeGainSnapshot:
-        self.latest_gain_calls += 1
-        return FakeGainSnapshot(
-            K=2.0 * np.eye(7, 14, dtype=np.float64),
-            diagnostics=diagnostics,
-        )
-
-
-class SlowGainSnapshotPlanner(SplitFeedforwardGainPlanner):
-    def __init__(self, *, gain_sleep_sec: float) -> None:
-        super().__init__()
-        self.gain_sleep_sec = gain_sleep_sec
-
-    def latest_gain(self, diagnostics=None) -> FakeGainSnapshot:
-        time.sleep(self.gain_sleep_sec)
-        return super().latest_gain(diagnostics)
 
 
 class BadGainAfterFirstStepPlanner(FakePlanner):
@@ -329,11 +271,8 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.last_bridge_loop_time_ms is not None
         assert snapshot.last_position_error == pytest.approx(0.25)
         assert snapshot.last_goal_position == [0.55, 0.0, 0.4]
-        assert snapshot.planner_mode == "exact_async_feedback"
+        assert snapshot.planner_mode == "exact_feedback"
         assert snapshot.last_foreground_planning_time_ms == pytest.approx(9.5)
-        assert snapshot.last_background_gain_time_ms == pytest.approx(4.25)
-        assert snapshot.last_gain_worker_running is True
-        assert snapshot.last_gain_window_fill == 128
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -448,80 +387,6 @@ def test_fake_ros_loop_clips_feedforward_with_bringup_safety_profile() -> None:
             np.asarray([1.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0]),
         )
         assert bridge.diagnostics_snapshot().last_control_max_abs_feedforward == 1.0
-    finally:
-        teardown_executor(executor, bridge, sensor_publisher, collector)
-
-
-def test_fake_ros_loop_composes_feedforward_and_gain_from_separate_buffers() -> None:
-    planner = SplitFeedforwardGainPlanner()
-    bridge = SbMpcLfcBridgeNode(
-        planner=planner,
-        publish_period_sec=0.02,
-    )
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
-    sensor_publisher = FakeSensorPublisher(enabled=True)
-    collector = ControlCollector()
-    executor = build_executor(bridge, sensor_publisher, collector)
-
-    try:
-        spin_for(executor, 0.25)
-
-        assert collector.controls
-        assert planner.feedforward_calls >= 1
-        assert planner.latest_gain_calls >= 1
-        latest = collector.controls[-1]
-        np.testing.assert_allclose(
-            float64_multi_array_to_numpy(latest.feedforward),
-            np.full((7, 1), 0.75, dtype=np.float64),
-        )
-        feedback_gain = float64_multi_array_to_numpy(latest.feedback_gain)
-        assert feedback_gain.shape == (7, 14)
-        assert np.linalg.norm(feedback_gain) > 0.0
-        snapshot = bridge.diagnostics_snapshot()
-        assert snapshot.accepted_planner_output_count >= 1
-        assert snapshot.last_foreground_planning_time_ms == pytest.approx(8.0)
-    finally:
-        teardown_executor(executor, bridge, sensor_publisher, collector)
-
-
-def test_fake_ros_loop_slow_gain_snapshot_does_not_block_feedforward() -> None:
-    planner = SlowGainSnapshotPlanner(gain_sleep_sec=0.10)
-    bridge = SbMpcLfcBridgeNode(
-        planner=planner,
-        publish_period_sec=0.02,
-    )
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
-    sensor_publisher = FakeSensorPublisher(enabled=True)
-    collector = ControlCollector()
-    executor = build_executor(bridge, sensor_publisher, collector)
-
-    try:
-        spin_for(executor, 0.35)
-
-        assert collector.controls
-        assert planner.latest_gain_calls >= 1
-        assert planner.feedforward_calls >= 5
-        assert planner.feedforward_calls > planner.latest_gain_calls
-        snapshot = bridge.diagnostics_snapshot()
-        assert snapshot.accepted_planner_output_count >= 5
-        assert snapshot.last_planner_step_wall_time_ms is not None
-        assert snapshot.last_planner_step_wall_time_ms < 50.0
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

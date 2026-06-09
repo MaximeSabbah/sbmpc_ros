@@ -385,8 +385,6 @@ def summarize_payload(
         for row in timing_rows
     ]
     foreground = [value for value in foreground if value is not None]
-    gain_age = [_finite_float(row.get("last_gain_age_cycles")) for row in timing_rows]
-    gain_age = [value for value in gain_age if value is not None]
     return {
         "joint_state_count": len(joint_states),
         "sensor_state_count": len(sensor_states),
@@ -453,30 +451,6 @@ def summarize_payload(
                 timing_rows,
                 "last_planner_loop_residual_time_ms",
             ),
-            "background_gain": _diagnostic_stats(
-                timing_rows,
-                "last_background_gain_time_ms",
-            ),
-            "background_gain_wall": _diagnostic_stats(
-                timing_rows,
-                "last_background_gain_wall_time_ms",
-            ),
-            "gain_subset_select": _diagnostic_stats(
-                timing_rows,
-                "last_gain_subset_select_time_ms",
-            ),
-            "gain_snapshot_pack": _diagnostic_stats(
-                timing_rows,
-                "last_gain_snapshot_pack_time_ms",
-            ),
-            "gain_gradient": _diagnostic_stats(
-                timing_rows,
-                "last_gain_gradient_time_ms",
-            ),
-            "gain_synthesis": _diagnostic_stats(
-                timing_rows,
-                "last_gain_synthesis_time_ms",
-            ),
             "control_prepare": _diagnostic_stats(
                 timing_rows,
                 "last_control_prepare_time_ms",
@@ -487,12 +461,6 @@ def summarize_payload(
             ),
         },
         "control_cadence_sec": _control_cadence_summary(controls),
-        "gain_age_cycles_max": float(np.max(gain_age)) if gain_age else None,
-        "final_gain_window_fill": _last_int(timing_rows, "last_gain_window_fill"),
-        "final_completed_gain_batches": _last_int(
-            timing_rows,
-            "last_gain_completed_batch_count",
-        ),
         "deadline_miss_count": _counter_delta(timing_rows, "deadline_miss_count"),
         "accepted_planner_output_count": _counter_delta(
             timing_rows,
@@ -700,10 +668,7 @@ def _print_record_summary(payload: dict[str, object], output_path: Path) -> None
     )
     print(
         "controller: "
-        f"foreground_max_ms={summary['foreground_ms_max']} "
-        f"gain_age_max={summary['gain_age_cycles_max']} "
-        f"window_fill={summary['final_gain_window_fill']} "
-        f"completed_gain_batches={summary['final_completed_gain_batches']}"
+        f"foreground_max_ms={summary['foreground_ms_max']}"
     )
     timing = summary["timing_ms"]
     cadence = summary["control_cadence_sec"]["receive_delta"]
@@ -713,8 +678,6 @@ def _print_record_summary(payload: dict[str, object], output_path: Path) -> None
         f"planner_wall_p99_ms={timing['planner_step_wall']['p99']} "
         f"planner_api_p99_ms={timing['planner_api_wall']['p99']} "
         f"adapter_overhead_p99_ms={timing['planner_bridge_adapter_overhead']['p99']} "
-        f"background_gain_p99_ms={timing['background_gain']['p99']} "
-        f"background_gain_wall_p99_ms={timing['background_gain_wall']['p99']} "
         f"planner_residual_p99_ms={timing['planner_loop_residual']['p99']} "
         f"control_receive_p99_sec={cadence['p99']} "
         f"deadline_misses={summary['deadline_miss_count']}"
@@ -800,10 +763,7 @@ def _print_replay_summary(
         f"duration_sec={summary.get('duration_sec')} "
         f"replay_duration_sec={replay_duration} "
         f"time_source={time_source} "
-        f"foreground_max_ms={summary.get('foreground_ms_max')} "
-        f"gain_age_max={summary.get('gain_age_cycles_max')} "
-        f"window_fill={summary.get('final_gain_window_fill')} "
-        f"completed_gain_batches={summary.get('final_completed_gain_batches')}"
+        f"foreground_max_ms={summary.get('foreground_ms_max')}"
     )
 
 

@@ -374,7 +374,7 @@ def generate_launch_description() -> LaunchDescription:
                     [
                         FindPackageShare("sbmpc_bringup"),
                         "config",
-                        "sbmpc_bridge_exact_async_40hz.yaml",
+                        "sbmpc_bridge.yaml",
                     ]
                 ),
             ),

@@ -36,8 +36,7 @@ class PlannerConfigOverrides:
     lambda_mpc: float | None = None
     std_dev_scale: float | None = None
     smoothing: str | None = None
-    gain_samples_per_cycle: int | None = None
-    gain_buffer_size: int | None = None
+    num_gain_samples: int | None = None
     reseed_every_step: bool | None = None
     compute_task_diagnostics: bool | None = None
     ocp: str | None = None
@@ -67,8 +66,7 @@ def planner_config_overrides_from_values(
     noise_scale: float = 0.0,
     std_dev_scale: float = 0.0,
     smoothing: str | None = None,
-    gain_samples_per_cycle: int = 0,
-    gain_buffer_size: int = 0,
+    num_gain_samples: int = 0,
     reseed_every_step: bool | None = None,
     compute_task_diagnostics: bool | None = None,
     ocp: str | None = None,
@@ -97,8 +95,7 @@ def planner_config_overrides_from_values(
         lambda_mpc=effective_temperature,
         std_dev_scale=effective_noise_scale,
         smoothing=_normalize_smoothing_value(smoothing),
-        gain_samples_per_cycle=_optional_positive_int(gain_samples_per_cycle),
-        gain_buffer_size=_optional_positive_int(gain_buffer_size),
+        num_gain_samples=_optional_positive_int(num_gain_samples),
         reseed_every_step=reseed_every_step,
         compute_task_diagnostics=compute_task_diagnostics,
         ocp=_clean_optional_text(ocp),
@@ -133,10 +130,8 @@ def apply_config_overrides(
     if overrides.smoothing is not None:
         config.MPC.smoothing = None if overrides.smoothing == "__none__" else overrides.smoothing
     config.MPC.gain_method = "exact"
-    if overrides.gain_samples_per_cycle is not None:
-        config.MPC.gain_samples_per_cycle = overrides.gain_samples_per_cycle
-    if overrides.gain_buffer_size is not None:
-        config.MPC.gain_buffer_size = overrides.gain_buffer_size
+    if overrides.num_gain_samples is not None:
+        config.MPC.num_gain_samples = overrides.num_gain_samples
 
     if config.MPC.num_control_points > config.MPC.horizon:
         raise ValueError(
@@ -163,7 +158,6 @@ class SbMpcPlannerAdapter:
         config_overrides: PlannerConfigOverrides | None = None,
         warmup_kwargs: dict[str, Any] | None = None,
         step_kwargs: dict[str, Any] | None = None,
-        reset_runtime_after_warmup: bool = True,
     ) -> None:
         self._config_overrides = (
             PlannerConfigOverrides() if config_overrides is None else config_overrides
@@ -187,7 +181,6 @@ class SbMpcPlannerAdapter:
             if step_kwargs is None
             else dict(step_kwargs)
         )
-        self._reset_runtime_after_warmup = bool(reset_runtime_after_warmup)
         self._started = False
 
     def start(self) -> None:
@@ -208,53 +201,13 @@ class SbMpcPlannerAdapter:
         self.start()
         call_kwargs = dict(self._warmup_kwargs)
         call_kwargs.update(kwargs)
-        output = self._controller.warmup(**call_kwargs)
-        reset_runtime = getattr(
-            self._controller,
-            "reset_runtime_state_after_warmup",
-            None,
-        )
-        if self._reset_runtime_after_warmup and callable(reset_runtime):
-            reset_runtime()
-            self._started = False
-        return output
+        return self._controller.warmup(**call_kwargs)
 
     def step(self, planner_input: PlannerInput, **kwargs: Any) -> Any:
         self.start()
         call_kwargs = dict(self._step_kwargs)
         call_kwargs.update(kwargs)
         return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
-
-    def step_feedforward(self, planner_input: PlannerInput, **kwargs: Any) -> Any:
-        self.start()
-        call_kwargs = dict(self._step_kwargs)
-        call_kwargs.update(kwargs)
-        step_feedforward = getattr(self._controller, "step_feedforward", None)
-        if callable(step_feedforward):
-            return step_feedforward(planner_input.q, planner_input.v, **call_kwargs)
-        return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
-
-    def latest_gain(self, diagnostics: Any | None = None) -> Any | None:
-        latest_gain = getattr(self._controller, "latest_gain", None)
-        if callable(latest_gain):
-            return latest_gain(diagnostics)
-        return None
-
-    @property
-    def gain_refresh_runs_in_planner_worker(self) -> bool:
-        gain_mode = getattr(self._controller, "gain_mode", None)
-        return gain_mode == "exact_async_feedback"
-
-    def refresh_gain_if_budget(
-        self,
-        diagnostics: Any | None = None,
-        *,
-        budget_sec: float | None = None,
-    ) -> Any | None:
-        refresh_gain = getattr(self._controller, "refresh_gain_if_budget", None)
-        if callable(refresh_gain):
-            return refresh_gain(diagnostics, budget_sec=budget_sec)
-        return None
 
     def predict_state(
         self,
@@ -303,6 +256,7 @@ class SbMpcPlannerAdapter:
             planner,
             visualize=False,
             gains=gains,
+            ocp=ocp_config,
         )
         phase = SbMpcPlannerAdapter._resolve_phase(config_overrides.phase)
         config = apply_config_overrides(

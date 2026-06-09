@@ -28,10 +28,7 @@ EXPECTED_CONFIG_FILES = {
     "franka_lfc_params.yaml",
     "franka_lfc_params_sim.yaml",
     "sbmpc_bridge.yaml",
-    "sbmpc_bridge_exact_async.yaml",
-    "sbmpc_bridge_exact_async_40hz.yaml",
     "sbmpc_bridge_feedforward.yaml",
-    "sbmpc_bridge_optimizer_pregrasp.yaml",
 }
 
 
@@ -118,79 +115,38 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["control_topic"] == BRIDGE_CONTROL_TOPIC
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
-    assert params["publish_rate_hz"] == 50.0
+    assert params["publish_rate_hz"] == 25.0
+    assert params["planner_deadline_sec"] == 0.04
     assert params["enable_nonzero_control"] is False
-    assert params["force_zero_control"] is False
     assert params["retime_control_initial_state"] is True
-    assert params["control_initial_state_prediction_sec"] == 0.0
-    assert params["planner_mode"] == "exact_async_feedback"
+    assert params["planner_mode"] == "exact_feedback"
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_num_steps"] == 1
     assert params["planner_num_samples"] == 1024
-    assert params["planner_horizon"] == 8
-    assert params["planner_num_control_points"] == 8
+    assert params["planner_horizon"] == 10
+    assert params["planner_num_control_points"] == 10
     assert params["planner_temperature"] == 0.05
-    assert params["planner_dt"] == 0.02
-    assert params["planner_noise_scale"] == 1.0
+    assert params["planner_dt"] == 0.04
+    assert params["planner_noise_scale"] == 0.1
     assert params["planner_smoothing"] == "Spline"
     assert params["planner_ocp"] == "pregrasp"
-    assert params["planner_gain_samples_per_cycle"] == 128
-    assert params["planner_gain_buffer_size"] == 512
+    assert params["planner_warmup_iterations"] == 3
+    assert params["planner_num_gain_samples"] == 512
 
 
-def test_bridge_presets_cover_feedforward_and_exact_async_runs() -> None:
-    feedforward = load_yaml("sbmpc_bridge_feedforward.yaml")
-    feedback = load_yaml("sbmpc_bridge.yaml")
-    exact_async = load_yaml("sbmpc_bridge_exact_async.yaml")
-    exact_async_40hz = load_yaml("sbmpc_bridge_exact_async_40hz.yaml")
-    optimizer_pregrasp = load_yaml("sbmpc_bridge_optimizer_pregrasp.yaml")
+def test_bridge_presets_cover_feedforward_and_exact_feedback() -> None:
+    feedforward = load_yaml("sbmpc_bridge_feedforward.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    feedback = load_yaml("sbmpc_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
 
-    feedforward_params = feedforward["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    feedback_params = feedback["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    exact_async_params = exact_async["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    exact_async_40hz_params = exact_async_40hz["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    optimizer_pregrasp_params = optimizer_pregrasp["sbmpc_lfc_bridge_node"]["ros__parameters"]
-
-    assert feedforward_params["planner_phase"] == "PREGRASP"
-    assert feedback_params["planner_phase"] == "PREGRASP"
-    assert exact_async_40hz_params["planner_phase"] == "PREGRASP"
-    assert optimizer_pregrasp_params["planner_phase"] == "PREGRASP"
-    assert feedforward_params["planner_mode"] == "feedforward"
-    assert feedback_params["planner_mode"] == "exact_async_feedback"
-    assert exact_async_40hz_params["planner_mode"] == "exact_async_feedback"
-    assert optimizer_pregrasp_params["planner_mode"] == "exact_async_feedback"
-    assert feedforward_params["publish_rate_hz"] == 50.0
-    assert feedback_params["publish_rate_hz"] == 50.0
-    assert exact_async_params["publish_rate_hz"] == 50.0
-    assert exact_async_40hz_params["publish_rate_hz"] == 40.0
-    assert optimizer_pregrasp_params["publish_rate_hz"] == 10.0
-    assert feedforward_params["planner_dt"] == 0.02
-    assert feedback_params["planner_dt"] == 0.02
-    assert exact_async_params["planner_dt"] == 0.02
-    assert exact_async_40hz_params["planner_dt"] == 0.025
-    assert optimizer_pregrasp_params["planner_dt"] == 0.025
-    assert exact_async_40hz_params["planner_deadline_sec"] == 0.025
-    assert optimizer_pregrasp_params["planner_deadline_sec"] == 1.0
-    assert feedforward_params["enable_nonzero_control"] is False
-    assert feedback_params["enable_nonzero_control"] is False
-    assert exact_async_params["enable_nonzero_control"] is False
-    assert exact_async_40hz_params["enable_nonzero_control"] is False
-    assert optimizer_pregrasp_params["enable_nonzero_control"] is False
-    assert exact_async_params["planner_mode"] == "exact_async_feedback"
-    assert exact_async_params["retime_control_initial_state"] is True
-    assert exact_async_params["control_initial_state_prediction_sec"] == 0.0
-    assert exact_async_params["planner_gain_samples_per_cycle"] == 128
-    assert exact_async_params["planner_gain_buffer_size"] == 512
-    assert exact_async_40hz_params["planner_gain_samples_per_cycle"] == 64
-    assert exact_async_40hz_params["planner_gain_buffer_size"] == 512
-    assert optimizer_pregrasp_params["planner_num_samples"] == 4096
-    assert optimizer_pregrasp_params["planner_horizon"] == 24
-    assert optimizer_pregrasp_params["planner_num_control_points"] == 12
-    assert optimizer_pregrasp_params["planner_noise_scale"] == 1.0
-    assert optimizer_pregrasp_params["planner_ocp"] == "pregrasp"
-    assert optimizer_pregrasp_params["planner_gain_samples_per_cycle"] == 512
-    assert optimizer_pregrasp_params["planner_gain_buffer_size"] == 512
-    assert optimizer_pregrasp_params["planner_reseed_every_step"] is False
+    assert feedforward["planner_mode"] == "feedforward"
+    assert feedback["planner_mode"] == "exact_feedback"
+    for params in (feedforward, feedback):
+        assert params["publish_rate_hz"] == 25.0
+        assert params["planner_horizon"] == 10
+        assert params["planner_num_samples"] == 1024
+        assert params["planner_dt"] == 0.04
+        assert params["planner_ocp"] == "pregrasp"
+    assert feedback["planner_num_gain_samples"] == 512
 
 
 def test_mujoco_launch_partitions_simulation_and_bridge_cpus(monkeypatch) -> None:
