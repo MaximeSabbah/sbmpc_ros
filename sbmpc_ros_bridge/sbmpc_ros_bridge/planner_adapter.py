@@ -23,11 +23,15 @@ class PlannerInput:
 
 @dataclass(frozen=True, slots=True)
 class PlannerConfigOverrides:
-    """Optional ROS-side overrides for the public sbmpc planner adapter."""
+    """Optional ROS-side overrides for the public sbmpc planner adapter.
+
+    Every field defaults to ``None`` (= "defer to the sbmpc OCP yaml"). The
+    OCP yaml is the single source of truth for the MPPI/solver knobs; only
+    explicitly set ROS parameters override it.
+    """
 
     mode: str | None = None
     phase: str | None = None
-    gains: bool | None = None
     num_steps: int | None = None
     horizon: int | None = None
     num_parallel_computations: int | None = None
@@ -37,7 +41,6 @@ class PlannerConfigOverrides:
     std_dev_scale: float | None = None
     smoothing: str | None = None
     num_gain_samples: int | None = None
-    reseed_every_step: bool | None = None
     compute_task_diagnostics: bool | None = None
     ocp: str | None = None
 
@@ -54,7 +57,6 @@ def planner_config_overrides_from_values(
     *,
     mode: str | None = None,
     phase: str | None = None,
-    gains: bool | None = None,
     num_steps: int = 0,
     num_samples: int = 0,
     horizon: int = 0,
@@ -67,7 +69,6 @@ def planner_config_overrides_from_values(
     std_dev_scale: float = 0.0,
     smoothing: str | None = None,
     num_gain_samples: int = 0,
-    reseed_every_step: bool | None = None,
     compute_task_diagnostics: bool | None = None,
     ocp: str | None = None,
 ) -> PlannerConfigOverrides:
@@ -86,7 +87,6 @@ def planner_config_overrides_from_values(
     return PlannerConfigOverrides(
         mode=_clean_optional_text(mode),
         phase=_clean_optional_text(phase),
-        gains=gains,
         num_steps=_optional_positive_int(num_steps),
         horizon=_optional_positive_int(horizon),
         num_parallel_computations=sample_count,
@@ -96,7 +96,6 @@ def planner_config_overrides_from_values(
         std_dev_scale=effective_noise_scale,
         smoothing=_normalize_smoothing_value(smoothing),
         num_gain_samples=_optional_positive_int(num_gain_samples),
-        reseed_every_step=reseed_every_step,
         compute_task_diagnostics=compute_task_diagnostics,
         ocp=_clean_optional_text(ocp),
     )
@@ -106,12 +105,8 @@ def apply_config_overrides(
     config: Any,
     planner: Any,
     overrides: PlannerConfigOverrides,
-    *,
-    initial_guess_phase: Any,
 ) -> Any:
     xp = _array_namespace()
-    if overrides.gains is not None:
-        config.MPC.gains = overrides.gains
     if overrides.horizon is not None:
         config.MPC.horizon = overrides.horizon
     if overrides.num_parallel_computations is not None:
@@ -129,7 +124,6 @@ def apply_config_overrides(
         )
     if overrides.smoothing is not None:
         config.MPC.smoothing = None if overrides.smoothing == "__none__" else overrides.smoothing
-    config.MPC.gain_method = "exact"
     if overrides.num_gain_samples is not None:
         config.MPC.num_gain_samples = overrides.num_gain_samples
 
@@ -139,12 +133,6 @@ def apply_config_overrides(
             "applying ROS-side overrides."
         )
 
-    config.MPC.initial_guess = _planner_initial_guess(
-        planner,
-        horizon=config.MPC.horizon,
-        dt=config.MPC.dt,
-        initial_guess_phase=initial_guess_phase,
-    )
     return config
 
 
@@ -226,14 +214,16 @@ class SbMpcPlannerAdapter:
             return diagnostics()
         return None
 
+    @property
+    def mpc_dt(self) -> float | None:
+        """Resolved planner step duration [s], for coherence checks at the bridge."""
+        config = getattr(self._controller, "config", None)
+        mpc = getattr(config, "MPC", None)
+        dt = getattr(mpc, "dt", None)
+        return float(dt) if dt else None
+
     @staticmethod
     def _build_default_controller(config_overrides: PlannerConfigOverrides) -> Any:
-        if config_overrides.reseed_every_step:
-            raise ValueError(
-                "planner_reseed_every_step is no longer supported. "
-                "The ROS pregrasp planner warm-starts once, then optimizes the "
-                "shifted MPPI solution with torque-limit-scaled sampling."
-            )
         try:
             from sbmpc.controller.franka_emika_panda.planner_api import PandaPregraspController
             from sbmpc.controller.franka_emika_panda.panda_pregrasp import (
@@ -246,25 +236,19 @@ class SbMpcPlannerAdapter:
                 "repository before using the runtime planner adapter."
             ) from exc
         planner = PandaPregraspPlanner()
-        gains = True if config_overrides.gains is None else config_overrides.gains
         ocp_config = None
         if config_overrides.ocp:
             from sbmpc.ocp import load_ocp_config
 
             ocp_config = load_ocp_config(config_overrides.ocp)
+        # The OCP yaml ("mpc:" section) is the single source of truth for the
+        # MPPI knobs; ROS parameters override only the values explicitly set.
         config = make_panda_pregrasp_config(
             planner,
             visualize=False,
-            gains=gains,
             ocp=ocp_config,
         )
-        phase = SbMpcPlannerAdapter._resolve_phase(config_overrides.phase)
-        config = apply_config_overrides(
-            config,
-            planner,
-            config_overrides,
-            initial_guess_phase=phase,
-        )
+        config = apply_config_overrides(config, planner, config_overrides)
         return PandaPregraspController(
             planner=planner,
             config=config,
@@ -277,10 +261,6 @@ class SbMpcPlannerAdapter:
             ),
             ocp_config=ocp_config,
         )
-
-    @staticmethod
-    def _build_default_step_kwargs(phase_name: str | None) -> dict[str, Any]:
-        return SbMpcPlannerAdapter._build_step_kwargs(phase_name=phase_name)
 
     @staticmethod
     def _build_step_kwargs(
@@ -402,19 +382,6 @@ def _normalize_smoothing_value(value: str | None) -> str | None:
     if cleaned.lower() in {"none", "null", "off"}:
         return "__none__"
     return cleaned
-
-
-def _planner_initial_guess(
-    planner: Any,
-    *,
-    horizon: int,
-    dt: float,
-    initial_guess_phase: Any,
-) -> Any:
-    del dt, initial_guess_phase
-    xp = _array_namespace()
-    nu = int(getattr(planner, "nu", len(getattr(planner, "torque_limits"))))
-    return xp.zeros((int(horizon), nu), dtype=np.float32)
 
 
 def _array_namespace():

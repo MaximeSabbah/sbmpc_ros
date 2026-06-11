@@ -29,8 +29,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
             "state": "running",
             "planner_mode": "exact_feedback",
             "last_position_error": 0.04,
-            "last_foreground_planning_time_ms": 18.0,
-            "last_bridge_loop_time_ms": 19.0,
+            "last_planning_time_ms": 18.0,
             "accepted_planner_output_count": 3,
             "rejected_planner_output_count": 0,
             "last_gain_norm": 2.0,
@@ -41,8 +40,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
             "state": "running",
             "planner_mode": "exact_feedback",
             "last_position_error": 0.02,
-            "last_foreground_planning_time_ms": 17.0,
-            "last_bridge_loop_time_ms": 18.0,
+            "last_planning_time_ms": 17.0,
             "accepted_planner_output_count": 4,
             "rejected_planner_output_count": 0,
             "last_gain_norm": 3.0,
@@ -61,7 +59,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
     assert summary.running_count == 2
     assert summary.planner_mode == "exact_feedback"
     assert summary.final_position_error == 0.02
-    assert summary.max_foreground_ms == 18.0
+    assert summary.max_planning_ms == 18.0
     assert summary.accepted_planner_output_count == 4
     assert summary.rejected_planner_output_count == 0
     assert summary.max_tail_joint_span == pytest.approx(0.01)
@@ -75,7 +73,7 @@ def test_summarize_reports_tail_joint_spans_and_stability() -> None:
         summary,
         max_tail_joint_span=0.02,
         max_final_position_error=0.05,
-        max_foreground_ms=20.0,
+        max_planning_ms=20.0,
     )
 
 

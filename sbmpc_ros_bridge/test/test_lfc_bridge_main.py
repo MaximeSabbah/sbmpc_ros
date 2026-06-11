@@ -15,8 +15,7 @@ class FakeNode:
 
 
 class FakeExecutor:
-    def __init__(self, *, num_threads: int) -> None:
-        self.num_threads = num_threads
+    def __init__(self) -> None:
         self.nodes = []
         self.shutdown_called = False
 
@@ -40,8 +39,8 @@ def test_main_shuts_down_context_after_a_clean_spin(monkeypatch) -> None:
     monkeypatch.setattr(lfc_bridge_node, "SbMpcLfcBridgeNode", lambda: fake_node)
     monkeypatch.setattr(
         lfc_bridge_node,
-        "MultiThreadedExecutor",
-        lambda num_threads: executors.append(FakeExecutor(num_threads=num_threads))
+        "SingleThreadedExecutor",
+        lambda: executors.append(FakeExecutor())
         or executors[-1],
     )
     monkeypatch.setattr(lfc_bridge_node.rclpy, "ok", lambda context=None: True)
@@ -53,7 +52,6 @@ def test_main_shuts_down_context_after_a_clean_spin(monkeypatch) -> None:
 
     lfc_bridge_node.main()
 
-    assert executors[0].num_threads == 1
     assert executors[0].nodes == [fake_node]
     assert executors[0].shutdown_called is True
     assert fake_node.destroyed is True
@@ -76,12 +74,12 @@ def test_main_avoids_double_shutdown_when_context_is_already_closed(
             assert self.nodes == [fake_node]
             raise ExternalShutdownException()
 
-    def make_executor(num_threads: int):
-        executor = RaisingExecutor(num_threads=num_threads)
+    def make_executor():
+        executor = RaisingExecutor()
         executors.append(executor)
         return executor
 
-    monkeypatch.setattr(lfc_bridge_node, "MultiThreadedExecutor", make_executor)
+    monkeypatch.setattr(lfc_bridge_node, "SingleThreadedExecutor", make_executor)
     monkeypatch.setattr(lfc_bridge_node.rclpy, "ok", lambda context=None: False)
     monkeypatch.setattr(
         lfc_bridge_node.rclpy,
@@ -94,6 +92,32 @@ def test_main_avoids_double_shutdown_when_context_is_already_closed(
     assert executors[0].shutdown_called is True
     assert fake_node.destroyed is True
     assert shutdown_contexts == []
+
+
+def test_main_ignores_executor_runtime_error_after_context_shutdown(monkeypatch) -> None:
+    fake_node = FakeNode()
+    executors: list[FakeExecutor] = []
+
+    monkeypatch.setattr(lfc_bridge_node.rclpy, "init", lambda args=None: None)
+    monkeypatch.setattr(lfc_bridge_node, "_prefer_bridge_cpu_affinity", lambda: None)
+    monkeypatch.setattr(lfc_bridge_node, "SbMpcLfcBridgeNode", lambda: fake_node)
+
+    class ShutdownRaceExecutor(FakeExecutor):
+        def spin(self) -> None:
+            raise RuntimeError("subscription context already closed")
+
+    def make_executor():
+        executor = ShutdownRaceExecutor()
+        executors.append(executor)
+        return executor
+
+    monkeypatch.setattr(lfc_bridge_node, "SingleThreadedExecutor", make_executor)
+    monkeypatch.setattr(lfc_bridge_node.rclpy, "ok", lambda context=None: False)
+
+    lfc_bridge_node.main()
+
+    assert executors[0].shutdown_called is True
+    assert fake_node.destroyed is True
 
 
 def test_main_converts_sigterm_to_clean_shutdown(monkeypatch) -> None:
@@ -123,12 +147,12 @@ def test_main_converts_sigterm_to_clean_shutdown(monkeypatch) -> None:
             assert signum == lfc_bridge_node.signal.SIGTERM
             handler(signum, None)
 
-    def make_executor(num_threads: int):
-        executor = SigtermExecutor(num_threads=num_threads)
+    def make_executor():
+        executor = SigtermExecutor()
         executors.append(executor)
         return executor
 
-    monkeypatch.setattr(lfc_bridge_node, "MultiThreadedExecutor", make_executor)
+    monkeypatch.setattr(lfc_bridge_node, "SingleThreadedExecutor", make_executor)
     monkeypatch.setattr(lfc_bridge_node.rclpy, "ok", lambda context=None: True)
     monkeypatch.setattr(
         lfc_bridge_node.rclpy,

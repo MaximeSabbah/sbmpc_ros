@@ -54,7 +54,8 @@ class FakePlannerDiagnostics:
     object_error: float | None = None
     goal_position: tuple[float, float, float] = (0.55, 0.0, 0.40)
     gain_mode: str = "exact_feedback"
-    foreground_planning_time_ms: float = 9.5
+    planner_prepare_time_ms: float = 0.4
+    planner_command_time_ms: float = 9.5
 
 
 class FakePlanner:
@@ -267,12 +268,12 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.rejected_planner_output_count == 0
         assert snapshot.last_phase == "PREGRASP"
         assert snapshot.last_next_phase == "DESCEND"
-        assert snapshot.last_planner_output_time_ms == pytest.approx(12.5)
-        assert snapshot.last_bridge_loop_time_ms is not None
+        assert snapshot.last_planning_time_ms == pytest.approx(12.5)
+        assert snapshot.last_planner_step_wall_time_ms is not None
         assert snapshot.last_position_error == pytest.approx(0.25)
         assert snapshot.last_goal_position == [0.55, 0.0, 0.4]
         assert snapshot.planner_mode == "exact_feedback"
-        assert snapshot.last_foreground_planning_time_ms == pytest.approx(9.5)
+        assert snapshot.last_planner_command_time_ms == pytest.approx(9.5)
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -423,12 +424,9 @@ def test_fake_ros_loop_counts_deadline_misses() -> None:
         assert snapshot.deadline_miss_count >= 1
         assert snapshot.accepted_planner_output_count >= 1
         assert snapshot.rejected_planner_output_count == 0
-        assert snapshot.last_planning_time_ms is not None
-        assert snapshot.last_planning_time_ms > 20.0
-        assert snapshot.last_bridge_loop_time_ms == pytest.approx(
-            snapshot.last_planning_time_ms
-        )
-        assert snapshot.last_planner_output_time_ms == pytest.approx(12.5)
+        assert snapshot.last_planner_step_wall_time_ms is not None
+        assert snapshot.last_planner_step_wall_time_ms > 20.0
+        assert snapshot.last_planning_time_ms == pytest.approx(12.5)
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

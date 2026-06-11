@@ -59,7 +59,7 @@ ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py \
   shutdown_after_validation:=true
 ```
 
-Set `max_p95_planning_ms:=40` to enforce the strict 25 Hz controller budget. On the current RTX 5000 Ada setup, the measured synchronous exact controller is about 44-46 ms per update, so the strict gate currently fails and the planner produces roughly 22 Hz of fresh outputs. Robot limits remain comfortably respected, but this timing gap must be resolved before claiming a true 25 Hz deployment.
+Set `max_p95_planning_ms:=40` to enforce the strict 25 Hz controller budget. The MPPI knobs (horizon, samples, dt, smoothing, and the top-K `num_gain_samples`) live in one place: `sbmpc/sbmpc/ocp_configs/pregrasp.yaml`; the bridge presets only carry deployment settings (topics, rate, deadline, mode). With the yaml's 128 gain samples, the measured synchronous exact controller is ~32 ms per update (p95 ~34 ms) on the RTX 5000 Ada setup, within the 40 ms budget. Note: 256 gain samples measured p95 ~40 ms and 512 ~43 ms, so raising the top-K count breaks the 25 Hz budget on this GPU.
 
 ## Record And Replay
 
@@ -76,8 +76,8 @@ ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py \
 Replay summary or visualization:
 
 ```bash
-python -m sbmpc_bringup.trajectory_replay /tmp/sbmpc_pregrasp_replay.json --dry-run
-python -m sbmpc_bringup.trajectory_replay /tmp/sbmpc_pregrasp_replay.json
+replay_sbmpc_trajectory /tmp/sbmpc_pregrasp_replay.json --dry-run
+replay_sbmpc_trajectory /tmp/sbmpc_pregrasp_replay.json
 ```
 
 ## Planner Smoke
@@ -86,11 +86,11 @@ python -m sbmpc_bringup.trajectory_replay /tmp/sbmpc_pregrasp_replay.json
 /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
   python -m sbmpc_ros_bridge.planner_smoke \
   --joint-set fer \
-  --planner-mode exact_feedback \
-  --planner-horizon 10 \
-  --planner-dt 0.04 \
-  --planner-num-gain-samples 512
+  --planner-mode exact_feedback
 ```
+
+The MPPI knobs come from `sbmpc/sbmpc/ocp_configs/pregrasp.yaml` (override with
+`--planner-ocp` or the individual `--planner-*` flags only when experimenting).
 
 ## Real Robot
 
@@ -101,6 +101,11 @@ ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py
 ```
 
 Use `enable_nonzero_control:=false` for a dry bringup that warms the planner and keeps LFC in PD hold. The ROS simulation behavior and timing should be accepted before enabling commands on hardware.
+
+In simulation, the LFC is active in PD hold while JAX compiles. After warmup,
+the bringup resets MuJoCo to the `home` keyframe and only then applies the
+requested `enable_nonzero_control` value, so the robot is never left
+uncontrolled during startup.
 
 ## Tests
 

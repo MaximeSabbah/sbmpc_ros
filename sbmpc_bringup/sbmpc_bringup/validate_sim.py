@@ -41,11 +41,9 @@ class ValidationSummary:
     final_position_error: float | None
     min_position_error: float | None
     max_position_error: float | None
-    mean_foreground_ms: float | None
-    p95_foreground_ms: float | None
-    max_foreground_ms: float | None
-    mean_bridge_loop_ms: float | None
-    max_bridge_loop_ms: float | None
+    mean_planning_ms: float | None
+    p95_planning_ms: float | None
+    max_planning_ms: float | None
     mean_planner_step_wall_ms: float | None
     max_planner_step_wall_ms: float | None
     mean_control_prepare_ms: float | None
@@ -249,10 +247,7 @@ def summarize(
         position_error = ee_position_errors(
             joint_records, robot_description=robot_description
         )
-    foreground_ms = finite_values(planner_steps, "last_foreground_planning_time_ms")
-    if foreground_ms.size == 0:
-        foreground_ms = finite_values(planner_steps, "last_planner_output_time_ms")
-    bridge_ms = finite_values(planner_steps, "last_bridge_loop_time_ms")
+    planning_ms = finite_values(planner_steps, "last_planning_time_ms")
     planner_step_wall_ms = finite_values(
         planner_steps, "last_planner_step_wall_time_ms"
     )
@@ -310,13 +305,11 @@ def summarize(
         final_position_error=float(position_error[-1]) if position_error.size else None,
         min_position_error=float(np.min(position_error)) if position_error.size else None,
         max_position_error=float(np.max(position_error)) if position_error.size else None,
-        mean_foreground_ms=float(np.mean(foreground_ms)) if foreground_ms.size else None,
-        p95_foreground_ms=(
-            float(np.percentile(foreground_ms, 95)) if foreground_ms.size else None
+        mean_planning_ms=float(np.mean(planning_ms)) if planning_ms.size else None,
+        p95_planning_ms=(
+            float(np.percentile(planning_ms, 95)) if planning_ms.size else None
         ),
-        max_foreground_ms=float(np.max(foreground_ms)) if foreground_ms.size else None,
-        mean_bridge_loop_ms=float(np.mean(bridge_ms)) if bridge_ms.size else None,
-        max_bridge_loop_ms=float(np.max(bridge_ms)) if bridge_ms.size else None,
+        max_planning_ms=float(np.max(planning_ms)) if planning_ms.size else None,
         mean_planner_step_wall_ms=(
             float(np.mean(planner_step_wall_ms)) if planner_step_wall_ms.size else None
         ),
@@ -413,15 +406,10 @@ def print_summary(summary: ValidationSummary) -> None:
         f"max={format_optional(summary.max_position_error)}"
     )
     print(
-        "foreground_ms: "
-        f"mean={format_optional(summary.mean_foreground_ms, precision=2)} "
-        f"p95={format_optional(summary.p95_foreground_ms, precision=2)} "
-        f"max={format_optional(summary.max_foreground_ms, precision=2)}"
-    )
-    print(
-        "bridge_loop_ms: "
-        f"mean={format_optional(summary.mean_bridge_loop_ms, precision=2)} "
-        f"max={format_optional(summary.max_bridge_loop_ms, precision=2)} "
+        "planning_ms: "
+        f"mean={format_optional(summary.mean_planning_ms, precision=2)} "
+        f"p95={format_optional(summary.p95_planning_ms, precision=2)} "
+        f"max={format_optional(summary.max_planning_ms, precision=2)} "
         f"deadline_misses={format_optional(summary.deadline_miss_count)}"
     )
     print(
@@ -491,7 +479,7 @@ def assert_stable(
     *,
     max_tail_joint_span: float,
     max_final_position_error: float,
-    max_foreground_ms: float | None = None,
+    max_planning_ms: float | None = None,
     max_p95_planning_ms: float | None = None,
     max_torque_fraction: float | None = None,
     max_velocity_fraction: float | None = None,
@@ -502,20 +490,20 @@ def assert_stable(
         or summary.max_tail_joint_span is None
     ):
         return False
-    foreground_ok = (
+    planning_ok = (
         True
-        if max_foreground_ms is None
+        if max_planning_ms is None
         else (
-            summary.max_foreground_ms is not None
-            and summary.max_foreground_ms <= max_foreground_ms
+            summary.max_planning_ms is not None
+            and summary.max_planning_ms <= max_planning_ms
         )
     )
     p95_ok = (
         True
         if max_p95_planning_ms is None
         else (
-            summary.p95_foreground_ms is not None
-            and summary.p95_foreground_ms <= max_p95_planning_ms
+            summary.p95_planning_ms is not None
+            and summary.p95_planning_ms <= max_p95_planning_ms
         )
     )
     # Limit gates fail closed: if a bound is requested but the measurement is
@@ -547,7 +535,7 @@ def assert_stable(
     return (
         summary.final_position_error <= max_final_position_error
         and summary.max_tail_joint_span <= max_tail_joint_span
-        and foreground_ok
+        and planning_ok
         and p95_ok
         and torque_ok
         and velocity_ok
@@ -576,11 +564,11 @@ def main() -> None:
         help="Optional p95 same-cycle MPC timing gate in milliseconds.",
     )
     parser.add_argument(
-        "--max-foreground-ms",
+        "--max-planning-ms",
         type=float,
         default=None,
         help=(
-            "Optional controller-only foreground timing gate. Leave unset for "
+            "Optional max planner timing gate in milliseconds. Leave unset for "
             "MuJoCo behavior/visual checks, where simulation load is not part "
             "of the real robot controller budget."
         ),
@@ -637,7 +625,7 @@ def main() -> None:
             summary,
             max_tail_joint_span=args.max_tail_joint_span,
             max_final_position_error=args.max_final_position_error,
-            max_foreground_ms=args.max_foreground_ms,
+            max_planning_ms=args.max_planning_ms,
             max_p95_planning_ms=(
                 args.max_p95_planning_ms
                 if args.max_p95_planning_ms is not None

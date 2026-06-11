@@ -20,7 +20,7 @@ def read_env_int(name: str, default: int) -> int:
     return int(value)
 
 
-def test_controller_foreground_timing_with_synthetic_sensor() -> None:
+def test_controller_planning_time_with_synthetic_sensor() -> None:
     if os.environ.get("SBMPC_RUN_CONTROLLER_TIMING") != "1":
         pytest.skip(
             "set SBMPC_RUN_CONTROLLER_TIMING=1 to run the controller timing smoke"
@@ -39,21 +39,15 @@ def test_controller_foreground_timing_with_synthetic_sensor() -> None:
     from sbmpc_ros_bridge.planner_smoke import FER_ARM_JOINT_NAMES, build_sensor
 
     steps = read_env_int("SBMPC_CONTROLLER_TIMING_STEPS", 30)
-    max_exact_ms = read_env_float("SBMPC_CONTROLLER_TIMING_MAX_EXACT_MS", 50.0)
+    # Budget = the deployed 25 Hz control period; the MPPI knobs come from the
+    # pregrasp OCP yaml exactly as in deployment.
+    max_exact_ms = read_env_float("SBMPC_CONTROLLER_TIMING_MAX_EXACT_MS", 40.0)
     if steps <= 0:
         raise ValueError("SBMPC_CONTROLLER_TIMING_STEPS must be positive")
 
     adapter = SbMpcPlannerAdapter(
         config_overrides=PlannerConfigOverrides(
             mode="exact_feedback",
-            gains=True,
-            horizon=10,
-            num_parallel_computations=1024,
-            num_control_points=10,
-            dt=0.04,
-            lambda_mpc=0.05,
-            std_dev_scale=0.1,
-            num_gain_samples=512,
             ocp="pregrasp",
         )
     )

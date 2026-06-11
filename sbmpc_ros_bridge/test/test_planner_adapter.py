@@ -51,30 +51,6 @@ class FakePlanner:
         self.home_q = np.asarray([0.1] * 7, dtype=np.float32)
         self.nv = 7
         self.torque_limits = np.asarray([2.0] * 7, dtype=np.float32)
-        self.initial_guess_calls: list[dict[str, object]] = []
-
-    def nominal_torque_sequence_from_state(self, state, horizon, dt, phase):
-        self.initial_guess_calls.append(
-            {
-                "state": np.asarray(state, dtype=np.float32),
-                "horizon": horizon,
-                "dt": dt,
-                "phase": phase,
-            }
-        )
-        return np.full((horizon, 7), dt, dtype=np.float32)
-
-
-class FakePregraspPlanner(FakePlanner):
-    def nominal_torque_sequence_from_state(self, state, horizon, dt):
-        self.initial_guess_calls.append(
-            {
-                "state": np.asarray(state, dtype=np.float32),
-                "horizon": horizon,
-                "dt": float(dt),
-            }
-        )
-        return np.full((horizon, 7), float(dt), dtype=np.float32)
 
 
 class FakeJaxConfig:
@@ -114,7 +90,6 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
     overrides = planner_config_overrides_from_values(
         mode=" exact_feedback ",
         phase=" transport ",
-        gains=False,
         num_steps=3,
         num_samples=128,
         horizon=24,
@@ -129,7 +104,6 @@ def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> No
     assert overrides == PlannerConfigOverrides(
         mode="exact_feedback",
         phase="transport",
-        gains=False,
         num_steps=3,
         horizon=24,
         num_parallel_computations=128,
@@ -168,11 +142,10 @@ def test_planner_config_overrides_support_legacy_aliases_for_existing_config_nam
     assert np.isclose(overrides.std_dev_scale, 0.03)
 
 
-def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -> None:
+def test_apply_config_overrides_updates_core_mppi_settings() -> None:
     config = FakeConfig()
     planner = FakePlanner()
     overrides = PlannerConfigOverrides(
-        gains=False,
         horizon=12,
         num_parallel_computations=64,
         num_control_points=3,
@@ -183,14 +156,8 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         num_gain_samples=32,
     )
 
-    updated_config = apply_config_overrides(
-        config,
-        planner,
-        overrides,
-        initial_guess_phase="PREGRASP",
-    )
+    updated_config = apply_config_overrides(config, planner, overrides)
 
-    assert updated_config.MPC.gains is False
     assert updated_config.MPC.horizon == 12
     assert updated_config.MPC.num_parallel_computations == 64
     assert updated_config.MPC.num_control_points == 3
@@ -201,14 +168,7 @@ def test_apply_config_overrides_updates_core_mppi_settings_and_initial_guess() -
         np.asarray([0.14] * 7, dtype=np.float32),
     )
     assert updated_config.MPC.smoothing is None
-    assert updated_config.MPC.gain_method == "exact"
     assert updated_config.MPC.num_gain_samples == 32
-    assert np.asarray(updated_config.MPC.initial_guess).shape == (12, 7)
-    np.testing.assert_allclose(
-        np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
-        np.zeros((12, 7), dtype=np.float32),
-    )
-    assert planner.initial_guess_calls == []
 
 
 def test_apply_config_overrides_rejects_control_points_above_horizon() -> None:
@@ -217,33 +177,6 @@ def test_apply_config_overrides_rejects_control_points_above_horizon() -> None:
             FakeConfig(),
             FakePlanner(),
             PlannerConfigOverrides(horizon=3, num_control_points=4),
-            initial_guess_phase="PREGRASP",
-        )
-
-
-def test_apply_config_overrides_uses_neutral_initial_guess() -> None:
-    config = FakeConfig()
-    planner = FakePregraspPlanner()
-
-    updated_config = apply_config_overrides(
-        config,
-        planner,
-        PlannerConfigOverrides(horizon=5, dt=0.03),
-        initial_guess_phase="PREGRASP",
-    )
-
-    assert np.asarray(updated_config.MPC.initial_guess).shape == (5, 7)
-    np.testing.assert_allclose(
-        np.asarray(updated_config.MPC.initial_guess, dtype=np.float32),
-        np.zeros((5, 7), dtype=np.float32),
-    )
-    assert planner.initial_guess_calls == []
-
-
-def test_default_adapter_rejects_per_step_trajectory_reseed() -> None:
-    with pytest.raises(ValueError, match="planner_reseed_every_step"):
-        SbMpcPlannerAdapter._build_default_controller(
-            PlannerConfigOverrides(reseed_every_step=True)
         )
 
 

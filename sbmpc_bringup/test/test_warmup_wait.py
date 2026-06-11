@@ -40,6 +40,12 @@ def test_activation_requested_ignores_empty_values() -> None:
     assert warmup_wait.activation_requested(["linear_feedback_controller"]) is True
 
 
+def test_parameter_update_requested_ignores_empty_values() -> None:
+    assert warmup_wait.parameter_update_requested("") is False
+    assert warmup_wait.parameter_update_requested("  ") is False
+    assert warmup_wait.parameter_update_requested("/sbmpc_lfc_bridge_node") is True
+
+
 def test_switch_controller_service_name_uses_manager_namespace() -> None:
     assert (
         warmup_wait.switch_controller_service_name("/controller_manager")
@@ -192,6 +198,66 @@ def test_switch_controllers_calls_controller_manager(monkeypatch) -> None:
     assert spun and spun[0][0] is node
 
 
+def test_set_remote_bool_parameter_arms_bridge(monkeypatch) -> None:
+    class Result:
+        successful = True
+
+    class Future:
+        def result(self):
+            return types.SimpleNamespace(results=[Result()])
+
+    class Client:
+        def __init__(self, node, remote_node_name: str) -> None:
+            self.node = node
+            self.remote_node_name = remote_node_name
+            self.parameters = []
+
+        def wait_for_services(self, *, timeout_sec: float) -> bool:
+            assert timeout_sec == 3.0
+            return True
+
+        def set_parameters(self, parameters):
+            self.parameters = parameters
+            return Future()
+
+    class BoolParameter:
+        class Type:
+            BOOL = "bool"
+
+        def __init__(self, name: str, parameter_type: str, value: bool) -> None:
+            self.name = name
+            self.type = parameter_type
+            self.value = value
+
+    node = object()
+    clients = []
+
+    def make_client(node_arg, remote_node_name):
+        client = Client(node_arg, remote_node_name)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(warmup_wait, "AsyncParameterClient", make_client)
+    monkeypatch.setattr(warmup_wait, "Parameter", BoolParameter)
+    monkeypatch.setattr(
+        warmup_wait.rclpy,
+        "spin_until_future_complete",
+        lambda node_arg, future, timeout_sec: None,
+    )
+
+    assert warmup_wait.set_remote_bool_parameter(
+        node,
+        remote_node_name="/sbmpc_lfc_bridge_node",
+        parameter_name="enable_nonzero_control",
+        value=True,
+        timeout_sec=3.0,
+    )
+    assert clients[0].node is node
+    assert clients[0].remote_node_name == "/sbmpc_lfc_bridge_node"
+    assert clients[0].parameters[0].name == "enable_nonzero_control"
+    assert clients[0].parameters[0].value is True
+
+
 def test_main_ignores_ros_args_appended_by_launch_node(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
@@ -212,6 +278,12 @@ def test_main_ignores_ros_args_appended_by_launch_node(monkeypatch) -> None:
             "/controller_manager",
             "--switch-timeout-sec",
             "2.5",
+            "--bridge-node",
+            "/sbmpc_lfc_bridge_node",
+            "--enable-nonzero-control",
+            "true",
+            "--parameter-timeout-sec",
+            "3.5",
             "--ros-args",
             "--params-file",
             "/tmp/launch_params.yaml",
@@ -225,3 +297,6 @@ def test_main_ignores_ros_args_appended_by_launch_node(monkeypatch) -> None:
     ]
     assert calls[0]["controller_manager_name"] == "/controller_manager"
     assert calls[0]["switch_timeout_sec"] == 2.5
+    assert calls[0]["bridge_node_name"] == "/sbmpc_lfc_bridge_node"
+    assert calls[0]["enable_nonzero_control"] is True
+    assert calls[0]["parameter_timeout_sec"] == 3.5

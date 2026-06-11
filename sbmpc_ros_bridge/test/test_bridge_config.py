@@ -1,13 +1,11 @@
-"""Config-parity guard between the MuJoCo bench and the ROS bridge.
+"""Config-parity guard between the sbmpc OCP yaml and the ROS bridge.
 
-The MuJoCo bench (`sbmpc/tests/bench_lfc.py`) and the ROS bridge both start
-from `make_panda_pregrasp_config(planner, visualize=False, gains=True)` and
-apply overrides on top. This test pins down the invariant that an empty
-`PlannerConfigOverrides()` is a no-op (except for `initial_guess`, which is
-always recomputed so the shape matches the horizon). If a future change
-introduces a silent Config mutation in `apply_config_overrides`, this test
-fails and the MuJoCo baseline stops representing what the bridge actually
-runs.
+The bridge starts from `make_panda_pregrasp_config(planner, ocp=...)` (the
+OCP yaml is the single source of truth for the MPPI knobs) and applies only
+the explicitly set ROS overrides on top. This test pins down the invariant
+that an empty `PlannerConfigOverrides()` is a strict no-op. If a future
+change introduces a silent Config mutation in `apply_config_overrides`, this
+test fails and the OCP yaml stops representing what the bridge actually runs.
 """
 from __future__ import annotations
 
@@ -57,9 +55,6 @@ class FakePlanner:
         self.nv = 7
         self.torque_limits = np.full(7, 87.0, dtype=np.float32)
 
-    def nominal_torque_sequence_from_state(self, state, horizon, dt, phase):
-        return np.zeros((horizon, 7), dtype=np.float32)
-
 
 _MPC_FIELDS = (
     "gains",
@@ -77,37 +72,19 @@ _MPC_FIELDS = (
 def _snapshot_mpc(mpc: FakeMPCConfig) -> dict:
     snap = {f: getattr(mpc, f) for f in _MPC_FIELDS}
     snap["std_dev_mppi"] = np.asarray(mpc.std_dev_mppi, dtype=np.float32).copy()
+    snap["initial_guess"] = np.asarray(mpc.initial_guess, dtype=np.float32).copy()
     return snap
 
 
-def test_empty_overrides_is_noop_on_mpc_fields() -> None:
+def test_empty_overrides_is_strict_noop() -> None:
     config = FakeConfig()
     planner = FakePlanner()
     before = _snapshot_mpc(config.MPC)
 
-    apply_config_overrides(
-        config,
-        planner,
-        PlannerConfigOverrides(),
-        initial_guess_phase=None,
-    )
+    apply_config_overrides(config, planner, PlannerConfigOverrides())
 
     after = _snapshot_mpc(config.MPC)
     for f in _MPC_FIELDS:
         assert before[f] == after[f], f"apply_config_overrides mutated MPC.{f}"
     np.testing.assert_array_equal(before["std_dev_mppi"], after["std_dev_mppi"])
-
-
-def test_empty_overrides_still_recomputes_initial_guess() -> None:
-    config = FakeConfig()
-    planner = FakePlanner()
-
-    apply_config_overrides(
-        config,
-        planner,
-        PlannerConfigOverrides(),
-        initial_guess_phase=None,
-    )
-
-    guess = np.asarray(config.MPC.initial_guess)
-    assert guess.shape == (config.MPC.horizon, 7)
+    np.testing.assert_array_equal(before["initial_guess"], after["initial_guess"])

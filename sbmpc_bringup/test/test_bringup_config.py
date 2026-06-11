@@ -122,16 +122,25 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_mode"] == "exact_feedback"
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_num_steps"] == 1
-    assert params["planner_num_samples"] == 1024
-    assert params["planner_horizon"] == 10
-    assert params["planner_num_control_points"] == 10
-    assert params["planner_temperature"] == 0.05
-    assert params["planner_dt"] == 0.04
-    assert params["planner_noise_scale"] == 0.1
-    assert params["planner_smoothing"] == "Spline"
     assert params["planner_ocp"] == "pregrasp"
     assert params["planner_warmup_iterations"] == 3
-    assert params["planner_num_gain_samples"] == 512
+
+
+# The sbmpc OCP yaml (planner_ocp) owns the MPPI knobs. The bridge presets
+# must not duplicate them, otherwise the two repos drift apart.
+MPPI_KNOBS_OWNED_BY_OCP_YAML = (
+    "planner_num_samples",
+    "planner_horizon",
+    "planner_num_parallel_computations",
+    "planner_num_control_points",
+    "planner_temperature",
+    "planner_dt",
+    "planner_lambda_mpc",
+    "planner_noise_scale",
+    "planner_std_dev_scale",
+    "planner_smoothing",
+    "planner_num_gain_samples",
+)
 
 
 def test_bridge_presets_cover_feedforward_and_exact_feedback() -> None:
@@ -142,11 +151,11 @@ def test_bridge_presets_cover_feedforward_and_exact_feedback() -> None:
     assert feedback["planner_mode"] == "exact_feedback"
     for params in (feedforward, feedback):
         assert params["publish_rate_hz"] == 25.0
-        assert params["planner_horizon"] == 10
-        assert params["planner_num_samples"] == 1024
-        assert params["planner_dt"] == 0.04
         assert params["planner_ocp"] == "pregrasp"
-    assert feedback["planner_num_gain_samples"] == 512
+        for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML:
+            assert knob not in params, (
+                f"{knob} duplicates the sbmpc OCP yaml; tune it there instead."
+            )
 
 
 def test_mujoco_launch_partitions_simulation_and_bridge_cpus(monkeypatch) -> None:

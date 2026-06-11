@@ -177,7 +177,7 @@ def launch_setup(context, *args, **kwargs):
             "60",
             "--switch-timeout",
             "60",
-            "--inactive",
+            "--activate-as-group",
             "--param-file",
             LaunchConfiguration("controllers_file"),
             "--param-file",
@@ -203,10 +203,9 @@ def launch_setup(context, *args, **kwargs):
             LaunchConfiguration("bridge_params_file"),
             {
                 "use_sim_time": True,
-                "enable_nonzero_control": ParameterValue(
-                    LaunchConfiguration("enable_nonzero_control"),
-                    value_type=bool,
-                ),
+                # Keep MPPI disarmed until the post-JIT world reset. The active
+                # LFC holds the initial state with PD control during warmup.
+                "enable_nonzero_control": False,
             },
         ],
         additional_env={
@@ -229,13 +228,11 @@ def launch_setup(context, *args, **kwargs):
             "/mujoco_ros2_control_node/reset_world",
             "--reset-keyframe",
             "home",
-            "--controller-manager",
-            LaunchConfiguration("controller_manager_name"),
-            "--activate-controller",
-            JOINT_STATE_ESTIMATOR_NAME,
-            "--activate-controller",
-            LINEAR_FEEDBACK_CONTROLLER_NAME,
-            "--switch-timeout-sec",
+            "--bridge-node",
+            "/sbmpc_lfc_bridge_node",
+            "--enable-nonzero-control",
+            LaunchConfiguration("enable_nonzero_control"),
+            "--parameter-timeout-sec",
             "10",
         ],
         output="screen",
@@ -266,8 +263,8 @@ def launch_setup(context, *args, **kwargs):
         return [
             Shutdown(
                 reason=(
-                    "MuJoCo reset or LFC activation after SB-MPC bridge "
-                    "warmup failed."
+                    "MuJoCo reset or SB-MPC bridge arming after planner warmup "
+                    "failed."
                 )
             )
         ]

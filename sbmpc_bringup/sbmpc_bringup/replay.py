@@ -380,11 +380,11 @@ def summarize_payload(
     running = [row for row in diagnostics if row.get("state") == "running"]
     active_running = _active_running_rows(running)
     timing_rows = active_running if active_running else running
-    foreground = [
-        _finite_float(row.get("last_foreground_planning_time_ms"))
+    planning = [
+        _finite_float(row.get("last_planning_time_ms"))
         for row in timing_rows
     ]
-    foreground = [value for value in foreground if value is not None]
+    planning = [value for value in planning if value is not None]
     return {
         "joint_state_count": len(joint_states),
         "sensor_state_count": len(sensor_states),
@@ -399,29 +399,16 @@ def summarize_payload(
         "joint_velocity_abs_max": (
             float(np.max(np.abs(v), initial=0.0)) if len(v) else None
         ),
-        "foreground_ms_mean": float(np.mean(foreground)) if foreground else None,
-        "foreground_ms_max": float(np.max(foreground)) if foreground else None,
+        "planning_ms_mean": float(np.mean(planning)) if planning else None,
+        "planning_ms_max": float(np.max(planning)) if planning else None,
         "timing_ms": {
-            "foreground": _diagnostic_stats(
+            "planning": _diagnostic_stats(
                 timing_rows,
-                "last_foreground_planning_time_ms",
+                "last_planning_time_ms",
             ),
-            "bridge_loop": _diagnostic_stats(timing_rows, "last_bridge_loop_time_ms"),
             "planner_step_wall": _diagnostic_stats(
                 timing_rows,
                 "last_planner_step_wall_time_ms",
-            ),
-            "planner_step_overhead": _diagnostic_stats(
-                timing_rows,
-                "last_planner_step_overhead_time_ms",
-            ),
-            "planner_api_wall": _diagnostic_stats(
-                timing_rows,
-                "last_planner_api_wall_time_ms",
-            ),
-            "planner_bridge_adapter_overhead": _diagnostic_stats(
-                timing_rows,
-                "last_planner_bridge_adapter_overhead_time_ms",
             ),
             "planner_prepare": _diagnostic_stats(
                 timing_rows,
@@ -430,26 +417,6 @@ def summarize_payload(
             "planner_command": _diagnostic_stats(
                 timing_rows,
                 "last_planner_command_time_ms",
-            ),
-            "planner_tau_extract": _diagnostic_stats(
-                timing_rows,
-                "last_planner_tau_extract_time_ms",
-            ),
-            "planner_gain_fetch": _diagnostic_stats(
-                timing_rows,
-                "last_planner_gain_fetch_time_ms",
-            ),
-            "planner_task_diagnostics": _diagnostic_stats(
-                timing_rows,
-                "last_planner_task_diagnostics_time_ms",
-            ),
-            "planner_output_build": _diagnostic_stats(
-                timing_rows,
-                "last_planner_output_build_time_ms",
-            ),
-            "planner_loop_residual": _diagnostic_stats(
-                timing_rows,
-                "last_planner_loop_residual_time_ms",
             ),
             "control_prepare": _diagnostic_stats(
                 timing_rows,
@@ -668,7 +635,7 @@ def _print_record_summary(payload: dict[str, object], output_path: Path) -> None
     )
     print(
         "controller: "
-        f"foreground_max_ms={summary['foreground_ms_max']}"
+        f"planning_max_ms={summary['planning_ms_max']}"
     )
     timing = summary["timing_ms"]
     cadence = summary["control_cadence_sec"]["receive_delta"]
@@ -763,7 +730,7 @@ def _print_replay_summary(
         f"duration_sec={summary.get('duration_sec')} "
         f"replay_duration_sec={replay_duration} "
         f"time_source={time_source} "
-        f"foreground_max_ms={summary.get('foreground_ms_max')}"
+        f"planning_max_ms={summary.get('planning_ms_max')}"
     )
 
 

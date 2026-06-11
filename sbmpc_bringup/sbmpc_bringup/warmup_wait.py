@@ -6,6 +6,8 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rclpy.parameter_client import AsyncParameterClient
 from std_msgs.msg import String
 
 from sbmpc_bringup.constants import BRIDGE_DIAGNOSTICS_TOPIC
@@ -25,6 +27,10 @@ def reset_service_requested(service_name: str | None) -> bool:
 
 def activation_requested(controller_names: list[str] | tuple[str, ...]) -> bool:
     return any(name.strip() for name in controller_names)
+
+
+def parameter_update_requested(node_name: str | None) -> bool:
+    return bool((node_name or "").strip())
 
 
 def switch_controller_service_name(controller_manager_name: str) -> str:
@@ -70,6 +76,9 @@ def wait_for_warmup(
     activate_controllers: list[str] | tuple[str, ...] = (),
     controller_manager_name: str = "/controller_manager",
     switch_timeout_sec: float = 10.0,
+    bridge_node_name: str = "",
+    enable_nonzero_control: bool = False,
+    parameter_timeout_sec: float = 10.0,
 ) -> bool:
     rclpy.init()
     node = WarmupWaiter(
@@ -91,12 +100,20 @@ def wait_for_warmup(
                 timeout_sec=reset_timeout_sec,
         ):
             return False
-        if activation_requested(activate_controllers):
-            return switch_controllers(
+        if activation_requested(activate_controllers) and not switch_controllers(
+            node,
+            controller_manager_name=controller_manager_name,
+            activate_controllers=activate_controllers,
+            timeout_sec=switch_timeout_sec,
+        ):
+            return False
+        if parameter_update_requested(bridge_node_name):
+            return set_remote_bool_parameter(
                 node,
-                controller_manager_name=controller_manager_name,
-                activate_controllers=activate_controllers,
-                timeout_sec=switch_timeout_sec,
+                remote_node_name=bridge_node_name,
+                parameter_name="enable_nonzero_control",
+                value=enable_nonzero_control,
+                timeout_sec=parameter_timeout_sec,
             )
         return True
     finally:
@@ -159,6 +176,36 @@ def switch_controllers(
     return bool(result is not None and result.ok)
 
 
+def set_remote_bool_parameter(
+    node: Node,
+    *,
+    remote_node_name: str,
+    parameter_name: str,
+    value: bool,
+    timeout_sec: float,
+) -> bool:
+    client = AsyncParameterClient(node, remote_node_name.strip())
+    if not client.wait_for_services(timeout_sec=timeout_sec):
+        return False
+
+    future = client.set_parameters(
+        [Parameter(parameter_name, Parameter.Type.BOOL, bool(value))]
+    )
+    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_sec)
+    response = future.result()
+    results = getattr(response, "results", response)
+    return bool(results) and all(result.successful for result in results)
+
+
+def parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostics-topic", default=BRIDGE_DIAGNOSTICS_TOPIC)
@@ -170,6 +217,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--activate-controller", action="append", default=[])
     parser.add_argument("--controller-manager", default="/controller_manager")
     parser.add_argument("--switch-timeout-sec", type=float, default=10.0)
+    parser.add_argument("--bridge-node", default="")
+    parser.add_argument("--enable-nonzero-control", type=parse_bool, default=False)
+    parser.add_argument("--parameter-timeout-sec", type=float, default=10.0)
     args, _ = parser.parse_known_args(argv)
 
     if not wait_for_warmup(
@@ -182,10 +232,13 @@ def main(argv: list[str] | None = None) -> None:
         activate_controllers=args.activate_controller,
         controller_manager_name=args.controller_manager,
         switch_timeout_sec=args.switch_timeout_sec,
+        bridge_node_name=args.bridge_node,
+        enable_nonzero_control=args.enable_nonzero_control,
+        parameter_timeout_sec=args.parameter_timeout_sec,
     ):
         raise SystemExit(
             "Timed out waiting for SB-MPC bridge warmup, MuJoCo reset, "
-            "or controller activation."
+            "controller activation, or bridge arming."
         )
 
 

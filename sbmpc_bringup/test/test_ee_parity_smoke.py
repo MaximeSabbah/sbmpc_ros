@@ -80,12 +80,9 @@ def latest_diagnostics_text(diagnostics: list[dict[str, object]]) -> str:
         "rejected_planner_output_count",
         "deadline_miss_count",
         "last_planning_time_ms",
-        "last_planner_output_time_ms",
         "last_planner_step_wall_time_ms",
-        "last_foreground_planning_time_ms",
         "last_control_prepare_time_ms",
         "last_control_publish_time_ms",
-        "last_bridge_loop_time_ms",
         "last_error",
     )
     latest = diagnostics[-1]
@@ -246,8 +243,8 @@ def summary_failure_context(summary) -> str:
     return (
         f"final_position_error={summary.final_position_error!r}, "
         f"max_tail_joint_span={summary.max_tail_joint_span!r}, "
-        f"max_foreground_ms={summary.max_foreground_ms!r}, "
-        f"mean_foreground_ms={summary.mean_foreground_ms!r}, "
+        f"max_planning_ms={summary.max_planning_ms!r}, "
+        f"mean_planning_ms={summary.mean_planning_ms!r}, "
         f"max_planner_step_wall_ms={summary.max_planner_step_wall_ms!r}, "
         f"deadline_miss_count={summary.deadline_miss_count!r}, "
         f"accepted_planner_output_count={summary.accepted_planner_output_count!r}, "

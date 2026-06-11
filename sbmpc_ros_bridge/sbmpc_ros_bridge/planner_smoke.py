@@ -14,7 +14,10 @@ from sbmpc_ros_bridge.lfc_msg_adapter import (
     planner_output_to_control,
     sensor_to_planner_input,
 )
-from sbmpc_ros_bridge.planner_adapter import PlannerConfigOverrides, SbMpcPlannerAdapter
+from sbmpc_ros_bridge.planner_adapter import (
+    SbMpcPlannerAdapter,
+    planner_config_overrides_from_values,
+)
 
 
 FR3_ARM_JOINT_NAMES: tuple[str, ...] = tuple(f"fr3_joint{i}" for i in range(1, 8))
@@ -87,26 +90,25 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--q", help="Comma-separated or JSON list of 7 joint positions.")
     parser.add_argument("--v", help="Comma-separated or JSON list of 7 joint velocities.")
-    parser.add_argument("--planner-horizon", type=int, default=10)
-    parser.add_argument("--planner-dt", type=float, default=0.04)
-    parser.add_argument("--planner-num-samples", type=int, default=1024)
-    parser.add_argument("--planner-noise-scale", type=float, default=0.1)
-    parser.add_argument("--planner-temperature", type=float, default=0.05)
-    parser.add_argument("--planner-num-gain-samples", type=int, default=512)
+    parser.add_argument("--planner-ocp", default="pregrasp")
+    # 0 = defer to the OCP yaml (the single source of truth for the MPPI knobs).
+    parser.add_argument("--planner-horizon", type=int, default=0)
+    parser.add_argument("--planner-dt", type=float, default=0.0)
+    parser.add_argument("--planner-num-samples", type=int, default=0)
+    parser.add_argument("--planner-noise-scale", type=float, default=0.0)
+    parser.add_argument("--planner-temperature", type=float, default=0.0)
+    parser.add_argument("--planner-num-gain-samples", type=int, default=0)
     args = parser.parse_args(argv)
 
-    config_overrides = PlannerConfigOverrides(
+    config_overrides = planner_config_overrides_from_values(
         mode=args.planner_mode,
+        ocp=args.planner_ocp,
         horizon=args.planner_horizon,
         dt=args.planner_dt,
-        num_parallel_computations=args.planner_num_samples,
-        std_dev_scale=args.planner_noise_scale,
-        lambda_mpc=args.planner_temperature,
-        num_gain_samples=(
-            args.planner_num_gain_samples
-            if args.planner_mode != "feedforward"
-            else None
-        ),
+        num_samples=args.planner_num_samples,
+        noise_scale=args.planner_noise_scale,
+        temperature=args.planner_temperature,
+        num_gain_samples=args.planner_num_gain_samples,
     )
     adapter = SbMpcPlannerAdapter(config_overrides=config_overrides)
     joint_names = JOINT_NAME_SETS[args.joint_set]
@@ -124,7 +126,8 @@ def main(argv: list[str] | None = None) -> None:
         control = planner_output_to_control(step_output, planner_input)
         diagnostics = step_output.diagnostics
         feedforward = np.asarray(step_output.tau_ff, dtype=np.float64).reshape(-1)
-        predicted = adapter.predict_state(planner_input, feedforward, args.planner_dt)
+        predict_dt = args.planner_dt or adapter.mpc_dt or 0.04
+        predicted = adapter.predict_state(planner_input, feedforward, predict_dt)
         if predicted is None:
             predicted_q = q
             predicted_v = v
@@ -141,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
             "step_phase": str(step_output.phase),
             "next_phase": str(step_output.next_phase),
             "planning_time_ms": float(diagnostics.planning_time_ms),
-            "foreground_planning_time_ms": diagnostics.foreground_planning_time_ms,
+            "planner_command_time_ms": diagnostics.planner_command_time_ms,
             "max_abs_feedforward": float(np.max(np.abs(feedforward), initial=0.0)),
             "feedforward": feedforward.tolist(),
             "predicted_q_delta_norm": float(np.linalg.norm(np.asarray(predicted_q) - q)),

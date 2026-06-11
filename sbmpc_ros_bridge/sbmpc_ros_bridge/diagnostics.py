@@ -19,20 +19,13 @@ class BridgeDiagnostics:
     accepted_planner_output_count: int
     rejected_planner_output_count: int
     deadline_miss_count: int
+    # planning = the planner-reported foreground latency (blocked command +
+    # gain fetch); step_wall = the same step measured at the bridge, including
+    # adapter overhead. prepare/command are the planner-side components.
     last_planning_time_ms: float | None
-    last_planner_output_time_ms: float | None
-    last_bridge_loop_time_ms: float | None
     last_planner_step_wall_time_ms: float | None
-    last_planner_step_overhead_time_ms: float | None
-    last_planner_loop_residual_time_ms: float | None
-    last_planner_api_wall_time_ms: float | None
-    last_planner_bridge_adapter_overhead_time_ms: float | None
     last_planner_prepare_time_ms: float | None
     last_planner_command_time_ms: float | None
-    last_planner_tau_extract_time_ms: float | None
-    last_planner_gain_fetch_time_ms: float | None
-    last_planner_task_diagnostics_time_ms: float | None
-    last_planner_output_build_time_ms: float | None
     last_control_prepare_time_ms: float | None
     last_control_publish_time_ms: float | None
     last_phase: str | None
@@ -48,7 +41,6 @@ class BridgeDiagnostics:
     last_control_gain_norm: float | None
     last_error: str
     planner_mode: str | None = None
-    last_foreground_planning_time_ms: float | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)

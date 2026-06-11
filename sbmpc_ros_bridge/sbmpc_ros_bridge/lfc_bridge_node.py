@@ -14,7 +14,7 @@ from linear_feedback_controller_msgs.msg import Control, Sensor
 from rclpy._rclpy_pybind11 import RCLError
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     HistoryPolicy,
@@ -46,7 +46,6 @@ from sbmpc_ros_bridge.safety import (
 
 CONTROL_QOS_DEPTH = 10
 SENSOR_QOS_DEPTH = 1
-EXECUTOR_NUM_THREADS = 1
 CONTROLLER_MANAGER_CPU_COUNT = 2
 
 
@@ -126,22 +125,23 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
         self.declare_parameter("planner_mode", "")
         self.declare_parameter("planner_phase", "PREGRASP")
-        self.declare_parameter("planner_gains", True)
         self.declare_parameter("planner_num_steps", 1)
-        self.declare_parameter("planner_num_samples", 1024)
-        self.declare_parameter("planner_horizon", 10)
-        self.declare_parameter("planner_num_parallel_computations", 1024)
-        self.declare_parameter("planner_num_control_points", 10)
-        self.declare_parameter("planner_temperature", 0.05)
-        self.declare_parameter("planner_dt", 0.04)
-        self.declare_parameter("planner_lambda_mpc", 0.05)
-        self.declare_parameter("planner_noise_scale", 0.1)
-        self.declare_parameter("planner_std_dev_scale", 0.1)
-        self.declare_parameter("planner_smoothing", "Spline")
-        self.declare_parameter("planner_num_gain_samples", 512)
-        self.declare_parameter("planner_reseed_every_step", False)
+        # The MPPI/solver knobs below default to "unset" (0 / empty): the
+        # sbmpc OCP yaml (planner_ocp) is the single source of truth, and only
+        # explicitly configured ROS parameters override it.
+        self.declare_parameter("planner_num_samples", 0)
+        self.declare_parameter("planner_horizon", 0)
+        self.declare_parameter("planner_num_parallel_computations", 0)
+        self.declare_parameter("planner_num_control_points", 0)
+        self.declare_parameter("planner_temperature", 0.0)
+        self.declare_parameter("planner_dt", 0.0)
+        self.declare_parameter("planner_lambda_mpc", 0.0)
+        self.declare_parameter("planner_noise_scale", 0.0)
+        self.declare_parameter("planner_std_dev_scale", 0.0)
+        self.declare_parameter("planner_smoothing", "")
+        self.declare_parameter("planner_num_gain_samples", 0)
         self.declare_parameter("planner_compute_task_diagnostics", False)
-        self.declare_parameter("planner_ocp", "")
+        self.declare_parameter("planner_ocp", "pregrasp")
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -188,7 +188,6 @@ class SbMpcLfcBridgeNode(Node):
         planner_config = planner_config_overrides_from_values(
             mode=self.get_parameter("planner_mode").get_parameter_value().string_value,
             phase=self.get_parameter("planner_phase").get_parameter_value().string_value,
-            gains=self.get_parameter("planner_gains").get_parameter_value().bool_value,
             num_steps=(
                 self.get_parameter("planner_num_steps").get_parameter_value().integer_value
             ),
@@ -224,11 +223,6 @@ class SbMpcLfcBridgeNode(Node):
                 self.get_parameter("planner_num_gain_samples")
                 .get_parameter_value()
                 .integer_value
-            ),
-            reseed_every_step=(
-                self.get_parameter("planner_reseed_every_step")
-                .get_parameter_value()
-                .bool_value
             ),
             compute_task_diagnostics=(
                 self.get_parameter("planner_compute_task_diagnostics")
@@ -266,19 +260,9 @@ class SbMpcLfcBridgeNode(Node):
         self._accepted_planner_output_count = 0
         self._rejected_planner_output_count = 0
         self._last_planning_time_ms: float | None = None
-        self._last_planner_output_time_ms: float | None = None
-        self._last_bridge_loop_time_ms: float | None = None
         self._last_planner_step_wall_time_ms: float | None = None
-        self._last_planner_step_overhead_time_ms: float | None = None
-        self._last_planner_loop_residual_time_ms: float | None = None
-        self._last_planner_api_wall_time_ms: float | None = None
-        self._last_planner_bridge_adapter_overhead_time_ms: float | None = None
         self._last_planner_prepare_time_ms: float | None = None
         self._last_planner_command_time_ms: float | None = None
-        self._last_planner_tau_extract_time_ms: float | None = None
-        self._last_planner_gain_fetch_time_ms: float | None = None
-        self._last_planner_task_diagnostics_time_ms: float | None = None
-        self._last_planner_output_build_time_ms: float | None = None
         self._last_control_prepare_time_ms: float | None = None
         self._last_control_publish_time_ms: float | None = None
         self._last_phase: str | None = None
@@ -293,7 +277,6 @@ class SbMpcLfcBridgeNode(Node):
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
         self._planner_mode: str | None = planner_config.mode
-        self._last_foreground_planning_time_ms: float | None = None
         self._last_error = ""
         self._warmup_complete = False
 
@@ -343,6 +326,14 @@ class SbMpcLfcBridgeNode(Node):
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
                 self._log_safety_limits()
+                mpc_dt = getattr(self._planner, "mpc_dt", None)
+                if mpc_dt is not None and abs(mpc_dt - publish_period_sec) > 1e-9:
+                    self.get_logger().warn(
+                        f"Planner MPC dt ({mpc_dt:.4f} s, from the OCP yaml) does "
+                        f"not match the bridge publish period "
+                        f"({publish_period_sec:.4f} s). Align publish_rate_hz "
+                        "with the OCP mpc.dt to keep both repos coherent."
+                    )
                 jax_cache_dir = getattr(self._planner, "jax_cache_dir", None)
                 if jax_cache_dir:
                     self.get_logger().info(
@@ -479,29 +470,9 @@ class SbMpcLfcBridgeNode(Node):
             rejected_planner_output_count=self._rejected_planner_output_count,
             deadline_miss_count=self._deadline_monitor.deadline_miss_count,
             last_planning_time_ms=self._last_planning_time_ms,
-            last_planner_output_time_ms=self._last_planner_output_time_ms,
-            last_bridge_loop_time_ms=self._last_bridge_loop_time_ms,
             last_planner_step_wall_time_ms=self._last_planner_step_wall_time_ms,
-            last_planner_step_overhead_time_ms=(
-                self._last_planner_step_overhead_time_ms
-            ),
-            last_planner_loop_residual_time_ms=(
-                self._last_planner_loop_residual_time_ms
-            ),
-            last_planner_api_wall_time_ms=self._last_planner_api_wall_time_ms,
-            last_planner_bridge_adapter_overhead_time_ms=(
-                self._last_planner_bridge_adapter_overhead_time_ms
-            ),
             last_planner_prepare_time_ms=self._last_planner_prepare_time_ms,
             last_planner_command_time_ms=self._last_planner_command_time_ms,
-            last_planner_tau_extract_time_ms=self._last_planner_tau_extract_time_ms,
-            last_planner_gain_fetch_time_ms=self._last_planner_gain_fetch_time_ms,
-            last_planner_task_diagnostics_time_ms=(
-                self._last_planner_task_diagnostics_time_ms
-            ),
-            last_planner_output_build_time_ms=(
-                self._last_planner_output_build_time_ms
-            ),
             last_control_prepare_time_ms=self._last_control_prepare_time_ms,
             last_control_publish_time_ms=self._last_control_publish_time_ms,
             last_phase=self._last_phase,
@@ -517,7 +488,6 @@ class SbMpcLfcBridgeNode(Node):
             last_control_gain_norm=self._last_control_gain_norm,
             last_error=self._last_error,
             planner_mode=self._planner_mode,
-            last_foreground_planning_time_ms=self._last_foreground_planning_time_ms,
         )
 
     def _on_timer(self) -> None:
@@ -635,17 +605,14 @@ class SbMpcLfcBridgeNode(Node):
             if not self._retime_control_initial_state_enabled():
                 planner_input = self._predict_delayed_planner_input(planner_input)
 
-            start = perf_counter()
             try:
                 step_start = perf_counter()
                 with self._planner_lock:
                     planner_output = self._planner.step(planner_input)
-                self._last_planner_step_wall_time_ms = 1000.0 * (
-                    perf_counter() - step_start
-                )
+                step_wall_sec = perf_counter() - step_start
+                self._last_planner_step_wall_time_ms = 1000.0 * step_wall_sec
                 self._planner_step_count += 1
                 self._record_planner_diagnostics(planner_output)
-                self._update_planner_step_overhead()
                 validate_planner_output(
                     np.asarray(getattr(planner_output, "tau_ff")),
                     np.asarray(getattr(planner_output, "K")),
@@ -655,7 +622,7 @@ class SbMpcLfcBridgeNode(Node):
                 self._accepted_planner_output_count += 1
                 self._last_error = ""
                 self._state = "running"
-                self._record_planning_duration(perf_counter() - start)
+                self._observe_planning_deadline(step_wall_sec)
             except UnsafeControlError as exc:
                 self._state = "error"
                 self._rejected_planner_output_count += 1
@@ -711,7 +678,6 @@ class SbMpcLfcBridgeNode(Node):
             self._publish_diagnostics()
 
     def _run_warmup(self, planner_input: PlannerInput | None = None) -> None:
-        start = perf_counter()
         warmup_output = None
         with self._warmup_lock:
             if self._warmup_complete:
@@ -727,61 +693,15 @@ class SbMpcLfcBridgeNode(Node):
                         self._predict_control_initial_state(planner_input, warmup_output)
         self._warmup_count += 1
         self._warmup_complete = True
-        planning_duration_sec = perf_counter() - start
-        self._record_planning_duration(planning_duration_sec, observe_deadline=False)
         if self._snapshot_planner_input() is None:
             self._state = "waiting_for_sensor"
 
-    def _record_planning_duration(
-        self,
-        planning_duration_sec: float,
-        *,
-        observe_deadline: bool = True,
-    ) -> None:
-        self._last_planning_time_ms = 1000.0 * planning_duration_sec
-        self._last_bridge_loop_time_ms = self._last_planning_time_ms
-        self._update_planner_loop_residual()
-        if not observe_deadline:
-            return
+    def _observe_planning_deadline(self, planning_duration_sec: float) -> None:
         try:
             self._deadline_monitor.observe(planning_duration_sec)
         except UnsafeControlError as exc:
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
-
-    def _update_planner_step_overhead(self) -> None:
-        if (
-            self._last_planner_step_wall_time_ms is None
-            or self._last_foreground_planning_time_ms is None
-        ):
-            self._last_planner_step_overhead_time_ms = None
-            self._last_planner_bridge_adapter_overhead_time_ms = None
-            return
-        self._last_planner_step_overhead_time_ms = max(
-            0.0,
-            self._last_planner_step_wall_time_ms
-            - self._last_foreground_planning_time_ms,
-        )
-        if self._last_planner_api_wall_time_ms is None:
-            self._last_planner_bridge_adapter_overhead_time_ms = None
-            return
-        self._last_planner_bridge_adapter_overhead_time_ms = max(
-            0.0,
-            self._last_planner_step_wall_time_ms
-            - self._last_planner_api_wall_time_ms,
-        )
-
-    def _update_planner_loop_residual(self) -> None:
-        if (
-            self._last_bridge_loop_time_ms is None
-            or self._last_planner_step_wall_time_ms is None
-        ):
-            self._last_planner_loop_residual_time_ms = None
-            return
-        self._last_planner_loop_residual_time_ms = (
-            self._last_bridge_loop_time_ms
-            - self._last_planner_step_wall_time_ms
-        )
 
     def _control_initial_state_prediction_sec(self) -> float:
         value = (
@@ -827,7 +747,7 @@ class SbMpcLfcBridgeNode(Node):
         if diagnostics is None:
             return
 
-        self._last_planner_output_time_ms = self._maybe_float(
+        self._last_planning_time_ms = self._maybe_float(
             getattr(diagnostics, "planning_time_ms", None)
         )
         self._last_running_cost = self._maybe_float(
@@ -852,29 +772,11 @@ class SbMpcLfcBridgeNode(Node):
         self._planner_mode = self._maybe_text(
             getattr(diagnostics, "gain_mode", None)
         )
-        self._last_foreground_planning_time_ms = self._maybe_float(
-            getattr(diagnostics, "foreground_planning_time_ms", None)
-        )
-        self._last_planner_api_wall_time_ms = self._maybe_float(
-            getattr(diagnostics, "planner_api_wall_time_ms", None)
-        )
         self._last_planner_prepare_time_ms = self._maybe_float(
             getattr(diagnostics, "planner_prepare_time_ms", None)
         )
         self._last_planner_command_time_ms = self._maybe_float(
             getattr(diagnostics, "planner_command_time_ms", None)
-        )
-        self._last_planner_tau_extract_time_ms = self._maybe_float(
-            getattr(diagnostics, "planner_tau_extract_time_ms", None)
-        )
-        self._last_planner_gain_fetch_time_ms = self._maybe_float(
-            getattr(diagnostics, "planner_gain_fetch_time_ms", None)
-        )
-        self._last_planner_task_diagnostics_time_ms = self._maybe_float(
-            getattr(diagnostics, "planner_task_diagnostics_time_ms", None)
-        )
-        self._last_planner_output_build_time_ms = self._maybe_float(
-            getattr(diagnostics, "planner_output_build_time_ms", None)
         )
 
         goal_position = getattr(diagnostics, "goal_position", None)
@@ -950,22 +852,11 @@ class SbMpcLfcBridgeNode(Node):
         return float(value)
 
     @staticmethod
-    def _maybe_int(value: object | None) -> int | None:
-        if value is None:
-            return None
-        return int(value)
-
-    @staticmethod
     def _maybe_text(value: object | None) -> str | None:
         if value is None:
             return None
         return str(value)
 
-    @staticmethod
-    def _maybe_bool(value: object | None) -> bool | None:
-        if value is None:
-            return None
-        return bool(value)
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
@@ -976,7 +867,7 @@ def main(args: list[str] | None = None) -> None:
             "SB-MPC bridge CPU affinity set to "
             f"{list(bridge_cpu_affinity)}."
         )
-    executor = MultiThreadedExecutor(num_threads=EXECUTOR_NUM_THREADS)
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
 
@@ -989,6 +880,9 @@ def main(args: list[str] | None = None) -> None:
         executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except RuntimeError:
+        if rclpy.ok(context=node.context):
+            raise
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm_handler)
         try:

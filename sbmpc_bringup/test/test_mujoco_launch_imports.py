@@ -46,6 +46,15 @@ def node_name(node: Node) -> str | None:
     return value
 
 
+def node_arguments(node: Node) -> list[str]:
+    return [
+        "".join(getattr(part, "text", str(part)) for part in argument)
+        if isinstance(argument, list)
+        else getattr(argument, "text", str(argument))
+        for argument in getattr(node, "_Node__arguments")
+    ]
+
+
 def event_nodes(handler: RegisterEventHandler) -> list[Node]:
     event_handler = handler.event_handler
     actions = getattr(event_handler, "_OnActionEventBase__actions_on_event")
@@ -117,6 +126,13 @@ def test_mujoco_launch_has_expected_node_set(monkeypatch) -> None:
     }
     spawners = [node for node in nodes if node.node_package == "controller_manager"]
     assert len(spawners) == 3
+    lfc_spawner = next(
+        node
+        for node in spawners
+        if "linear_feedback_controller" in node_arguments(node)
+    )
+    assert "--inactive" not in node_arguments(lfc_spawner)
+    assert "--activate-as-group" in node_arguments(lfc_spawner)
 
 
 def test_mujoco_launch_declarations_do_not_reintroduce_gazebo_args() -> None:

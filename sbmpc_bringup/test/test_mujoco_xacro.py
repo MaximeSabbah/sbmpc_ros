@@ -62,6 +62,17 @@ def test_mujoco_xacro_renders_mujoco_system_with_existing_model() -> None:
     assert params["headless"] == "true"
 
 
+def test_home_keyframe_uses_gravity_compensation_motor_torques() -> None:
+    root = ET.parse(ROS2_CONTROL_SCENE).getroot()
+    home = root.find("./keyframe/key[@name='home']")
+    assert home is not None
+
+    controls = tuple(float(value) for value in home.attrib["ctrl"].split())
+    assert controls == pytest.approx(
+        (0.0, -4.0002565, -0.64374495, 22.022167, 0.63384765, 2.2781773, 0.0, 0.04)
+    )
+
+
 def test_mujoco_xacro_attaches_regular_hand_without_ft_sensor() -> None:
     root = render_mujoco_urdf()
     links = {link.attrib["name"] for link in root.findall("link")}
@@ -126,6 +137,15 @@ def test_ros2_control_scene_preserves_benchmark_scene_except_include_name() -> N
     copied = copied.replace("panda_ros2_control pick and place", "panda pick and place")
     copied = copied.replace("panda_ros2_control.xml", "panda.xml")
     copied = copied.replace('timestep="0.001"', 'timestep="0.005"')
+    # Approved difference: the ROS scene drives torque actuators, so its home
+    # keyframe ctrl holds gravity-compensation torques (pinned by
+    # test_home_keyframe_uses_gravity_compensation_motor_torques). The
+    # benchmark scene keyframe ctrl is inert (sbmpc rewires the actuators at
+    # runtime) and keeps the position-style values.
+    copied = copied.replace(
+        'ctrl="0 -4.0002565 -0.64374495 22.022167 0.63384765 2.2781773 0 0.04"',
+        'ctrl="0 -0.785 0 -2.356 0 1.571 0.785 0.04"',
+    )
     assert copied == BENCHMARK_SCENE.read_text()
 
 
