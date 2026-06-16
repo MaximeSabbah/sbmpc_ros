@@ -97,7 +97,7 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
     assert defaults["controller_manager_name"] == "/controller_manager"
     assert defaults["allow_existing_ros_graph"] == "false"
     assert "sbmpc_bridge.yaml" in defaults["bridge_params_file"]
-    assert "panda_pick_place_ros2_control_scene.xml" in defaults["mujoco_model"]
+    assert "fer_pick_place_ros2_control_scene.xml" in defaults["mujoco_model"]
 
 
 def test_mujoco_launch_has_expected_node_set(monkeypatch) -> None:

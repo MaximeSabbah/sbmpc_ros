@@ -3,7 +3,7 @@
   <xacro:arg name="headless" default="true"/>
   <xacro:arg
     name="mujoco_model"
-    default="$(find sbmpc_bringup)/mujoco/panda_pick_place_ros2_control_scene.xml"/>
+    default="$(find sbmpc_bringup)/mujoco/fer_pick_place_ros2_control_scene.xml"/>
   <xacro:arg name="ee_id" default="agimus_franka_hand"/>
   <xacro:arg name="special_connection" default=""/>
   <xacro:arg name="xyz_ee" default="0 0 0"/>

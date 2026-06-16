@@ -121,11 +121,11 @@ def _resolve_default_model_xml() -> str:
         from ament_index_python.packages import get_package_share_directory
 
         share = Path(get_package_share_directory("sbmpc_bringup"))
-        return str(share / "mujoco" / "panda_pick_place_ros2_control_scene.xml")
+        return str(share / "mujoco" / "fer_pick_place_ros2_control_scene.xml")
     except Exception:
         return (
             "/workspace/sbmpc_ros/sbmpc_bringup/mujoco/"
-            "panda_pick_place_ros2_control_scene.xml"
+            "fer_pick_place_ros2_control_scene.xml"
         )
 
 

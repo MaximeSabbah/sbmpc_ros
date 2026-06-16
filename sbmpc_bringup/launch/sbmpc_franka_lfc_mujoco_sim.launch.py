@@ -433,7 +433,7 @@ def generate_launch_description() -> LaunchDescription:
                     [
                         FindPackageShare("sbmpc_bringup"),
                         "mujoco",
-                        "panda_pick_place_ros2_control_scene.xml",
+                        "fer_pick_place_ros2_control_scene.xml",
                     ]
                 ),
             ),

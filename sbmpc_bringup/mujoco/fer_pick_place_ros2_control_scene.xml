@@ -1,5 +1,5 @@
-<mujoco model="panda_ros2_control pick and place">
-  <include file="panda_ros2_control.xml"/>
+<mujoco model="fer_ros2_control pick and place">
+  <include file="fer_ros2_control.xml"/>
 
   <statistic center="0.3 0 0.4" extent="1"/>
 
