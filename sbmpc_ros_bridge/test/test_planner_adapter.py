@@ -71,6 +71,7 @@ class FakeJaxConfig:
 class FakeRuntimeController:
     def __init__(self) -> None:
         self.start_count = 0
+        self.reset_count = 0
         self.warmup_calls = []
         self.step_calls = []
 
@@ -84,6 +85,9 @@ class FakeRuntimeController:
     def step(self, q, v, **kwargs):
         self.step_calls.append((q, v, kwargs))
         return {"tau_ff": np.ones(7), "K": np.eye(7, 14), "kwargs": kwargs}
+
+    def reset_runtime_state_after_warmup(self) -> None:
+        self.reset_count += 1
 
 
 def test_planner_config_overrides_from_values_maps_tuning_inputs_cleanly() -> None:
@@ -215,11 +219,13 @@ def test_adapter_preserves_warmup_state_and_delegates_coherent_steps() -> None:
     )
 
     warmup = adapter.warmup(num_steps=3)
+    adapter.reset_runtime_state_after_warmup()
     output = adapter.step(planner_input, num_steps=2)
 
     assert warmup["kwargs"]["num_steps"] == 3
     assert output["kwargs"]["num_steps"] == 2
-    assert controller.start_count == 1
+    assert controller.start_count == 2
+    assert controller.reset_count == 1
     assert adapter._started is True
     assert len(controller.warmup_calls) == 1
     assert len(controller.step_calls) == 1

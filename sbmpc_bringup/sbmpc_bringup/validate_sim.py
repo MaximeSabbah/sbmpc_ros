@@ -17,7 +17,9 @@ from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES
 
 # FR3 ("fer") per-joint limits, in FER_ARM_JOINT_NAMES order.
 FR3_TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
-FR3_VELOCITY_LIMITS = np.array([2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26])
+FR3_VELOCITY_LIMITS = np.array(
+    [2.175, 2.175, 2.175, 2.175, 2.610, 2.610, 2.610]
+)
 FR3_POSITION_MIN = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
 FR3_POSITION_MAX = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
 FER_TCP_FRAME = "fer_hand_tcp"

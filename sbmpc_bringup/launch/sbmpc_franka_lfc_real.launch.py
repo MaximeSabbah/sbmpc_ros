@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import resource
+import shutil
+import subprocess
+
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     LogInfo,
+    OpaqueFunction,
     RegisterEventHandler,
     Shutdown,
 )
@@ -27,6 +32,55 @@ from sbmpc_bringup.constants import (
     JOINT_STATE_ESTIMATOR_NAME,
     LINEAR_FEEDBACK_CONTROLLER_NAME,
 )
+
+
+def _launch_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def check_realtime_ready(context, *args, **kwargs):
+    del args, kwargs
+    if _launch_bool(LaunchConfiguration("use_fake_hardware").perform(context)):
+        return [LogInfo(msg="Skipping realtime preflight for fake hardware.")]
+    require_realtime = _launch_bool(
+        LaunchConfiguration("require_realtime").perform(context)
+    )
+
+    issues: list[str] = []
+    rtprio_soft, _ = resource.getrlimit(resource.RLIMIT_RTPRIO)
+    if rtprio_soft < 1:
+        issues.append(f"rtprio soft limit is {rtprio_soft}, expected at least 1")
+
+    memlock_soft, _ = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    if memlock_soft != resource.RLIM_INFINITY:
+        issues.append(f"memlock soft limit is {memlock_soft}, expected unlimited")
+
+    chrt = shutil.which("chrt")
+    sched_fifo_ok = False
+    if chrt is not None:
+        result = subprocess.run(
+            [chrt, "-f", "1", "true"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        sched_fifo_ok = result.returncode == 0
+    if not sched_fifo_ok:
+        issues.append("SCHED_FIFO smoke test failed")
+
+    if issues:
+        message = "Real-robot realtime preflight failed: " + "; ".join(issues)
+        if require_realtime:
+            raise RuntimeError(message)
+        return [
+            LogInfo(
+                msg=(
+                    message
+                    + "; continuing because require_realtime:=false."
+                )
+            )
+        ]
+    return [LogInfo(msg="Real-robot realtime preflight passed.")]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -65,6 +119,16 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{"robot_description": robot_description}],
         output="screen",
         on_exit=Shutdown(),
+    )
+
+    rviz = Node(
+        package="rviz2",
+        executable="rviz2",
+        arguments=["-d", LaunchConfiguration("rviz_config")],
+        parameters=[{"use_sim_time": False}],
+        additional_env={"LIBGL_ALWAYS_SOFTWARE": "1"},
+        condition=IfCondition(LaunchConfiguration("use_rviz")),
+        output="screen",
     )
 
     controller_manager = Node(
@@ -152,7 +216,7 @@ def generate_launch_description() -> LaunchDescription:
             "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
             "arm_id": LaunchConfiguration("robot_type"),
         }.items(),
-        condition=IfCondition(LaunchConfiguration("load_gripper")),
+        condition=IfCondition(LaunchConfiguration("start_gripper_node")),
     )
 
     lfc_stack_spawner = Node(
@@ -184,10 +248,7 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration("bridge_params_file"),
             {
                 "use_sim_time": False,
-                "enable_nonzero_control": ParameterValue(
-                    LaunchConfiguration("enable_nonzero_control"),
-                    value_type=bool,
-                ),
+                "enable_nonzero_control": False,
             },
         ],
         additional_env={
@@ -196,6 +257,22 @@ def generate_launch_description() -> LaunchDescription:
         },
         output="screen",
         on_exit=Shutdown(),
+    )
+
+    replay_recorder = Node(
+        package="sbmpc_bringup",
+        executable="record_sbmpc_replay",
+        arguments=[
+            "--duration-sec",
+            LaunchConfiguration("record_replay_duration_sec"),
+            "--output",
+            LaunchConfiguration("record_replay_output"),
+            "--autosave-period-sec",
+            LaunchConfiguration("record_replay_autosave_period_sec"),
+            "--include-warmup",
+        ],
+        condition=IfCondition(LaunchConfiguration("record_replay")),
+        output="screen",
     )
 
     activate_after_bridge_warmup = Node(
@@ -214,6 +291,10 @@ def generate_launch_description() -> LaunchDescription:
             LINEAR_FEEDBACK_CONTROLLER_NAME,
             "--switch-timeout-sec",
             LaunchConfiguration("controller_switch_timeout_sec"),
+            "--bridge-node",
+            "/sbmpc_lfc_bridge_node",
+            "--enable-nonzero-control",
+            LaunchConfiguration("enable_nonzero_control"),
         ],
         output="screen",
     )
@@ -292,7 +373,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("arm_prefix", default_value=""),
             DeclareLaunchArgument("namespace", default_value=""),
             DeclareLaunchArgument("robot_ip", default_value="172.17.1.2"),
-            DeclareLaunchArgument("load_gripper", default_value="false"),
+            DeclareLaunchArgument("load_gripper", default_value="true"),
+            DeclareLaunchArgument("start_gripper_node", default_value="false"),
             DeclareLaunchArgument("ee_id", default_value="agimus_franka_hand"),
             DeclareLaunchArgument("use_camera", default_value="false"),
             DeclareLaunchArgument("use_ft_sensor", default_value="false"),
@@ -300,7 +382,33 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_fake_hardware", default_value="false"),
             DeclareLaunchArgument("fake_sensor_commands", default_value="false"),
             DeclareLaunchArgument("joint_state_rate", default_value="30"),
-            DeclareLaunchArgument("enable_nonzero_control", default_value="true"),
+            DeclareLaunchArgument("enable_nonzero_control", default_value="false"),
+            DeclareLaunchArgument("require_realtime", default_value="false"),
+            DeclareLaunchArgument("use_rviz", default_value="true"),
+            DeclareLaunchArgument("record_replay", default_value="false"),
+            DeclareLaunchArgument(
+                "record_replay_output",
+                default_value="/tmp/sbmpc_real_replay.json",
+            ),
+            DeclareLaunchArgument(
+                "record_replay_duration_sec",
+                default_value="0",
+                description="0 records until the launch is stopped.",
+            ),
+            DeclareLaunchArgument(
+                "record_replay_autosave_period_sec",
+                default_value="2",
+            ),
+            DeclareLaunchArgument(
+                "rviz_config",
+                default_value=PathJoinSubstitution(
+                    [
+                        FindPackageShare("sbmpc_bringup"),
+                        "rviz",
+                        "pregrasp.rviz",
+                    ]
+                ),
+            ),
             DeclareLaunchArgument(
                 "robot_description_file",
                 default_value=PathJoinSubstitution(
@@ -378,6 +486,7 @@ def generate_launch_description() -> LaunchDescription:
                     ]
                 ),
             ),
+            OpaqueFunction(function=check_realtime_ready),
             LogInfo(
                 msg=[
                     "SB-MPC real launch: LFC controllers are loaded inactive, "
@@ -403,6 +512,8 @@ def generate_launch_description() -> LaunchDescription:
                 ]
             ),
             robot_state_publisher,
+            rviz,
+            replay_recorder,
             controller_manager,
             joint_state_publisher,
             joint_state_broadcaster_spawner,

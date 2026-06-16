@@ -29,6 +29,7 @@ EXPECTED_CONFIG_FILES = {
     "franka_lfc_params_sim.yaml",
     "sbmpc_bridge.yaml",
     "sbmpc_bridge_feedforward.yaml",
+    "sbmpc_bridge_real_bringup.yaml",
 }
 
 
@@ -117,6 +118,8 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 25.0
     assert params["planner_deadline_sec"] == 0.04
+    assert params["max_sensor_age_sec"] == 0.12
+    assert params["max_planner_output_age_sec"] == 0.12
     assert params["enable_nonzero_control"] is False
     assert params["retime_control_initial_state"] is True
     assert params["planner_mode"] == "exact_feedback"
@@ -146,10 +149,44 @@ MPPI_KNOBS_OWNED_BY_OCP_YAML = (
 def test_bridge_presets_cover_feedforward_and_exact_feedback() -> None:
     feedforward = load_yaml("sbmpc_bridge_feedforward.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
     feedback = load_yaml("sbmpc_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    real_bringup = load_yaml("sbmpc_bridge_real_bringup.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
 
     assert feedforward["planner_mode"] == "feedforward"
     assert feedback["planner_mode"] == "exact_feedback"
-    for params in (feedforward, feedback):
+    assert real_bringup["planner_mode"] == "feedforward"
+    assert real_bringup["planner_compute_task_diagnostics"] is True
+    assert real_bringup["planner_ocp"] == "pregrasp"
+    assert real_bringup["max_sensor_age_sec"] == 0.20
+    assert real_bringup["max_planner_output_age_sec"] == 0.20
+    assert real_bringup["max_abs_torque_by_joint"] == [
+        87.0,
+        87.0,
+        87.0,
+        87.0,
+        12.0,
+        12.0,
+        12.0,
+    ]
+    assert real_bringup["torque_limit_mode"] == "reject"
+    assert real_bringup["max_gain_norm"] == 6.0
+    assert real_bringup["gain_limit_mode"] == "reject"
+    assert real_bringup["feedforward_position_gain"] == 0.0
+    assert real_bringup["feedforward_velocity_damping_gain"] == 2.0
+    assert real_bringup["joint_velocity_limits"] == [
+        2.175,
+        2.175,
+        2.175,
+        2.175,
+        2.61,
+        2.61,
+        2.61,
+    ]
+    assert real_bringup["max_measured_velocity_fraction"] == 0.30
+    assert real_bringup["emergency_hold_on_velocity_guard"] is True
+    assert real_bringup["emergency_hold_position_gain"] == 1.0
+    assert real_bringup["emergency_hold_velocity_gain"] == 2.0
+    assert real_bringup["hold_on_disarm_after_control"] is True
+    for params in (feedforward, feedback, real_bringup):
         assert params["publish_rate_hz"] == 25.0
         assert params["planner_ocp"] == "pregrasp"
         for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML:

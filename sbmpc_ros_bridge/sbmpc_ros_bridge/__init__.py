@@ -7,6 +7,7 @@ from sbmpc_ros_bridge.joint_mapping import (
 from sbmpc_ros_bridge.lfc_msg_adapter import (
     PlannerOutputLike,
     float64_multi_array_to_numpy,
+    hold_control_from_sensor,
     planner_output_to_control,
     sensor_to_planner_input,
     zero_control_from_sensor,
@@ -55,6 +56,7 @@ __all__ = [
     "compute_control_age_sec",
     "compute_lfc_state_error",
     "float64_multi_array_to_numpy",
+    "hold_control_from_sensor",
     "make_conservative_bringup_profile",
     "make_default_safety_profile",
     "planner_output_to_control",

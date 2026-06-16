@@ -51,6 +51,7 @@ class AlwaysOnSafety:
 @dataclass(frozen=True, slots=True)
 class ControlSafetyLimits:
     max_abs_torque: float | None = None
+    max_abs_torque_by_joint: tuple[float, ...] | None = None
     max_gain_norm: float | None = None
     max_control_age_sec: float | None = None
     torque_limit_mode: TorqueLimitMode = "reject"
@@ -59,6 +60,14 @@ class ControlSafetyLimits:
     def __post_init__(self) -> None:
         if self.max_abs_torque is not None and self.max_abs_torque < 0.0:
             raise ValueError("max_abs_torque must be non-negative.")
+        if self.max_abs_torque_by_joint is not None:
+            limits = np.asarray(self.max_abs_torque_by_joint, dtype=np.float64)
+            if limits.ndim != 1:
+                raise ValueError("max_abs_torque_by_joint must be a 1D vector.")
+            if not np.all(np.isfinite(limits)):
+                raise ValueError("max_abs_torque_by_joint must be finite.")
+            if np.any(limits < 0.0):
+                raise ValueError("max_abs_torque_by_joint must be non-negative.")
         if self.max_gain_norm is not None and self.max_gain_norm < 0.0:
             raise ValueError("max_gain_norm must be non-negative.")
         if self.max_control_age_sec is not None and self.max_control_age_sec < 0.0:
@@ -78,6 +87,7 @@ class BringupLimits:
     """Optional conservative limits used during early robot bringup."""
 
     max_abs_torque: float | None = None
+    max_abs_torque_by_joint: tuple[float, ...] | None = None
     max_gain_norm: float | None = None
     torque_limit_mode: TorqueLimitMode = "reject"
     gain_limit_mode: GainLimitMode = "reject"
@@ -85,6 +95,14 @@ class BringupLimits:
     def __post_init__(self) -> None:
         if self.max_abs_torque is not None and self.max_abs_torque < 0.0:
             raise ValueError("max_abs_torque must be non-negative.")
+        if self.max_abs_torque_by_joint is not None:
+            limits = np.asarray(self.max_abs_torque_by_joint, dtype=np.float64)
+            if limits.ndim != 1:
+                raise ValueError("max_abs_torque_by_joint must be a 1D vector.")
+            if not np.all(np.isfinite(limits)):
+                raise ValueError("max_abs_torque_by_joint must be finite.")
+            if np.any(limits < 0.0):
+                raise ValueError("max_abs_torque_by_joint must be non-negative.")
         if self.max_gain_norm is not None and self.max_gain_norm < 0.0:
             raise ValueError("max_gain_norm must be non-negative.")
         if self.torque_limit_mode not in ("reject", "clip"):
@@ -99,6 +117,7 @@ class BringupLimits:
     def as_control_safety_limits(self) -> ControlSafetyLimits:
         return ControlSafetyLimits(
             max_abs_torque=self.max_abs_torque,
+            max_abs_torque_by_joint=self.max_abs_torque_by_joint,
             max_gain_norm=self.max_gain_norm,
             torque_limit_mode=self.torque_limit_mode,
             gain_limit_mode=self.gain_limit_mode,
@@ -186,15 +205,17 @@ def make_conservative_bringup_profile(
     max_control_age_sec: float | None = None,
     max_planning_duration_sec: float | None = None,
     max_abs_torque: float | None = None,
+    max_abs_torque_by_joint: tuple[float, ...] | None = None,
     max_gain_norm: float | None = None,
-    torque_limit_mode: TorqueLimitMode = "clip",
-    gain_limit_mode: GainLimitMode = "scale",
+    torque_limit_mode: TorqueLimitMode = "reject",
+    gain_limit_mode: GainLimitMode = "reject",
     fail_closed_on_deadline_miss: bool = False,
 ) -> BridgeSafetyProfile:
     return BridgeSafetyProfile(
         always_on=AlwaysOnSafety(max_control_age_sec=max_control_age_sec),
         bringup_limits=BringupLimits(
             max_abs_torque=max_abs_torque,
+            max_abs_torque_by_joint=max_abs_torque_by_joint,
             max_gain_norm=max_gain_norm,
             torque_limit_mode=torque_limit_mode,
             gain_limit_mode=gain_limit_mode,
@@ -237,6 +258,12 @@ def validate_planner_output(
             max_abs_torque=limits.max_abs_torque,
             mode=limits.torque_limit_mode,
         )
+    if limits is not None and limits.max_abs_torque_by_joint is not None:
+        tau = apply_joint_torque_limits(
+            tau,
+            max_abs_torque_by_joint=limits.max_abs_torque_by_joint,
+            mode=limits.torque_limit_mode,
+        )
     if limits is not None and limits.max_gain_norm is not None:
         gain = apply_gain_norm_limit(
             gain,
@@ -265,6 +292,37 @@ def apply_torque_limit(
     if mode == "reject":
         raise UnsafeControlError(
             f"feedforward exceeds max_abs_torque={max_abs_torque}."
+        )
+    raise ValueError(f"unsupported torque limit mode: {mode!r}.")
+
+
+def apply_joint_torque_limits(
+    tau_ff: np.ndarray,
+    *,
+    max_abs_torque_by_joint: tuple[float, ...],
+    mode: TorqueLimitMode = "reject",
+) -> np.ndarray:
+    tau = np.asarray(tau_ff, dtype=np.float64)
+    limits = np.asarray(max_abs_torque_by_joint, dtype=np.float64)
+    if limits.shape != tau.shape:
+        raise UnsafeControlError(
+            "max_abs_torque_by_joint shape must match feedforward shape: "
+            f"{limits.shape} != {tau.shape}."
+        )
+    if not np.all(np.isfinite(limits)):
+        raise ValueError("max_abs_torque_by_joint must be finite.")
+    if np.any(limits < 0.0):
+        raise ValueError("max_abs_torque_by_joint must be non-negative.")
+
+    if np.all(np.abs(tau) <= limits):
+        return tau
+    if mode == "clip":
+        return np.clip(tau, -limits, limits)
+    if mode == "reject":
+        peak_ratio = float(np.max(np.abs(tau) / np.maximum(limits, 1e-12)))
+        raise UnsafeControlError(
+            "feedforward exceeds max_abs_torque_by_joint "
+            f"(peak_ratio={peak_ratio:.3f})."
         )
     raise ValueError(f"unsupported torque limit mode: {mode!r}.")
 

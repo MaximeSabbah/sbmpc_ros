@@ -90,7 +90,7 @@ def _running_diagnostics() -> list[dict]:
 
 
 def test_limit_gate_fails_on_torque_or_velocity_over_limit() -> None:
-    # j2 effort 86 Nm (99% of 87) and j2 velocity 2.7 rad/s (>2.62 FR3 limit).
+    # j2 effort 86 Nm (99% of 87) and j2 velocity 2.7 rad/s (>2.175 FER limit).
     over_limit = [
         JointRecord(0.0, np.zeros(7), np.zeros(7), np.zeros(7)),
         JointRecord(
@@ -102,7 +102,7 @@ def test_limit_gate_fails_on_torque_or_velocity_over_limit() -> None:
     ]
     summary = summarize(_running_diagnostics(), over_limit, tail_fraction=0.5)
 
-    assert summary.worst_velocity_fraction == pytest.approx(2.7 / 2.62)
+    assert summary.worst_velocity_fraction == pytest.approx(2.7 / 2.175)
     assert summary.worst_torque_fraction == pytest.approx(86.0 / 87.0)
     assert not assert_stable(
         summary,

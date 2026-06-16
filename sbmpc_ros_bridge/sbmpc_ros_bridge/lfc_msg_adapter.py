@@ -97,6 +97,53 @@ def zero_control_from_sensor(
     )
 
 
+def hold_control_from_sensor(
+    sensor_snapshot: PlannerInput | Sensor,
+    *,
+    feedforward: np.ndarray,
+    position_gain: float = 0.0,
+    velocity_gain: float = 0.0,
+) -> Control:
+    """Build an LFC hold/brake command around the measured state.
+
+    This is used only for fail-closed handoff: the reference position is the
+    current measured position, the reference velocity is zero, and the gain is
+    a small diagonal PD term in LFC coordinates.
+    """
+
+    sensor = deepcopy(
+        sensor_snapshot.sensor if isinstance(sensor_snapshot, PlannerInput) else sensor_snapshot
+    )
+    control_dim = len(sensor.joint_state.position)
+    if control_dim <= 0:
+        raise ValueError("sensor joint_state.position must not be empty.")
+
+    tau = np.asarray(feedforward, dtype=np.float64).reshape(-1)
+    if tau.shape != (control_dim,):
+        raise ValueError(
+            f"feedforward must have shape ({control_dim},), got {tau.shape}."
+        )
+    if not np.all(np.isfinite(tau)):
+        raise ValueError("feedforward contains non-finite values.")
+
+    kp = float(position_gain)
+    kd = float(velocity_gain)
+    if kp < 0.0 or kd < 0.0 or not np.isfinite(kp) or not np.isfinite(kd):
+        raise ValueError("position_gain and velocity_gain must be finite and non-negative.")
+
+    sensor.joint_state.velocity = [0.0] * control_dim
+    gain = np.zeros((control_dim, 2 * control_dim), dtype=np.float64)
+    gain[:, :control_dim] = np.eye(control_dim, dtype=np.float64) * kp
+    gain[:, control_dim:] = np.eye(control_dim, dtype=np.float64) * kd
+
+    control = Control()
+    control.header = deepcopy(sensor.header)
+    control.initial_state = sensor
+    control.feedforward = numpy_to_float64_multi_array(tau.reshape((-1, 1)))
+    control.feedback_gain = numpy_to_float64_multi_array(gain)
+    return control
+
+
 def numpy_to_float64_multi_array(values: np.ndarray) -> Float64MultiArray:
     array = np.asarray(values, dtype=np.float64)
     if array.ndim == 1:

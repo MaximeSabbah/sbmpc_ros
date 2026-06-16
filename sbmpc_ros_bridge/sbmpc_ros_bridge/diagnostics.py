@@ -39,6 +39,9 @@ class BridgeDiagnostics:
     last_goal_position: list[float] | None
     last_control_max_abs_feedforward: float | None
     last_control_gain_norm: float | None
+    last_measured_velocity_abs_max: float | None
+    last_measured_velocity_fraction: float | None
+    last_measured_velocity_limit_joint: str | None
     last_error: str
     planner_mode: str | None = None
 

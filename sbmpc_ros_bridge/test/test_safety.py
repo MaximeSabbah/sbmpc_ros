@@ -13,6 +13,7 @@ from sbmpc_ros_bridge.safety import (
     PlanningDeadlineMonitor,
     UnsafeControlError,
     apply_gain_norm_limit,
+    apply_joint_torque_limits,
     apply_torque_limit,
     compute_lfc_control,
     compute_control_age_sec,
@@ -104,6 +105,15 @@ def test_validate_planner_output_rejects_limit_violations_by_default() -> None:
             limits=ControlSafetyLimits(max_abs_torque=1.0),
         )
 
+    with pytest.raises(UnsafeControlError, match="max_abs_torque_by_joint"):
+        validate_planner_output(
+            tau_ff=np.asarray([0.5, 2.0] + [0.0] * 5, dtype=np.float64),
+            feedback_gain=np.zeros((7, 14), dtype=np.float64),
+            limits=ControlSafetyLimits(
+                max_abs_torque_by_joint=(1.0,) * 7,
+            ),
+        )
+
     with pytest.raises(UnsafeControlError, match="max_gain_norm"):
         validate_planner_output(
             tau_ff=np.zeros(7, dtype=np.float64),
@@ -130,6 +140,23 @@ def test_validate_planner_output_can_clip_torque_when_requested() -> None:
     assert gain.shape == (7, 14)
 
 
+def test_validate_planner_output_can_clip_joint_torques_when_requested() -> None:
+    tau_ff, gain = validate_planner_output(
+        tau_ff=np.asarray([2.0, -3.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        feedback_gain=np.eye(7, 14, dtype=np.float64),
+        limits=ControlSafetyLimits(
+            max_abs_torque_by_joint=(1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            torque_limit_mode="clip",
+        ),
+    )
+
+    np.testing.assert_allclose(
+        tau_ff,
+        np.asarray([1.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+    )
+    assert gain.shape == (7, 14)
+
+
 def test_validate_planner_output_can_scale_gain_norm_when_requested() -> None:
     _, gain = validate_planner_output(
         tau_ff=np.zeros(7, dtype=np.float64),
@@ -148,6 +175,12 @@ def test_apply_limit_helpers_reject_unknown_modes() -> None:
         apply_torque_limit(
             np.asarray([2.0] + [0.0] * 6, dtype=np.float64),
             max_abs_torque=1.0,
+            mode="bad",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="unsupported torque limit mode"):
+        apply_joint_torque_limits(
+            np.asarray([2.0] + [0.0] * 6, dtype=np.float64),
+            max_abs_torque_by_joint=(1.0,) * 7,
             mode="bad",  # type: ignore[arg-type]
         )
 
@@ -238,9 +271,9 @@ def test_conservative_bringup_profile_enables_optional_limits_and_monitoring() -
 
     assert profile.always_on.max_control_age_sec == 0.05
     assert profile.bringup_limits.max_abs_torque == 3.0
-    assert profile.bringup_limits.torque_limit_mode == "clip"
+    assert profile.bringup_limits.torque_limit_mode == "reject"
     assert profile.bringup_limits.max_gain_norm == 4.0
-    assert profile.bringup_limits.gain_limit_mode == "scale"
+    assert profile.bringup_limits.gain_limit_mode == "reject"
 
     monitor = profile.make_deadline_monitor()
     assert monitor is not None

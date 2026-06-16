@@ -64,6 +64,51 @@ def _record_state_from_joint_state(
     )
 
 
+def _multi_array_shape(message) -> list[int]:
+    dims = getattr(getattr(message, "layout", None), "dim", [])
+    shape = [int(getattr(dim, "size")) for dim in dims]
+    return shape if shape else [len(getattr(message, "data", []))]
+
+
+def _multi_array_flattened(message) -> list[float]:
+    return [float(value) for value in getattr(message, "data", [])]
+
+
+def _control_record_from_message(
+    message,
+    *,
+    receive_wall_sec: float | None = None,
+) -> dict[str, object]:
+    feedforward = np.asarray(message.feedforward.data, dtype=np.float64)
+    gain = np.asarray(message.feedback_gain.data, dtype=np.float64)
+    initial_state = _record_state_from_joint_state(message.initial_state.joint_state)
+    initial_velocity = (
+        np.asarray(initial_state.velocity, dtype=np.float64)
+        if initial_state is not None
+        else np.zeros(0, dtype=np.float64)
+    )
+    return {
+        "stamp_sec": _stamp_sec(message.header.stamp),
+        "receive_wall_sec": receive_wall_sec,
+        "feedforward": _multi_array_flattened(message.feedforward),
+        "feedforward_shape": _multi_array_shape(message.feedforward),
+        "feedforward_max_abs": (
+            float(np.max(np.abs(feedforward), initial=0.0))
+            if feedforward.size
+            else 0.0
+        ),
+        "feedback_gain": _multi_array_flattened(message.feedback_gain),
+        "feedback_gain_shape": _multi_array_shape(message.feedback_gain),
+        "gain_norm": float(np.linalg.norm(gain)) if gain.size else 0.0,
+        "initial_state": asdict(initial_state) if initial_state is not None else None,
+        "initial_state_velocity_abs_max": (
+            float(np.max(np.abs(initial_velocity), initial=0.0))
+            if initial_velocity.size
+            else None
+        ),
+    }
+
+
 def _finite_float(value: object) -> float | None:
     if value is None:
         return None
@@ -158,19 +203,11 @@ class ReplayRecorder:
                     self.outer.sensor_states.append(state)
 
             def _on_control(self, message) -> None:
-                feedforward = np.asarray(message.feedforward.data, dtype=np.float64)
-                gain = np.asarray(message.feedback_gain.data, dtype=np.float64)
                 self.outer.controls.append(
-                    {
-                        "stamp_sec": _stamp_sec(message.header.stamp),
-                        "receive_wall_sec": time.monotonic(),
-                        "feedforward_max_abs": (
-                            float(np.max(np.abs(feedforward), initial=0.0))
-                            if feedforward.size
-                            else 0.0
-                        ),
-                        "gain_norm": float(np.linalg.norm(gain)) if gain.size else 0.0,
-                    }
+                    _control_record_from_message(
+                        message,
+                        receive_wall_sec=time.monotonic(),
+                    )
                 )
 
             def _on_diagnostics(self, message) -> None:
@@ -399,6 +436,12 @@ def summarize_payload(
         "joint_velocity_abs_max": (
             float(np.max(np.abs(v), initial=0.0)) if len(v) else None
         ),
+        "control_feedforward_abs_max": _row_max(controls, "feedforward_max_abs"),
+        "control_gain_norm_max": _row_max(controls, "gain_norm"),
+        "control_initial_state_velocity_abs_max": _row_max(
+            controls,
+            "initial_state_velocity_abs_max",
+        ),
         "planning_ms_mean": float(np.mean(planning)) if planning else None,
         "planning_ms_max": float(np.max(planning)) if planning else None,
         "timing_ms": {
@@ -438,6 +481,12 @@ def summarize_payload(
             "rejected_planner_output_count",
         ),
     }
+
+
+def _row_max(rows: list[dict[str, object]], key: str) -> float | None:
+    values = [_finite_float(row.get(key)) for row in rows]
+    values = [value for value in values if value is not None]
+    return float(np.max(values, initial=0.0)) if values else None
 
 
 def _row_values(rows: list[dict[str, object]], key: str) -> list[float]:
@@ -635,17 +684,18 @@ def _print_record_summary(payload: dict[str, object], output_path: Path) -> None
     )
     print(
         "controller: "
-        f"planning_max_ms={summary['planning_ms_max']}"
+        f"planning_max_ms={summary['planning_ms_max']} "
+        f"joint_velocity_abs_max={summary['joint_velocity_abs_max']} "
+        f"control_feedforward_abs_max={summary['control_feedforward_abs_max']} "
+        f"control_gain_norm_max={summary['control_gain_norm_max']}"
     )
     timing = summary["timing_ms"]
     cadence = summary["control_cadence_sec"]["receive_delta"]
     print(
-        "full_stack_timing: "
-        f"bridge_p99_ms={timing['bridge_loop']['p99']} "
+        "timing: "
         f"planner_wall_p99_ms={timing['planner_step_wall']['p99']} "
-        f"planner_api_p99_ms={timing['planner_api_wall']['p99']} "
-        f"adapter_overhead_p99_ms={timing['planner_bridge_adapter_overhead']['p99']} "
-        f"planner_residual_p99_ms={timing['planner_loop_residual']['p99']} "
+        f"control_prepare_p99_ms={timing['control_prepare']['p99']} "
+        f"control_publish_p99_ms={timing['control_publish']['p99']} "
         f"control_receive_p99_sec={cadence['p99']} "
         f"deadline_misses={summary['deadline_miss_count']}"
     )

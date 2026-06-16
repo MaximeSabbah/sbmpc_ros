@@ -72,20 +72,37 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "load_gripper",
             "namespace",
             "pixi_env",
+            "record_replay",
+            "record_replay_autosave_period_sec",
+            "record_replay_duration_sec",
+            "record_replay_output",
+            "require_realtime",
             "robot_description_file",
             "robot_ip",
             "robot_type",
+            "rviz_config",
             "safety_distance",
             "sbmpc_dir",
+            "start_gripper_node",
             "use_camera",
             "use_fake_hardware",
             "use_ft_sensor",
+            "use_rviz",
         },
     )
     defaults = declared_argument_defaults(launch_description)
     assert defaults["robot_ip"] == "172.17.1.2"
-    assert defaults["enable_nonzero_control"] == "true"
-    assert "sbmpc_bridge.yaml" in defaults["bridge_params_file"]
+    assert defaults["load_gripper"] == "true"
+    assert defaults["start_gripper_node"] == "false"
+    assert defaults["enable_nonzero_control"] == "false"
+    assert defaults["require_realtime"] == "false"
+    assert defaults["use_rviz"] == "true"
+    assert defaults["record_replay"] == "false"
+    assert defaults["record_replay_output"] == "/tmp/sbmpc_real_replay.json"
+    assert defaults["record_replay_duration_sec"] == "0"
+    assert defaults["record_replay_autosave_period_sec"] == "2"
+    assert "pregrasp.rviz" in defaults["rviz_config"]
+    assert "sbmpc_bridge_real_bringup.yaml" in defaults["bridge_params_file"]
     assert "franka_arm_with_sbmpc_real.urdf.xacro" in defaults["robot_description_file"]
 
 

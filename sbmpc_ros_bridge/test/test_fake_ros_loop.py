@@ -22,6 +22,7 @@ from std_msgs.msg import Header, String
 
 from sbmpc_ros_bridge.joint_mapping import PANDA_ARM_JOINT_NAMES
 from sbmpc_ros_bridge.lfc_bridge_node import SbMpcLfcBridgeNode
+from sbmpc_ros_bridge.lfc_control_probe import estimate_lfc_command
 from sbmpc_ros_bridge.lfc_msg_adapter import float64_multi_array_to_numpy
 from sbmpc_ros_bridge.safety import make_conservative_bringup_profile
 
@@ -91,6 +92,9 @@ class FakePlanner:
             diagnostics=FakePlannerDiagnostics(),
         )
 
+    def gravity_torques(self, q) -> np.ndarray:
+        return np.asarray([0.25] * len(q), dtype=np.float64)
+
     def close(self) -> None:
         self.close_calls += 1
 
@@ -137,7 +141,10 @@ class PredictingPlanner(FakePlanner):
         return planner_input.q + offset, planner_input.v + offset
 
 
-def make_sensor(position_offset: float = 0.0) -> Sensor:
+def make_sensor(
+    position_offset: float = 0.0,
+    velocity: list[float] | None = None,
+) -> Sensor:
     now = rclpy.clock.Clock().now().to_msg()
     return Sensor(
         header=Header(stamp=now),
@@ -145,7 +152,7 @@ def make_sensor(position_offset: float = 0.0) -> Sensor:
             header=Header(stamp=now),
             name=list(PANDA_ARM_JOINT_NAMES),
             position=[position_offset + 0.1 * i for i in range(7)],
-            velocity=[0.0] * 7,
+            velocity=[0.0] * 7 if velocity is None else velocity,
             effort=[0.0] * 7,
         ),
     )
@@ -317,6 +324,7 @@ def test_fake_ros_loop_publishes_controls_near_target_rate_and_diagnostics() -> 
         assert snapshot.published_control_count + 1 >= len(collector.controls)
         last_diag = collector.diagnostics_payloads[-1]
         assert "deadline_miss_count" in last_diag
+        assert "last_measured_velocity_fraction" in last_diag
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -431,7 +439,7 @@ def test_fake_ros_loop_counts_deadline_misses() -> None:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
 
-def test_fake_ros_loop_keeps_last_valid_control_after_bad_gain() -> None:
+def test_fake_ros_loop_fails_closed_after_bad_gain() -> None:
     planner = BadGainAfterFirstStepPlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
     bridge.set_parameters(
@@ -448,23 +456,24 @@ def test_fake_ros_loop_keeps_last_valid_control_after_bad_gain() -> None:
     executor = build_executor(bridge, sensor_publisher, collector)
 
     try:
-        spin_for(executor, 0.24)
+        with pytest.raises(RuntimeError, match="feedback_gain contains non-finite"):
+            spin_for(executor, 0.24)
 
         assert planner.step_calls >= 2
-        assert len(collector.controls) >= 3
+        assert collector.controls
         for control in collector.controls:
             assert np.all(np.isfinite(control.feedback_gain.data))
         snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.state == "error"
         assert snapshot.accepted_planner_output_count >= 1
         assert snapshot.rejected_planner_output_count >= 1
-        assert "feedback_gain contains non-finite values" in (
-            snapshot.last_error
-        )
+        assert "feedback_gain contains non-finite values" in snapshot.last_error
+        assert bridge._latest_planner_output is None
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
 
-def test_fake_ros_loop_clears_error_after_next_valid_control() -> None:
+def test_fake_ros_loop_does_not_recover_after_transient_bad_gain() -> None:
     planner = BadGainOncePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
     bridge.set_parameters(
@@ -481,13 +490,175 @@ def test_fake_ros_loop_clears_error_after_next_valid_control() -> None:
     executor = build_executor(bridge, sensor_publisher, collector)
 
     try:
-        spin_for(executor, 0.30)
+        with pytest.raises(RuntimeError, match="feedback_gain contains non-finite"):
+            spin_for(executor, 0.30)
 
         snapshot = bridge.diagnostics_snapshot()
-        assert planner.step_calls >= 3
-        assert snapshot.accepted_planner_output_count >= 2
+        assert planner.step_calls == 2
+        assert snapshot.state == "error"
+        assert snapshot.accepted_planner_output_count == 1
         assert snapshot.rejected_planner_output_count == 1
-        assert snapshot.last_error == ""
+        assert "feedback_gain contains non-finite values" in snapshot.last_error
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_fails_closed_on_stale_sensor() -> None:
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "max_sensor_age_sec",
+                Parameter.Type.DOUBLE,
+                0.04,
+            )
+        ]
+    )
+    bridge._on_sensor(make_sensor())
+    assert bridge._last_sensor_arrival_sec is not None
+    bridge._last_sensor_arrival_sec -= 1.0
+
+    try:
+        with pytest.raises(RuntimeError, match="sensor stream is stale"):
+            bridge._on_timer()
+
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.state == "error"
+        assert "sensor stream is stale" in snapshot.last_error
+    finally:
+        bridge.destroy_node()
+
+
+def test_fake_ros_loop_fails_closed_on_measured_velocity_guard() -> None:
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "joint_velocity_limits",
+                Parameter.Type.DOUBLE_ARRAY,
+                [1.0] * 7,
+            ),
+            Parameter(
+                "max_measured_velocity_fraction",
+                Parameter.Type.DOUBLE,
+                0.5,
+            ),
+        ]
+    )
+    bridge._joint_velocity_limits = bridge._velocity_limits_from_parameters(
+        expected_size=7
+    )
+    bridge._max_measured_velocity_fraction = (
+        bridge._max_velocity_fraction_from_parameters()
+    )
+    bridge._on_sensor(make_sensor(velocity=[0.0, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0]))
+
+    try:
+        with pytest.raises(RuntimeError, match="measured joint velocity guard"):
+            bridge._on_timer()
+
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.state == "error"
+        assert snapshot.last_measured_velocity_abs_max == pytest.approx(0.75)
+        assert snapshot.last_measured_velocity_fraction == pytest.approx(0.75)
+        assert snapshot.last_measured_velocity_limit_joint == PANDA_ARM_JOINT_NAMES[1]
+        assert "measured joint velocity guard" in snapshot.last_error
+    finally:
+        bridge.destroy_node()
+
+
+def test_fake_ros_loop_publishes_emergency_hold_before_velocity_guard_fatal() -> None:
+    class CapturingPublisher:
+        def __init__(self) -> None:
+            self.messages: list[Control] = []
+
+        def publish(self, message: Control) -> None:
+            self.messages.append(message)
+
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    publisher = CapturingPublisher()
+    bridge._control_publisher = publisher
+    bridge.set_parameters(
+        [
+            Parameter(
+                "joint_velocity_limits",
+                Parameter.Type.DOUBLE_ARRAY,
+                [1.0] * 7,
+            ),
+            Parameter(
+                "max_measured_velocity_fraction",
+                Parameter.Type.DOUBLE,
+                0.5,
+            ),
+        ]
+    )
+    bridge._joint_velocity_limits = bridge._velocity_limits_from_parameters(
+        expected_size=7
+    )
+    bridge._max_measured_velocity_fraction = (
+        bridge._max_velocity_fraction_from_parameters()
+    )
+    bridge._published_control_count = 1
+    bridge._on_sensor(make_sensor(velocity=[0.0, 0.75, 0.0, 0.0, 0.0, 0.0, 0.0]))
+
+    try:
+        with pytest.raises(RuntimeError, match="measured joint velocity guard"):
+            bridge._on_timer()
+
+        assert len(publisher.messages) == 1
+        hold = publisher.messages[0]
+        np.testing.assert_allclose(
+            float64_multi_array_to_numpy(hold.feedforward).reshape(-1),
+            np.asarray([0.25] * 7, dtype=np.float64),
+        )
+        gain = float64_multi_array_to_numpy(hold.feedback_gain)
+        np.testing.assert_allclose(gain[:, :7], np.eye(7) * 1.0)
+        np.testing.assert_allclose(gain[:, 7:], np.eye(7) * 2.0)
+        np.testing.assert_allclose(hold.initial_state.joint_state.velocity, [0.0] * 7)
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.state == "error"
+        assert snapshot.last_control_gain_norm == pytest.approx(np.linalg.norm(gain))
+    finally:
+        bridge.destroy_node()
+
+
+def test_fake_ros_loop_adds_feedforward_velocity_damping_with_correct_sign() -> None:
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            ),
+            Parameter(
+                "feedforward_velocity_damping_gain",
+                Parameter.Type.DOUBLE,
+                2.0,
+            ),
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.20)
+
+        assert collector.controls
+        control = collector.controls[-1]
+        gain = float64_multi_array_to_numpy(control.feedback_gain)
+        np.testing.assert_allclose(gain[:, 7:], np.eye(7) * 2.0)
+        np.testing.assert_allclose(control.initial_state.joint_state.velocity, [0.0] * 7)
+
+        measured = make_sensor(velocity=[0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
+        measured.joint_state.position = list(control.initial_state.joint_state.position)
+        estimate = estimate_lfc_command(control, measured)
+        assert estimate.feedback_effort[1] == pytest.approx(-1.0)
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
@@ -536,6 +707,53 @@ def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
         assert snapshot.last_control_max_abs_feedforward == pytest.approx(0.5)
         assert snapshot.last_control_gain_norm is not None
         assert snapshot.last_control_gain_norm > 0.0
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_fake_ros_loop_publishes_hold_when_disarmed_after_control() -> None:
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            ),
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.18)
+        assert collector.controls
+
+        control_count_before_disarm = len(collector.controls)
+        bridge.set_parameters(
+            [
+                Parameter(
+                    "enable_nonzero_control",
+                    Parameter.Type.BOOL,
+                    False,
+                )
+            ]
+        )
+        spin_for(executor, 0.08)
+
+        assert len(collector.controls) > control_count_before_disarm
+        hold = collector.controls[-1]
+        np.testing.assert_allclose(
+            float64_multi_array_to_numpy(hold.feedforward).reshape(-1),
+            np.asarray([0.25] * 7, dtype=np.float64),
+        )
+        gain = float64_multi_array_to_numpy(hold.feedback_gain)
+        np.testing.assert_allclose(gain[:, :7], np.eye(7) * 1.0)
+        np.testing.assert_allclose(gain[:, 7:], np.eye(7) * 2.0)
+        np.testing.assert_allclose(hold.initial_state.joint_state.velocity, [0.0] * 7)
+        assert bridge.diagnostics_snapshot().state == "disarmed_hold"
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

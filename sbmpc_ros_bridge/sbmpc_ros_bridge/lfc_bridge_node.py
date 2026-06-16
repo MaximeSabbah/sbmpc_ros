@@ -25,6 +25,9 @@ from rclpy.qos import (
 from sbmpc_ros_bridge.diagnostics import BridgeDiagnostics
 from sbmpc_ros_bridge.joint_mapping import JointMapper
 from sbmpc_ros_bridge.lfc_msg_adapter import (
+    float64_multi_array_to_numpy,
+    hold_control_from_sensor,
+    numpy_to_float64_multi_array,
     planner_output_to_control,
     sensor_to_planner_input,
     zero_control_from_sensor,
@@ -53,6 +56,7 @@ CONTROLLER_MANAGER_CPU_COUNT = 2
 class _LatestPlannerOutput:
     planner_input: PlannerInput
     planner_output: object
+    created_at_sec: float
 
 
 class _NoopPlannerAdapter:
@@ -60,6 +64,9 @@ class _NoopPlannerAdapter:
 
     def warmup(self, **kwargs) -> None:
         del kwargs
+
+    def reset_runtime_state_after_warmup(self) -> None:
+        return None
 
 
 def best_effort_qos(*, depth: int) -> QoSProfile:
@@ -116,10 +123,21 @@ class SbMpcLfcBridgeNode(Node):
             "planner_deadline_sec",
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
+        self.declare_parameter("max_sensor_age_sec", 0.0)
+        self.declare_parameter("max_planner_output_age_sec", 0.0)
         self.declare_parameter("max_abs_torque", 0.0)
-        self.declare_parameter("torque_limit_mode", "clip")
+        self.declare_parameter("max_abs_torque_by_joint", [0.0] * 7)
+        self.declare_parameter("torque_limit_mode", "reject")
         self.declare_parameter("max_gain_norm", 0.0)
-        self.declare_parameter("gain_limit_mode", "scale")
+        self.declare_parameter("gain_limit_mode", "reject")
+        self.declare_parameter("feedforward_position_gain", 0.0)
+        self.declare_parameter("feedforward_velocity_damping_gain", 0.0)
+        self.declare_parameter("joint_velocity_limits", [0.0] * 7)
+        self.declare_parameter("max_measured_velocity_fraction", 0.0)
+        self.declare_parameter("emergency_hold_on_velocity_guard", True)
+        self.declare_parameter("emergency_hold_position_gain", 1.0)
+        self.declare_parameter("emergency_hold_velocity_gain", 2.0)
+        self.declare_parameter("hold_on_disarm_after_control", True)
         self.declare_parameter("planner_warmup_iterations", 3)
         self.declare_parameter("planner_warmup_on_start", True)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
@@ -165,6 +183,13 @@ class SbMpcLfcBridgeNode(Node):
             self.get_parameter("joint_names").get_parameter_value().string_array_value
         )
         self._force_zero_control = self._force_zero_control_enabled()
+        self._joint_names = joint_names
+        self._joint_velocity_limits = self._velocity_limits_from_parameters(
+            expected_size=len(joint_names)
+        )
+        self._max_measured_velocity_fraction = (
+            self._max_velocity_fraction_from_parameters()
+        )
         self._closing = Event()
         self._planner_lock = Lock()
         self._warmup_lock = Lock()
@@ -173,8 +198,11 @@ class SbMpcLfcBridgeNode(Node):
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._sensor_lock = Lock()
         self._last_sensor: Sensor | None = None
+        self._last_sensor_arrival_sec: float | None = None
         self._latest_planner_output_lock = Lock()
         self._latest_planner_output: _LatestPlannerOutput | None = None
+        self._fatal_error_lock = Lock()
+        self._fatal_error: str | None = None
         self._planner_request = Event()
         self._planner_thread: Thread | None = None
         self._planner_warmup_iterations = max(
@@ -276,6 +304,9 @@ class SbMpcLfcBridgeNode(Node):
         self._last_goal_position: list[float] | None = None
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
+        self._last_measured_velocity_abs_max: float | None = None
+        self._last_measured_velocity_fraction: float | None = None
+        self._last_measured_velocity_limit_joint: str | None = None
         self._planner_mode: str | None = planner_config.mode
         self._last_error = ""
         self._warmup_complete = False
@@ -326,6 +357,7 @@ class SbMpcLfcBridgeNode(Node):
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
                 self._log_safety_limits()
+                self._log_velocity_guard()
                 mpc_dt = getattr(self._planner, "mpc_dt", None)
                 if mpc_dt is not None and abs(mpc_dt - publish_period_sec) > 1e-9:
                     self.get_logger().warn(
@@ -352,12 +384,20 @@ class SbMpcLfcBridgeNode(Node):
 
     def _safety_profile_from_parameters(self) -> BridgeSafetyProfile:
         max_abs_torque = self._optional_positive_double_parameter("max_abs_torque")
+        max_abs_torque_by_joint = self._optional_positive_double_array_parameter(
+            "max_abs_torque_by_joint"
+        )
         max_gain_norm = self._optional_positive_double_parameter("max_gain_norm")
-        if max_abs_torque is None and max_gain_norm is None:
+        if (
+            max_abs_torque is None
+            and max_abs_torque_by_joint is None
+            and max_gain_norm is None
+        ):
             return make_default_safety_profile()
 
         return make_conservative_bringup_profile(
             max_abs_torque=max_abs_torque,
+            max_abs_torque_by_joint=max_abs_torque_by_joint,
             torque_limit_mode=(
                 self.get_parameter("torque_limit_mode")
                 .get_parameter_value()
@@ -379,17 +419,73 @@ class SbMpcLfcBridgeNode(Node):
         value = self.get_parameter(name).get_parameter_value().double_value
         return float(value) if value > 0.0 else None
 
+    def _optional_positive_double_array_parameter(
+        self,
+        name: str,
+    ) -> tuple[float, ...] | None:
+        parameter_value = self.get_parameter(name).get_parameter_value()
+        values = tuple(float(value) for value in parameter_value.double_array_value)
+        if not values:
+            values = tuple(float(value) for value in parameter_value.integer_array_value)
+        if not values or all(value <= 0.0 for value in values):
+            return None
+        if any(value <= 0.0 for value in values):
+            raise ValueError(f"{name} values must all be strictly positive or all zero.")
+        return values
+
+    def _velocity_limits_from_parameters(
+        self,
+        *,
+        expected_size: int,
+    ) -> tuple[float, ...] | None:
+        limits = self._optional_positive_double_array_parameter("joint_velocity_limits")
+        if limits is None:
+            return None
+        if len(limits) != expected_size:
+            raise ValueError(
+                "joint_velocity_limits must contain one value per configured joint: "
+                f"got {len(limits)}, expected {expected_size}."
+            )
+        return limits
+
+    def _max_velocity_fraction_from_parameters(self) -> float | None:
+        threshold = self._optional_positive_double_parameter(
+            "max_measured_velocity_fraction"
+        )
+        if threshold is not None and self._joint_velocity_limits is None:
+            raise ValueError(
+                "max_measured_velocity_fraction requires joint_velocity_limits."
+            )
+        return threshold
+
     def _log_safety_limits(self) -> None:
         limits = self._safety_profile.planner_output_limits()
         active_items = {}
         if limits.max_abs_torque is not None:
             active_items["max_abs_torque"] = limits.max_abs_torque
             active_items["torque_limit_mode"] = limits.torque_limit_mode
+        if limits.max_abs_torque_by_joint is not None:
+            active_items["max_abs_torque_by_joint"] = list(
+                limits.max_abs_torque_by_joint
+            )
+            active_items["torque_limit_mode"] = limits.torque_limit_mode
         if limits.max_gain_norm is not None:
             active_items["max_gain_norm"] = limits.max_gain_norm
             active_items["gain_limit_mode"] = limits.gain_limit_mode
         if active_items:
             self.get_logger().info(f"Bridge safety limits: {active_items}")
+
+    def _log_velocity_guard(self) -> None:
+        if self._joint_velocity_limits is None:
+            return
+        active_items: dict[str, object] = {
+            "joint_velocity_limits": list(self._joint_velocity_limits),
+        }
+        if self._max_measured_velocity_fraction is not None:
+            active_items["max_measured_velocity_fraction"] = (
+                self._max_measured_velocity_fraction
+            )
+        self.get_logger().info(f"Bridge measured velocity diagnostics: {active_items}")
 
     def _force_zero_control_enabled(self) -> bool:
         self._force_zero_control = (
@@ -453,6 +549,7 @@ class SbMpcLfcBridgeNode(Node):
         self._received_sensor_count += 1
         with self._sensor_lock:
             self._last_sensor = message
+            self._last_sensor_arrival_sec = perf_counter()
 
     def diagnostics_snapshot(self) -> BridgeDiagnostics:
         return BridgeDiagnostics(
@@ -486,17 +583,34 @@ class SbMpcLfcBridgeNode(Node):
             last_goal_position=self._last_goal_position,
             last_control_max_abs_feedforward=self._last_control_max_abs_feedforward,
             last_control_gain_norm=self._last_control_gain_norm,
+            last_measured_velocity_abs_max=self._last_measured_velocity_abs_max,
+            last_measured_velocity_fraction=self._last_measured_velocity_fraction,
+            last_measured_velocity_limit_joint=self._last_measured_velocity_limit_joint,
             last_error=self._last_error,
             planner_mode=self._planner_mode,
         )
 
     def _on_timer(self) -> None:
+        self._raise_if_fatal()
+        sensor_staleness = self._sensor_staleness_error()
+        if sensor_staleness is not None:
+            self._latch_fatal_error(sensor_staleness)
+            self._publish_diagnostics()
+            self._raise_if_fatal()
+
         planner_input = self._snapshot_planner_input()
         if planner_input is None:
             if self._warmup_started and not self._warmup_complete:
                 self._state = "warming_up"
             self._publish_diagnostics()
             return
+
+        velocity_guard = self._measured_velocity_limit_error(planner_input)
+        if velocity_guard is not None:
+            self._publish_emergency_hold_for_velocity_guard(planner_input)
+            self._latch_fatal_error(velocity_guard)
+            self._publish_diagnostics()
+            self._raise_if_fatal()
 
         if not self._warmup_complete:
             self._start_warmup_thread()
@@ -519,34 +633,58 @@ class SbMpcLfcBridgeNode(Node):
             return
 
         if not self._nonzero_control_enabled():
-            # Not armed yet — do NOT publish. Keeping silent here leaves LFC in
-            # PD mode (stiff hold) until the operator explicitly arms the bridge.
-            self._state = "armed_idle"
+            # Before the first Control message, stay silent so LFC remains in
+            # PD mode. After LF mode has been entered once, publish a hold
+            # command when disarmed instead of leaving LFC with the previous
+            # moving command.
+            if self._published_control_count > 0 and self._hold_on_disarm_enabled():
+                self._state = "disarmed_hold"
+                self._publish_hold_control(
+                    planner_input,
+                    position_gain=self._nonnegative_double_parameter(
+                        "emergency_hold_position_gain"
+                    ),
+                    velocity_gain=self._nonnegative_double_parameter(
+                        "emergency_hold_velocity_gain"
+                    ),
+                    reason="disarm",
+                )
+            else:
+                self._state = "armed_idle"
             self._clear_latest_planner_output()
             self._publish_diagnostics()
             return
 
-        self._state = "running"
         try:
-            self._publish_latest_control(planner_input)
+            published = self._publish_latest_control(planner_input)
+            self._state = "running" if published else "planning"
             self._planner_request.set()
         except UnsafeControlError as exc:
-            self._state = "error"
             self._rejected_planner_output_count += 1
-            self._last_error = str(exc)
-            self.get_logger().error(f"Rejected planner output: {exc}")
+            self._latch_fatal_error(f"Rejected planner output: {exc}")
         except Exception as exc:
-            self._state = "error"
-            self._last_error = str(exc)
-            self.get_logger().error(f"Planner loop failed: {exc}")
+            self._latch_fatal_error(f"Planner loop failed: {exc}")
         finally:
             self._publish_diagnostics()
+        self._raise_if_fatal()
 
-    def _publish_latest_control(self, planner_input: PlannerInput) -> None:
+    def _publish_latest_control(self, planner_input: PlannerInput) -> bool:
         with self._latest_planner_output_lock:
             latest = self._latest_planner_output
         if latest is None:
-            return
+            return False
+
+        max_age_sec = self._optional_positive_double_parameter(
+            "max_planner_output_age_sec"
+        )
+        if max_age_sec is not None:
+            age_sec = perf_counter() - latest.created_at_sec
+            if age_sec > max_age_sec:
+                raise UnsafeControlError(
+                    "planner output is stale: "
+                    f"age_sec={age_sec:.6f} exceeds "
+                    f"max_planner_output_age_sec={max_age_sec:.6f}."
+                )
 
         prepare_start = perf_counter()
         planner_output = latest.planner_output
@@ -561,6 +699,7 @@ class SbMpcLfcBridgeNode(Node):
             control_initial_state,
             safety_profile=self._safety_profile,
         )
+        control = self._apply_feedforward_feedback_regularization(control)
         if not self._retime_control_initial_state_enabled():
             control.header = deepcopy(planner_input.sensor.header)
         self._last_control_prepare_time_ms = 1000.0 * (
@@ -571,6 +710,7 @@ class SbMpcLfcBridgeNode(Node):
         self._last_control_publish_time_ms = 1000.0 * (
             perf_counter() - publish_start
         )
+        return True
 
     def _clear_latest_planner_output(self) -> None:
         with self._latest_planner_output_lock:
@@ -583,6 +723,7 @@ class SbMpcLfcBridgeNode(Node):
             self._latest_planner_output = _LatestPlannerOutput(
                 planner_input=planner_input,
                 planner_output=planner_output,
+                created_at_sec=perf_counter(),
             )
 
     def _run_planner_worker(self) -> None:
@@ -624,14 +765,10 @@ class SbMpcLfcBridgeNode(Node):
                 self._state = "running"
                 self._observe_planning_deadline(step_wall_sec)
             except UnsafeControlError as exc:
-                self._state = "error"
                 self._rejected_planner_output_count += 1
-                self._last_error = str(exc)
-                self.get_logger().error(f"Rejected planner output: {exc}")
+                self._latch_fatal_error(f"Rejected planner output: {exc}")
             except Exception as exc:
-                self._state = "error"
-                self._last_error = str(exc)
-                self.get_logger().error(f"Planner loop failed: {exc}")
+                self._latch_fatal_error(f"Planner loop failed: {exc}")
 
     def _predict_delayed_planner_input(
         self,
@@ -671,9 +808,7 @@ class SbMpcLfcBridgeNode(Node):
             self._run_warmup()
             self.get_logger().info("Planner warmup/JIT compilation complete.")
         except Exception as exc:
-            self._state = "error"
-            self._last_error = str(exc)
-            self.get_logger().error(f"Planner warmup failed: {exc}")
+            self._latch_fatal_error(f"Planner warmup failed: {exc}")
         finally:
             self._publish_diagnostics()
 
@@ -691,6 +826,12 @@ class SbMpcLfcBridgeNode(Node):
                     self._record_planner_diagnostics(warmup_output)
                     if planner_input is not None:
                         self._predict_control_initial_state(planner_input, warmup_output)
+            reset = getattr(self._planner, "reset_runtime_state_after_warmup", None)
+            if callable(reset):
+                with self._planner_lock:
+                    reset()
+            self._clear_latest_planner_output()
+
         self._warmup_count += 1
         self._warmup_complete = True
         if self._snapshot_planner_input() is None:
@@ -703,6 +844,207 @@ class SbMpcLfcBridgeNode(Node):
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
 
+    def _sensor_staleness_error(self) -> str | None:
+        max_age_sec = self._optional_positive_double_parameter("max_sensor_age_sec")
+        if max_age_sec is None:
+            return None
+        with self._sensor_lock:
+            last_arrival_sec = self._last_sensor_arrival_sec
+        if last_arrival_sec is None:
+            return None
+        age_sec = perf_counter() - last_arrival_sec
+        if age_sec <= max_age_sec:
+            return None
+        return (
+            "sensor stream is stale: "
+            f"age_sec={age_sec:.6f} exceeds max_sensor_age_sec={max_age_sec:.6f}."
+        )
+
+    def _measured_velocity_limit_error(self, planner_input: PlannerInput) -> str | None:
+        self._update_measured_velocity_diagnostics(planner_input)
+        try:
+            threshold = self._max_velocity_fraction_from_parameters()
+        except ValueError as exc:
+            raise UnsafeControlError(str(exc)) from exc
+        self._max_measured_velocity_fraction = threshold
+        velocity_fraction = self._last_measured_velocity_fraction
+        if threshold is None or velocity_fraction is None:
+            return None
+        if velocity_fraction <= threshold:
+            return None
+        return (
+            "measured joint velocity guard tripped: "
+            f"joint={self._last_measured_velocity_limit_joint}, "
+            f"abs_velocity={self._last_measured_velocity_abs_max:.6f} rad/s, "
+            f"fraction={velocity_fraction:.6f} exceeds "
+            f"max_measured_velocity_fraction={threshold:.6f}."
+        )
+
+    def _update_measured_velocity_diagnostics(
+        self,
+        planner_input: PlannerInput,
+    ) -> None:
+        velocity = np.asarray(planner_input.v, dtype=np.float64).reshape(-1)
+        if velocity.size == 0:
+            self._last_measured_velocity_abs_max = None
+            self._last_measured_velocity_fraction = None
+            self._last_measured_velocity_limit_joint = None
+            return
+
+        abs_velocity = np.abs(velocity)
+        if self._joint_velocity_limits is None:
+            self._last_measured_velocity_abs_max = float(np.max(abs_velocity))
+            self._last_measured_velocity_fraction = None
+            self._last_measured_velocity_limit_joint = None
+            return
+
+        limits = np.asarray(self._joint_velocity_limits, dtype=np.float64)
+        if velocity.shape != limits.shape:
+            raise UnsafeControlError(
+                "sensor velocity vector size does not match joint_velocity_limits: "
+                f"got {velocity.size}, expected {limits.size}."
+            )
+        fractions = abs_velocity / limits
+        worst_index = int(np.argmax(fractions))
+        self._last_measured_velocity_abs_max = float(abs_velocity[worst_index])
+        self._last_measured_velocity_fraction = float(fractions[worst_index])
+        self._last_measured_velocity_limit_joint = self._joint_names[worst_index]
+
+    def _publish_emergency_hold_for_velocity_guard(
+        self,
+        planner_input: PlannerInput,
+    ) -> None:
+        if not self._emergency_hold_on_velocity_guard_enabled():
+            return
+        if self._published_control_count <= 0:
+            return
+
+        self._publish_hold_control(
+            planner_input,
+            position_gain=self._nonnegative_double_parameter(
+                "emergency_hold_position_gain"
+            ),
+            velocity_gain=self._nonnegative_double_parameter(
+                "emergency_hold_velocity_gain"
+            ),
+            reason="measured velocity guard",
+        )
+
+    def _publish_hold_control(
+        self,
+        planner_input: PlannerInput,
+        *,
+        position_gain: float,
+        velocity_gain: float,
+        reason: str,
+    ) -> None:
+        feedforward = self._emergency_hold_feedforward(planner_input)
+        control = hold_control_from_sensor(
+            planner_input,
+            feedforward=feedforward,
+            position_gain=position_gain,
+            velocity_gain=velocity_gain,
+        )
+        self._publish_control(control)
+        self.get_logger().warn(
+            f"published hold control for {reason}: "
+            f"position_gain={position_gain:.3f}, "
+            f"velocity_gain={velocity_gain:.3f}."
+        )
+
+    def _emergency_hold_feedforward(self, planner_input: PlannerInput) -> np.ndarray:
+        gravity_torques = getattr(self._planner, "gravity_torques", None)
+        if callable(gravity_torques):
+            try:
+                tau = np.asarray(
+                    gravity_torques(planner_input.q),
+                    dtype=np.float64,
+                ).reshape(-1)
+                if tau.shape == (len(self._joint_names),) and np.all(np.isfinite(tau)):
+                    return tau
+            except Exception as exc:
+                self.get_logger().warn(
+                    "failed to compute emergency gravity hold torques; "
+                    f"falling back to latest feedforward: {exc}"
+                )
+
+        with self._latest_planner_output_lock:
+            latest = self._latest_planner_output
+        if latest is not None:
+            tau = np.asarray(
+                getattr(latest.planner_output, "tau_ff"),
+                dtype=np.float64,
+            ).reshape(-1)
+            if tau.shape == (len(self._joint_names),) and np.all(np.isfinite(tau)):
+                return tau
+
+        self.get_logger().warn(
+            "no valid emergency hold feedforward available; using zero feedforward."
+        )
+        return np.zeros(len(self._joint_names), dtype=np.float64)
+
+    def _emergency_hold_on_velocity_guard_enabled(self) -> bool:
+        return (
+            self.get_parameter("emergency_hold_on_velocity_guard")
+            .get_parameter_value()
+            .bool_value
+        )
+
+    def _hold_on_disarm_enabled(self) -> bool:
+        return (
+            self.get_parameter("hold_on_disarm_after_control")
+            .get_parameter_value()
+            .bool_value
+        )
+
+    def _apply_feedforward_feedback_regularization(
+        self,
+        control: Control,
+    ) -> Control:
+        position_gain = self._nonnegative_double_parameter(
+            "feedforward_position_gain"
+        )
+        velocity_gain = self._nonnegative_double_parameter(
+            "feedforward_velocity_damping_gain"
+        )
+        if position_gain <= 0.0 and velocity_gain <= 0.0:
+            return control
+
+        joint_count = len(control.initial_state.joint_state.position)
+        gain = float64_multi_array_to_numpy(control.feedback_gain).copy()
+        expected_shape = (joint_count, 2 * joint_count)
+        if gain.shape != expected_shape:
+            raise UnsafeControlError(
+                "feedback_gain shape is incompatible with feedforward damping: "
+                f"got {gain.shape}, expected {expected_shape}."
+            )
+        if position_gain > 0.0:
+            gain[:, :joint_count] += np.eye(joint_count, dtype=np.float64) * position_gain
+        if velocity_gain > 0.0:
+            gain[:, joint_count:] += (
+                np.eye(joint_count, dtype=np.float64) * velocity_gain
+            )
+            control.initial_state.joint_state.velocity = [0.0] * joint_count
+
+        control.feedback_gain = numpy_to_float64_multi_array(gain)
+        return control
+
+    def _latch_fatal_error(self, message: str) -> None:
+        with self._fatal_error_lock:
+            if self._fatal_error is not None:
+                return
+            self._fatal_error = str(message)
+        self._state = "error"
+        self._last_error = str(message)
+        self._clear_latest_planner_output()
+        self.get_logger().error(str(message))
+
+    def _raise_if_fatal(self) -> None:
+        with self._fatal_error_lock:
+            message = self._fatal_error
+        if message is not None:
+            raise RuntimeError(message)
+
     def _control_initial_state_prediction_sec(self) -> float:
         value = (
             self.get_parameter("control_initial_state_prediction_sec")
@@ -710,6 +1052,12 @@ class SbMpcLfcBridgeNode(Node):
             .double_value
         )
         return max(0.0, float(value))
+
+    def _nonnegative_double_parameter(self, name: str) -> float:
+        value = float(self.get_parameter(name).get_parameter_value().double_value)
+        if value < 0.0 or not np.isfinite(value):
+            raise ValueError(f"{name} must be finite and non-negative.")
+        return value
 
     def _predict_control_initial_state(
         self,

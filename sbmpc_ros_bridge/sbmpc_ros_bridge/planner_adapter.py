@@ -191,6 +191,12 @@ class SbMpcPlannerAdapter:
         call_kwargs.update(kwargs)
         return self._controller.warmup(**call_kwargs)
 
+    def reset_runtime_state_after_warmup(self) -> None:
+        reset = getattr(self._controller, "reset_runtime_state_after_warmup", None)
+        if callable(reset):
+            reset()
+        self._started = False
+
     def step(self, planner_input: PlannerInput, **kwargs: Any) -> Any:
         self.start()
         call_kwargs = dict(self._step_kwargs)
@@ -207,6 +213,14 @@ class SbMpcPlannerAdapter:
         if predict_state is None:
             return None
         return predict_state(planner_input.q, planner_input.v, tau_ff, duration_sec)
+
+    def gravity_torques(self, q: np.ndarray) -> np.ndarray | None:
+        planner = getattr(self._controller, "planner", None)
+        gravity_torques = getattr(planner, "gravity_torques", None)
+        if not callable(gravity_torques):
+            return None
+        tau = gravity_torques(np.asarray(q, dtype=np.float64).reshape(-1))
+        return np.asarray(tau, dtype=np.float64).reshape(-1)
 
     def diagnostics_snapshot(self) -> Any:
         diagnostics = getattr(self._controller, "diagnostics_snapshot", None)
