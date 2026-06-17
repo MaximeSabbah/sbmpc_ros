@@ -28,6 +28,10 @@ def generate_launch_description() -> LaunchDescription:
             "headless": LaunchConfiguration("headless"),
             "use_rviz": LaunchConfiguration("use_rviz"),
             "enable_nonzero_control": "true",
+            "max_sensor_age_sec": LaunchConfiguration("max_sensor_age_sec"),
+            "max_planner_output_age_sec": LaunchConfiguration(
+                "max_planner_output_age_sec"
+            ),
             "bridge_params_file": LaunchConfiguration("bridge_params_file"),
             "record_replay": LaunchConfiguration("record_replay"),
             "record_replay_output": LaunchConfiguration("record_replay_output"),
@@ -65,15 +69,15 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 "headless",
-                default_value="false",
-                description="Set true for reliable timing without the MuJoCo viewer.",
+                default_value="true",
+                description="Set false to also open the MuJoCo viewer.",
             ),
             DeclareLaunchArgument(
                 "use_rviz",
                 default_value="true",
                 description="Show the ROS robot state alongside MuJoCo.",
             ),
-            DeclareLaunchArgument("validate", default_value="true"),
+            DeclareLaunchArgument("validate", default_value="false"),
             DeclareLaunchArgument(
                 "shutdown_after_validation", default_value="false"
             ),
@@ -87,6 +91,24 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "validation_startup_timeout_sec", default_value="180"
+            ),
+            DeclareLaunchArgument(
+                "max_sensor_age_sec",
+                default_value="0.0",
+                description=(
+                    "Simulation-only sensor stale guard. 0 disables this "
+                    "fail-closed guard; the real launch still uses the strict "
+                    "bridge config."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "max_planner_output_age_sec",
+                default_value="0.0",
+                description=(
+                    "Simulation-only planner-output stale guard. 0 disables "
+                    "this fail-closed guard; the real launch still uses the "
+                    "strict bridge config."
+                ),
             ),
             DeclareLaunchArgument(
                 "bridge_params_file",

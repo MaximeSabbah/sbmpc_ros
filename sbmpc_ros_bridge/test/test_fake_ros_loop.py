@@ -625,6 +625,69 @@ def test_fake_ros_loop_publishes_emergency_hold_before_velocity_guard_fatal() ->
         bridge.destroy_node()
 
 
+
+
+def test_fake_ros_loop_publishes_emergency_hold_before_stale_planner_fatal() -> None:
+    class CapturingPublisher:
+        def __init__(self) -> None:
+            self.messages: list[Control] = []
+
+        def publish(self, message: Control) -> None:
+            self.messages.append(message)
+
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    publisher = CapturingPublisher()
+    bridge._control_publisher = publisher
+    bridge.set_parameters(
+        [
+            Parameter(
+                "enable_nonzero_control",
+                Parameter.Type.BOOL,
+                True,
+            ),
+            Parameter(
+                "max_planner_output_age_sec",
+                Parameter.Type.DOUBLE,
+                0.001,
+            ),
+        ]
+    )
+    bridge._warmup_complete = True
+    bridge._published_control_count = 1
+    bridge._on_sensor(make_sensor())
+    planner_input = bridge._snapshot_planner_input()
+    assert planner_input is not None
+    bridge._store_latest_planner_output(
+        planner_input,
+        FakePlannerOutput(
+            tau_ff=np.asarray([0.5] * 7, dtype=np.float64),
+            K=np.eye(7, 14, dtype=np.float64),
+        ),
+    )
+    time.sleep(0.01)
+
+    try:
+        with pytest.raises(RuntimeError, match="planner output is stale"):
+            bridge._on_timer()
+
+        assert len(publisher.messages) == 1
+        hold = publisher.messages[0]
+        np.testing.assert_allclose(
+            float64_multi_array_to_numpy(hold.feedforward).reshape(-1),
+            np.asarray([0.25] * 7, dtype=np.float64),
+        )
+        gain = float64_multi_array_to_numpy(hold.feedback_gain)
+        np.testing.assert_allclose(gain[:, :7], np.eye(7) * 1.0)
+        np.testing.assert_allclose(gain[:, 7:], np.eye(7) * 2.0)
+        np.testing.assert_allclose(hold.initial_state.joint_state.velocity, [0.0] * 7)
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.state == "error"
+        assert "planner output is stale" in snapshot.last_error
+    finally:
+        bridge.destroy_node()
+
+
 def test_fake_ros_loop_adds_feedforward_velocity_damping_with_correct_sign() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)

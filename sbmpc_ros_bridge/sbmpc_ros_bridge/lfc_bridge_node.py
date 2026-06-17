@@ -591,9 +591,16 @@ class SbMpcLfcBridgeNode(Node):
         )
 
     def _on_timer(self) -> None:
+        self._publish_hold_before_fatal_if_needed()
         self._raise_if_fatal()
         sensor_staleness = self._sensor_staleness_error()
         if sensor_staleness is not None:
+            planner_input = self._snapshot_planner_input()
+            if planner_input is not None:
+                self._publish_emergency_hold(
+                    planner_input,
+                    reason="sensor staleness guard",
+                )
             self._latch_fatal_error(sensor_staleness)
             self._publish_diagnostics()
             self._raise_if_fatal()
@@ -661,8 +668,16 @@ class SbMpcLfcBridgeNode(Node):
             self._planner_request.set()
         except UnsafeControlError as exc:
             self._rejected_planner_output_count += 1
+            self._publish_emergency_hold(
+                planner_input,
+                reason="unsafe planner output",
+            )
             self._latch_fatal_error(f"Rejected planner output: {exc}")
         except Exception as exc:
+            self._publish_emergency_hold(
+                planner_input,
+                reason="planner/control loop exception",
+            )
             self._latch_fatal_error(f"Planner loop failed: {exc}")
         finally:
             self._publish_diagnostics()
@@ -914,6 +929,17 @@ class SbMpcLfcBridgeNode(Node):
         self,
         planner_input: PlannerInput,
     ) -> None:
+        self._publish_emergency_hold(
+            planner_input,
+            reason="measured velocity guard",
+        )
+
+    def _publish_emergency_hold(
+        self,
+        planner_input: PlannerInput,
+        *,
+        reason: str,
+    ) -> None:
         if not self._emergency_hold_on_velocity_guard_enabled():
             return
         if self._published_control_count <= 0:
@@ -927,7 +953,21 @@ class SbMpcLfcBridgeNode(Node):
             velocity_gain=self._nonnegative_double_parameter(
                 "emergency_hold_velocity_gain"
             ),
-            reason="measured velocity guard",
+            reason=reason,
+        )
+
+    def _publish_hold_before_fatal_if_needed(self) -> None:
+        with self._fatal_error_lock:
+            message = self._fatal_error
+        if message is None or self._published_control_count <= 0:
+            return
+
+        planner_input = self._snapshot_planner_input()
+        if planner_input is None:
+            return
+        self._publish_emergency_hold(
+            planner_input,
+            reason=f"fatal error handoff: {message}",
         )
 
     def _publish_hold_control(

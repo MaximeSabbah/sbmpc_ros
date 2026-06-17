@@ -206,6 +206,14 @@ def launch_setup(context, *args, **kwargs):
                 # Keep MPPI disarmed until the post-JIT world reset. The active
                 # LFC holds the initial state with PD control during warmup.
                 "enable_nonzero_control": False,
+                "max_sensor_age_sec": ParameterValue(
+                    LaunchConfiguration("max_sensor_age_sec"),
+                    value_type=float,
+                ),
+                "max_planner_output_age_sec": ParameterValue(
+                    LaunchConfiguration("max_planner_output_age_sec"),
+                    value_type=float,
+                ),
             },
         ],
         additional_env={
@@ -358,15 +366,33 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("enable_nonzero_control", default_value="false"),
             DeclareLaunchArgument(
+                "max_sensor_age_sec",
+                default_value="0.0",
+                description=(
+                    "Simulation-only sensor stale guard. 0 disables this "
+                    "fail-closed guard; the real launch does not use this "
+                    "override."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "max_planner_output_age_sec",
+                default_value="0.0",
+                description=(
+                    "Simulation-only planner-output stale guard. 0 disables "
+                    "this fail-closed guard; the real launch does not use this "
+                    "override."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "controller_manager_name",
                 default_value="/controller_manager",
             ),
             DeclareLaunchArgument(
                 "allow_existing_ros_graph",
-                default_value="false",
+                default_value="true",
                 description=(
                     "Skip the SB-MPC simulation stale ROS graph/process "
-                    "preflight. Use only when intentionally sharing a ROS graph."
+                    "preflight. Set false for strict clean-room test runs."
                 ),
             ),
             DeclareLaunchArgument(
