@@ -17,7 +17,51 @@ from sbmpc_bringup.constants import (
     BRIDGE_SENSOR_TOPIC,
     FER_ARM_JOINT_NAMES,
     SBMPC_JOINT_STATES_TOPIC,
+    LFC_OUTPUT_JOINT_EFFORT_TOPIC,
 )
+
+
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayJointEffortCommand:
+    stamp_sec: float
+    receive_wall_sec: float | None
+    position: list[float]
+    velocity: list[float]
+    effort: list[float]
+
+
+def _record_lfc_output_from_joint_state(
+    message,
+    *,
+    receive_wall_sec: float | None = None,
+) -> ReplayJointEffortCommand | None:
+    indices = _joint_indices(tuple(message.name))
+    if indices is None:
+        return None
+    position = (
+        _vector_from_indices(message.position, indices)
+        if len(message.position) >= len(message.name)
+        else [0.0] * len(indices)
+    )
+    velocity = (
+        _vector_from_indices(message.velocity, indices)
+        if len(message.velocity) >= len(message.name)
+        else [0.0] * len(indices)
+    )
+    effort = (
+        _vector_from_indices(message.effort, indices)
+        if len(message.effort) >= len(message.name)
+        else [0.0] * len(indices)
+    )
+    return ReplayJointEffortCommand(
+        stamp_sec=_stamp_sec(message.header.stamp),
+        receive_wall_sec=receive_wall_sec,
+        position=position,
+        velocity=velocity,
+        effort=effort,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +200,8 @@ class ReplayRecorder:
         sensor_topic: str,
         control_topic: str,
         diagnostics_topic: str,
+        lfc_output_topic: str,
+        record_lfc_output: bool = False,
         start_after_first_control: bool = True,
         startup_timeout_sec: float = 120.0,
         autosave_period_sec: float = 5.0,
@@ -185,6 +231,13 @@ class ReplayRecorder:
                 self.create_subscription(Sensor, sensor_topic, self._on_sensor, qos)
                 self.create_subscription(Control, control_topic, self._on_control, qos)
                 self.create_subscription(String, diagnostics_topic, self._on_diagnostics, 10)
+                if outer.record_lfc_output:
+                    self.create_subscription(
+                        JointState,
+                        lfc_output_topic,
+                        self._on_lfc_output,
+                        qos,
+                    )
 
             def _on_joint_state(self, message) -> None:
                 state = _record_state_from_joint_state(
@@ -210,6 +263,14 @@ class ReplayRecorder:
                     )
                 )
 
+            def _on_lfc_output(self, message) -> None:
+                command = _record_lfc_output_from_joint_state(
+                    message,
+                    receive_wall_sec=time.monotonic(),
+                )
+                if command is not None:
+                    self.outer.lfc_output_efforts.append(command)
+
             def _on_diagnostics(self, message) -> None:
                 try:
                     self.outer.diagnostics.append(json.loads(message.data))
@@ -221,6 +282,7 @@ class ReplayRecorder:
         self.duration_sec = float(duration_sec)
         self.recorded_wall_time_sec = 0.0
         self.output_path = output_path
+        self.record_lfc_output = bool(record_lfc_output)
         self.start_after_first_control = bool(start_after_first_control)
         self.startup_timeout_sec = float(startup_timeout_sec)
         self.autosave_period_sec = float(autosave_period_sec)
@@ -231,11 +293,13 @@ class ReplayRecorder:
         self.sensor_states: list[ReplayState] = []
         self.controls: list[dict[str, object]] = []
         self.diagnostics: list[dict[str, object]] = []
+        self.lfc_output_efforts: list[ReplayJointEffortCommand] = []
         self.topics = {
             "joint_states": joint_states_topic,
             "sensor": sensor_topic,
             "control": control_topic,
             "diagnostics": diagnostics_topic,
+            "lfc_output_effort": lfc_output_topic if self.record_lfc_output else None,
         }
 
     def run(self) -> dict[str, object]:
@@ -341,6 +405,7 @@ class ReplayRecorder:
         self.sensor_states.clear()
         self.controls.clear()
         self.diagnostics.clear()
+        self.lfc_output_efforts.clear()
 
     def payload(self) -> dict[str, object]:
         return {
@@ -352,11 +417,15 @@ class ReplayRecorder:
             "sensor_states": [asdict(state) for state in self.sensor_states],
             "controls": self.controls,
             "diagnostics": self.diagnostics,
+            "lfc_output_efforts": [
+                asdict(command) for command in self.lfc_output_efforts
+            ],
             "summary": summarize_payload(
                 self.joint_states,
                 self.sensor_states,
                 self.controls,
                 self.diagnostics,
+                self.lfc_output_efforts,
             ),
         }
 
@@ -405,6 +474,7 @@ def summarize_payload(
     sensor_states: list[ReplayState],
     controls: list[dict[str, object]],
     diagnostics: list[dict[str, object]],
+    lfc_output_efforts: list[ReplayJointEffortCommand] | None = None,
 ) -> dict[str, object]:
     states = joint_states if joint_states else sensor_states
     if states:
@@ -422,6 +492,9 @@ def summarize_payload(
         for row in timing_rows
     ]
     planning = [value for value in planning if value is not None]
+    lfc_output_efforts = lfc_output_efforts or []
+    lfc_effort_abs_max = _state_vector_abs_max(lfc_output_efforts, "effort")
+    lfc_velocity_abs_max = _state_vector_abs_max(lfc_output_efforts, "velocity")
     return {
         "joint_state_count": len(joint_states),
         "sensor_state_count": len(sensor_states),
@@ -442,6 +515,9 @@ def summarize_payload(
             controls,
             "initial_state_velocity_abs_max",
         ),
+        "lfc_output_effort_count": len(lfc_output_efforts),
+        "lfc_output_effort_abs_max": lfc_effort_abs_max,
+        "lfc_output_velocity_abs_max": lfc_velocity_abs_max,
         "planning_ms_mean": float(np.mean(planning)) if planning else None,
         "planning_ms_max": float(np.max(planning)) if planning else None,
         "timing_ms": {
@@ -481,6 +557,18 @@ def summarize_payload(
             "rejected_planner_output_count",
         ),
     }
+
+
+
+def _state_vector_abs_max(states, field_name: str) -> float | None:
+    values: list[float] = []
+    for state in states:
+        vector = getattr(state, field_name, None)
+        if vector is None and isinstance(state, dict):
+            vector = state.get(field_name)
+        if vector is not None:
+            values.extend(abs(float(value)) for value in vector)
+    return float(np.max(values, initial=0.0)) if values else None
 
 
 def _row_max(rows: list[dict[str, object]], key: str) -> float | None:
@@ -687,7 +775,9 @@ def _print_record_summary(payload: dict[str, object], output_path: Path) -> None
         f"planning_max_ms={summary['planning_ms_max']} "
         f"joint_velocity_abs_max={summary['joint_velocity_abs_max']} "
         f"control_feedforward_abs_max={summary['control_feedforward_abs_max']} "
-        f"control_gain_norm_max={summary['control_gain_norm_max']}"
+        f"control_gain_norm_max={summary['control_gain_norm_max']} "
+        f"lfc_output_effort_abs_max={summary.get('lfc_output_effort_abs_max')} "
+        f"lfc_output_count={summary.get('lfc_output_effort_count')}"
     )
     timing = summary["timing_ms"]
     cadence = summary["control_cadence_sec"]["receive_delta"]
@@ -733,6 +823,12 @@ def record_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--sensor-topic", default=BRIDGE_SENSOR_TOPIC)
     parser.add_argument("--control-topic", default=BRIDGE_CONTROL_TOPIC)
     parser.add_argument("--diagnostics-topic", default=BRIDGE_DIAGNOSTICS_TOPIC)
+    parser.add_argument("--lfc-output-topic", default=LFC_OUTPUT_JOINT_EFFORT_TOPIC)
+    parser.add_argument(
+        "--record-lfc-output",
+        action="store_true",
+        help="Record final LFC effort commands published by the controller.",
+    )
     args, _ros_args = parser.parse_known_args(argv)
     if args.duration_sec < 0.0:
         raise ValueError("--duration-sec must be non-negative.")
@@ -748,6 +844,8 @@ def record_main(argv: list[str] | None = None) -> None:
         sensor_topic=args.sensor_topic,
         control_topic=args.control_topic,
         diagnostics_topic=args.diagnostics_topic,
+        lfc_output_topic=args.lfc_output_topic,
+        record_lfc_output=args.record_lfc_output,
         start_after_first_control=not args.include_warmup,
         startup_timeout_sec=args.startup_timeout_sec,
         autosave_period_sec=args.autosave_period_sec,

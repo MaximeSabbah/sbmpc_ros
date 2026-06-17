@@ -71,6 +71,8 @@ def launch_setup(context, *args, **kwargs):
             LaunchConfiguration("headless"),
             " mujoco_model:=",
             LaunchConfiguration("mujoco_model"),
+            " initial_keyframe:=",
+            LaunchConfiguration("initial_keyframe"),
         ]
     )
     robot_description = {
@@ -96,6 +98,13 @@ def launch_setup(context, *args, **kwargs):
         "on",
     ):
         record_replay_args.append("--include-warmup")
+    if LaunchConfiguration("record_lfc_output").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        record_replay_args.append("--record-lfc-output")
 
     control_node_kwargs = {
         "package": "mujoco_ros2_control",
@@ -235,7 +244,7 @@ def launch_setup(context, *args, **kwargs):
             "--reset-world-service",
             "/mujoco_ros2_control_node/reset_world",
             "--reset-keyframe",
-            "home",
+            LaunchConfiguration("reset_keyframe"),
             "--bridge-node",
             "/sbmpc_lfc_bridge_node",
             "--enable-nonzero-control",
@@ -463,6 +472,19 @@ def generate_launch_description() -> LaunchDescription:
                     ]
                 ),
             ),
+            DeclareLaunchArgument(
+                "initial_keyframe",
+                default_value="home",
+                description="MuJoCo keyframe used when the hardware interface initializes.",
+            ),
+            DeclareLaunchArgument(
+                "reset_keyframe",
+                default_value="home",
+                description=(
+                    "MuJoCo keyframe used after bridge warmup before arming "
+                    "the SB-MPC bridge."
+                ),
+            ),
             DeclareLaunchArgument("record_replay", default_value="false"),
             DeclareLaunchArgument(
                 "record_replay_output",
@@ -485,6 +507,7 @@ def generate_launch_description() -> LaunchDescription:
                 "record_replay_include_warmup",
                 default_value="false",
             ),
+            DeclareLaunchArgument("record_lfc_output", default_value="false"),
             OpaqueFunction(function=launch_setup),
         ]
     )

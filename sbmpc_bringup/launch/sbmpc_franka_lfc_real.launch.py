@@ -259,10 +259,11 @@ def generate_launch_description() -> LaunchDescription:
         on_exit=Shutdown(),
     )
 
-    replay_recorder = Node(
-        package="sbmpc_bringup",
-        executable="record_sbmpc_replay",
-        arguments=[
+    def create_replay_recorder(context, *args, **kwargs):
+        del args, kwargs
+        if not _launch_bool(LaunchConfiguration("record_replay").perform(context)):
+            return []
+        record_replay_args = [
             "--duration-sec",
             LaunchConfiguration("record_replay_duration_sec"),
             "--output",
@@ -270,10 +271,17 @@ def generate_launch_description() -> LaunchDescription:
             "--autosave-period-sec",
             LaunchConfiguration("record_replay_autosave_period_sec"),
             "--include-warmup",
-        ],
-        condition=IfCondition(LaunchConfiguration("record_replay")),
-        output="screen",
-    )
+        ]
+        if _launch_bool(LaunchConfiguration("record_lfc_output").perform(context)):
+            record_replay_args.append("--record-lfc-output")
+        return [
+            Node(
+                package="sbmpc_bringup",
+                executable="record_sbmpc_replay",
+                arguments=record_replay_args,
+                output="screen",
+            )
+        ]
 
     activate_after_bridge_warmup = Node(
         package="sbmpc_bringup",
@@ -399,6 +407,7 @@ def generate_launch_description() -> LaunchDescription:
                 "record_replay_autosave_period_sec",
                 default_value="2",
             ),
+            DeclareLaunchArgument("record_lfc_output", default_value="false"),
             DeclareLaunchArgument(
                 "rviz_config",
                 default_value=PathJoinSubstitution(
@@ -513,7 +522,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             robot_state_publisher,
             rviz,
-            replay_recorder,
+            OpaqueFunction(function=create_replay_recorder),
             controller_manager,
             joint_state_publisher,
             joint_state_broadcaster_spawner,

@@ -14,6 +14,7 @@ BRIDGE_CONTROL_TOPIC = "/control"
 BRIDGE_DIAGNOSTICS_TOPIC = "/sbmpc/diagnostics"
 SBMPC_JOINT_STATES_TOPIC = "/sbmpc/joint_states"
 SBMPC_DYNAMIC_JOINT_STATES_TOPIC = "/sbmpc/dynamic_joint_states"
+LFC_OUTPUT_JOINT_EFFORT_TOPIC = "/output_joint_effort"
 
 
 def hardware_state_interfaces(

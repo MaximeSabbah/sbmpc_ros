@@ -38,6 +38,7 @@ def generate_launch_description() -> LaunchDescription:
             "record_replay_duration_sec": LaunchConfiguration(
                 "record_replay_duration_sec"
             ),
+            "record_lfc_output": LaunchConfiguration("record_lfc_output"),
         }.items(),
     )
 
@@ -128,6 +129,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "record_replay_duration_sec", default_value="0"
             ),
+            DeclareLaunchArgument("record_lfc_output", default_value="false"),
             simulation,
             validator,
             RegisterEventHandler(

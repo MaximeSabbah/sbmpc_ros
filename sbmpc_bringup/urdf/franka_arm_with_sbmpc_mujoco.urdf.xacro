@@ -1,6 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="fer_sbmpc_mujoco">
   <xacro:arg name="headless" default="true"/>
+  <xacro:arg name="initial_keyframe" default="home"/>
   <xacro:arg
     name="mujoco_model"
     default="$(find sbmpc_bringup)/mujoco/fer_pick_place_ros2_control_scene.xml"/>
@@ -38,7 +39,7 @@
     <hardware>
       <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
       <param name="mujoco_model">$(arg mujoco_model)</param>
-      <param name="initial_keyframe">home</param>
+      <param name="initial_keyframe">$(arg initial_keyframe)</param>
       <param name="headless">$(arg headless)</param>
     </hardware>
 
