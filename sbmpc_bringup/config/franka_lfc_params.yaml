@@ -90,5 +90,5 @@ linear_feedback_controller:
       reference_prefix: ''
     joint_velocity_filter_coefficient: 0.9
     pd_to_lf_transition_duration: 0.1
-    remove_gravity_compensation_effort: true
+    remove_gravity_compensation_effort: false
     robot_has_free_flyer: false
