@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 import os
@@ -50,6 +51,9 @@ from sbmpc_ros_bridge.safety import (
 CONTROL_QOS_DEPTH = 10
 SENSOR_QOS_DEPTH = 1
 CONTROLLER_MANAGER_CPU_COUNT = 2
+# How many recent planner outputs to retain so the publish path can replay an
+# aged one when control_output_delay_sec models the real loop latency in sim.
+PLANNER_OUTPUT_HISTORY_LEN = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +129,11 @@ class SbMpcLfcBridgeNode(Node):
         )
         self.declare_parameter("max_sensor_age_sec", 0.0)
         self.declare_parameter("max_planner_output_age_sec", 0.0)
+        # Models real control-loop transport latency (sensor->plan->publish) by
+        # replaying an aged planner output. 0.0 (real-robot default) is a no-op;
+        # the MuJoCo sim sets it so the simulated closed loop sees the same
+        # staleness as hardware and tuning transfers.
+        self.declare_parameter("control_output_delay_sec", 0.0)
         self.declare_parameter("max_abs_torque", 0.0)
         self.declare_parameter("max_abs_torque_by_joint", [0.0] * 7)
         self.declare_parameter("torque_limit_mode", "reject")
@@ -201,6 +210,9 @@ class SbMpcLfcBridgeNode(Node):
         self._last_sensor_arrival_sec: float | None = None
         self._latest_planner_output_lock = Lock()
         self._latest_planner_output: _LatestPlannerOutput | None = None
+        self._planner_output_history: deque[tuple[float, _LatestPlannerOutput]] = deque(
+            maxlen=PLANNER_OUTPUT_HISTORY_LEN
+        )
         self._fatal_error_lock = Lock()
         self._fatal_error: str | None = None
         self._planner_request = Event()
@@ -684,8 +696,13 @@ class SbMpcLfcBridgeNode(Node):
         self._raise_if_fatal()
 
     def _publish_latest_control(self, planner_input: PlannerInput) -> bool:
+        delay_sec = self._control_output_delay_sec()
+        now_sec = self._ros_time_sec() if delay_sec > 0.0 else 0.0
         with self._latest_planner_output_lock:
-            latest = self._latest_planner_output
+            if delay_sec > 0.0:
+                latest = self._select_delayed_planner_output(now_sec, delay_sec)
+            else:
+                latest = self._latest_planner_output
         if latest is None:
             return False
 
@@ -730,16 +747,51 @@ class SbMpcLfcBridgeNode(Node):
     def _clear_latest_planner_output(self) -> None:
         with self._latest_planner_output_lock:
             self._latest_planner_output = None
+            self._planner_output_history.clear()
 
     def _store_latest_planner_output(
         self, planner_input: PlannerInput, planner_output: object
     ) -> None:
+        entry = _LatestPlannerOutput(
+            planner_input=planner_input,
+            planner_output=planner_output,
+            created_at_sec=perf_counter(),
+        )
+        created_ros_sec = self._ros_time_sec()
         with self._latest_planner_output_lock:
-            self._latest_planner_output = _LatestPlannerOutput(
-                planner_input=planner_input,
-                planner_output=planner_output,
-                created_at_sec=perf_counter(),
-            )
+            self._latest_planner_output = entry
+            self._planner_output_history.append((created_ros_sec, entry))
+
+    def _ros_time_sec(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _control_output_delay_sec(self) -> float:
+        value = float(
+            self.get_parameter("control_output_delay_sec")
+            .get_parameter_value()
+            .double_value
+        )
+        return max(0.0, value)
+
+    def _select_delayed_planner_output(
+        self, now_sec: float, delay_sec: float
+    ) -> _LatestPlannerOutput | None:
+        """Return the freshest stored planner output at least ``delay_sec`` old.
+
+        Caller must hold ``self._latest_planner_output_lock``. The history is in
+        chronological order, so we keep the newest entry whose age has reached
+        the modelled transport delay. This makes the simulated control loop
+        experience the same sensor->plan->publish staleness as the real robot;
+        with ``control_output_delay_sec``=0 this path is never taken and the
+        real-robot behaviour is unchanged.
+        """
+        selected: _LatestPlannerOutput | None = None
+        for created_sec, entry in self._planner_output_history:
+            if now_sec - created_sec >= delay_sec:
+                selected = entry
+            else:
+                break
+        return selected
 
     def _run_planner_worker(self) -> None:
         while not self._closing.is_set():

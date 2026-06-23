@@ -223,6 +223,10 @@ def launch_setup(context, *args, **kwargs):
                     LaunchConfiguration("max_planner_output_age_sec"),
                     value_type=float,
                 ),
+                "control_output_delay_sec": ParameterValue(
+                    LaunchConfiguration("control_output_delay_sec"),
+                    value_type=float,
+                ),
             },
         ],
         additional_env={
@@ -390,6 +394,19 @@ def generate_launch_description() -> LaunchDescription:
                     "Simulation-only planner-output stale guard. 0 disables "
                     "this fail-closed guard; the real launch does not use this "
                     "override."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "control_output_delay_sec",
+                default_value="0.08",
+                description=(
+                    "Simulation-only modelled control-loop transport latency "
+                    "(sensor->plan->publish), in seconds. The real robot has "
+                    "this latency physically; the sim is otherwise latency-free "
+                    "on the sim clock, so the controller looked stable in sim "
+                    "while diverging on hardware. ~0.08 s (~2 control periods) "
+                    "matches the measured 25 Hz exact-feedback loop. Set 0 to "
+                    "restore the old latency-free sim."
                 ),
             ),
             DeclareLaunchArgument(

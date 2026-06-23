@@ -991,3 +991,39 @@ def test_fake_ros_loop_ignores_publish_failures_after_shutdown(monkeypatch) -> N
         assert bridge.diagnostics_snapshot().published_control_count == 0
     finally:
         bridge.destroy_node()
+
+
+def test_control_output_delay_selects_aged_planner_output() -> None:
+    from sbmpc_ros_bridge.lfc_bridge_node import _LatestPlannerOutput
+
+    bridge = SbMpcLfcBridgeNode(planner=FakePlanner(), publish_period_sec=0.04)
+    try:
+        # Three outputs, 40 ms apart, oldest first (the worker appends newest).
+        entries = [
+            _LatestPlannerOutput(
+                planner_input=None,
+                planner_output=f"plan_{i}",
+                created_at_sec=float(i),
+            )
+            for i in range(3)
+        ]
+        for created_sec, entry in zip((0.00, 0.04, 0.08), entries):
+            bridge._planner_output_history.append((created_sec, entry))
+
+        # At t=0.13 s with an 80 ms modelled delay, the freshest output already
+        # older than 80 ms is the one created at t=0.04 (age 90 ms), not the
+        # newest at t=0.08 (age 50 ms).
+        selected = bridge._select_delayed_planner_output(now_sec=0.13, delay_sec=0.08)
+        assert selected is entries[1]
+
+        # Zero delay falls through to the newest entry via the normal path.
+        assert bridge._select_delayed_planner_output(now_sec=0.13, delay_sec=0.0) is entries[2]
+
+        # Before any output is old enough, nothing is published (hold).
+        assert bridge._select_delayed_planner_output(now_sec=0.05, delay_sec=0.08) is None
+
+        # Clearing drops the modelled-latency history too.
+        bridge._clear_latest_planner_output()
+        assert len(bridge._planner_output_history) == 0
+    finally:
+        bridge.destroy_node()

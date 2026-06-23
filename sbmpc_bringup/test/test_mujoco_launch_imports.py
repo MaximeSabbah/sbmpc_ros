@@ -71,21 +71,27 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
         "allow_existing_ros_graph",
         "bridge_params_file",
         "bridge_runtime_script",
+        "control_output_delay_sec",
         "controller_manager_name",
         "controllers_file",
         "enable_nonzero_control",
         "headless",
+        "initial_keyframe",
+        "max_planner_output_age_sec",
+        "max_sensor_age_sec",
         "use_rviz",
         "rviz_config",
         "lfc_params_file",
         "mujoco_model",
         "pixi_env",
+        "record_lfc_output",
         "record_replay",
         "record_replay_autosave_period_sec",
         "record_replay_duration_sec",
         "record_replay_include_warmup",
         "record_replay_output",
         "record_replay_startup_timeout_sec",
+        "reset_keyframe",
         "sbmpc_dir",
         "sim_lfc_params_file",
     }
@@ -95,7 +101,7 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
     assert defaults["record_replay_output"] == "/tmp/sbmpc_ros_replay.json"
     assert defaults["record_replay_duration_sec"] == "0"
     assert defaults["controller_manager_name"] == "/controller_manager"
-    assert defaults["allow_existing_ros_graph"] == "false"
+    assert defaults["allow_existing_ros_graph"] == "true"
     assert "sbmpc_bridge.yaml" in defaults["bridge_params_file"]
     assert "fer_pick_place_ros2_control_scene.xml" in defaults["mujoco_model"]
 

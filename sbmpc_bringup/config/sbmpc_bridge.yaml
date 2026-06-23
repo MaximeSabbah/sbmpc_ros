@@ -15,7 +15,7 @@ sbmpc_lfc_bridge_node:
     allow_joint_reordering: false
     retime_control_initial_state: true
     control_initial_state_prediction_sec: 0.0
-    planner_mode: exact_feedback # or feedforward
+    planner_mode: exact_feedback # exact_feedback or feedforward
     planner_phase: PREGRASP
     planner_num_steps: 1
     planner_warmup_iterations: 3
