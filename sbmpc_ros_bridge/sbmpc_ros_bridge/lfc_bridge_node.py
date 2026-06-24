@@ -120,7 +120,6 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("enable_nonzero_control", False)
         self.declare_parameter("force_zero_control", False)
         self.declare_parameter("allow_joint_reordering", False)
-        self.declare_parameter("retime_control_initial_state", True)
         self.declare_parameter("control_initial_state_prediction_sec", 0.0)
         self.declare_parameter("publish_rate_hz", 1.0 / publish_period_sec)
         self.declare_parameter(
@@ -141,9 +140,6 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("gain_limit_mode", "reject")
         self.declare_parameter("feedforward_position_gain", 0.0)
         self.declare_parameter("feedforward_velocity_damping_gain", 0.0)
-        self.declare_parameter("joint_velocity_limits", [0.0] * 7)
-        self.declare_parameter("max_measured_velocity_fraction", 0.0)
-        self.declare_parameter("emergency_hold_on_velocity_guard", True)
         self.declare_parameter("emergency_hold_position_gain", 1.0)
         self.declare_parameter("emergency_hold_velocity_gain", 2.0)
         self.declare_parameter("hold_on_disarm_after_control", True)
@@ -193,12 +189,6 @@ class SbMpcLfcBridgeNode(Node):
         )
         self._force_zero_control = self._force_zero_control_enabled()
         self._joint_names = joint_names
-        self._joint_velocity_limits = self._velocity_limits_from_parameters(
-            expected_size=len(joint_names)
-        )
-        self._max_measured_velocity_fraction = (
-            self._max_velocity_fraction_from_parameters()
-        )
         self._closing = Event()
         self._planner_lock = Lock()
         self._warmup_lock = Lock()
@@ -316,9 +306,6 @@ class SbMpcLfcBridgeNode(Node):
         self._last_goal_position: list[float] | None = None
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
-        self._last_measured_velocity_abs_max: float | None = None
-        self._last_measured_velocity_fraction: float | None = None
-        self._last_measured_velocity_limit_joint: str | None = None
         self._planner_mode: str | None = planner_config.mode
         self._last_error = ""
         self._warmup_complete = False
@@ -369,7 +356,6 @@ class SbMpcLfcBridgeNode(Node):
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
                 self._log_safety_limits()
-                self._log_velocity_guard()
                 mpc_dt = getattr(self._planner, "mpc_dt", None)
                 if mpc_dt is not None and abs(mpc_dt - publish_period_sec) > 1e-9:
                     self.get_logger().warn(
@@ -445,31 +431,6 @@ class SbMpcLfcBridgeNode(Node):
             raise ValueError(f"{name} values must all be strictly positive or all zero.")
         return values
 
-    def _velocity_limits_from_parameters(
-        self,
-        *,
-        expected_size: int,
-    ) -> tuple[float, ...] | None:
-        limits = self._optional_positive_double_array_parameter("joint_velocity_limits")
-        if limits is None:
-            return None
-        if len(limits) != expected_size:
-            raise ValueError(
-                "joint_velocity_limits must contain one value per configured joint: "
-                f"got {len(limits)}, expected {expected_size}."
-            )
-        return limits
-
-    def _max_velocity_fraction_from_parameters(self) -> float | None:
-        threshold = self._optional_positive_double_parameter(
-            "max_measured_velocity_fraction"
-        )
-        if threshold is not None and self._joint_velocity_limits is None:
-            raise ValueError(
-                "max_measured_velocity_fraction requires joint_velocity_limits."
-            )
-        return threshold
-
     def _log_safety_limits(self) -> None:
         limits = self._safety_profile.planner_output_limits()
         active_items = {}
@@ -487,18 +448,6 @@ class SbMpcLfcBridgeNode(Node):
         if active_items:
             self.get_logger().info(f"Bridge safety limits: {active_items}")
 
-    def _log_velocity_guard(self) -> None:
-        if self._joint_velocity_limits is None:
-            return
-        active_items: dict[str, object] = {
-            "joint_velocity_limits": list(self._joint_velocity_limits),
-        }
-        if self._max_measured_velocity_fraction is not None:
-            active_items["max_measured_velocity_fraction"] = (
-                self._max_measured_velocity_fraction
-            )
-        self.get_logger().info(f"Bridge measured velocity diagnostics: {active_items}")
-
     def _force_zero_control_enabled(self) -> bool:
         self._force_zero_control = (
             self.get_parameter("force_zero_control").get_parameter_value().bool_value
@@ -515,13 +464,6 @@ class SbMpcLfcBridgeNode(Node):
     def _planner_warmup_on_start_enabled(self) -> bool:
         return (
             self.get_parameter("planner_warmup_on_start")
-            .get_parameter_value()
-            .bool_value
-        )
-
-    def _retime_control_initial_state_enabled(self) -> bool:
-        return (
-            self.get_parameter("retime_control_initial_state")
             .get_parameter_value()
             .bool_value
         )
@@ -595,9 +537,6 @@ class SbMpcLfcBridgeNode(Node):
             last_goal_position=self._last_goal_position,
             last_control_max_abs_feedforward=self._last_control_max_abs_feedforward,
             last_control_gain_norm=self._last_control_gain_norm,
-            last_measured_velocity_abs_max=self._last_measured_velocity_abs_max,
-            last_measured_velocity_fraction=self._last_measured_velocity_fraction,
-            last_measured_velocity_limit_joint=self._last_measured_velocity_limit_joint,
             last_error=self._last_error,
             planner_mode=self._planner_mode,
         )
@@ -623,13 +562,6 @@ class SbMpcLfcBridgeNode(Node):
                 self._state = "warming_up"
             self._publish_diagnostics()
             return
-
-        velocity_guard = self._measured_velocity_limit_error(planner_input)
-        if velocity_guard is not None:
-            self._publish_emergency_hold_for_velocity_guard(planner_input)
-            self._latch_fatal_error(velocity_guard)
-            self._publish_diagnostics()
-            self._raise_if_fatal()
 
         if not self._warmup_complete:
             self._start_warmup_thread()
@@ -720,20 +652,16 @@ class SbMpcLfcBridgeNode(Node):
 
         prepare_start = perf_counter()
         planner_output = latest.planner_output
-        control_initial_state = latest.planner_input
-        if self._retime_control_initial_state_enabled():
-            control_initial_state = self._snapshot_planner_input() or planner_input
-            control_initial_state = self._predict_control_initial_state(
-                control_initial_state, planner_output
-            )
+        # x_des sent to the LFC is the state the planner actually planned from
+        # (its linearization point), so the LFC term K*(x_des - x_measured)
+        # corrects deviation from the plan instead of collapsing to ~0.
         control = planner_output_to_control(
             planner_output,
-            control_initial_state,
+            latest.planner_input,
             safety_profile=self._safety_profile,
         )
         control = self._apply_feedforward_feedback_regularization(control)
-        if not self._retime_control_initial_state_enabled():
-            control.header = deepcopy(planner_input.sensor.header)
+        control.header = deepcopy(planner_input.sensor.header)
         self._last_control_prepare_time_ms = 1000.0 * (
             perf_counter() - prepare_start
         )
@@ -810,8 +738,7 @@ class SbMpcLfcBridgeNode(Node):
             planner_input = self._snapshot_planner_input()
             if planner_input is None:
                 continue
-            if not self._retime_control_initial_state_enabled():
-                planner_input = self._predict_delayed_planner_input(planner_input)
+            planner_input = self._predict_delayed_planner_input(planner_input)
 
             try:
                 step_start = perf_counter()
@@ -927,73 +854,12 @@ class SbMpcLfcBridgeNode(Node):
             f"age_sec={age_sec:.6f} exceeds max_sensor_age_sec={max_age_sec:.6f}."
         )
 
-    def _measured_velocity_limit_error(self, planner_input: PlannerInput) -> str | None:
-        self._update_measured_velocity_diagnostics(planner_input)
-        try:
-            threshold = self._max_velocity_fraction_from_parameters()
-        except ValueError as exc:
-            raise UnsafeControlError(str(exc)) from exc
-        self._max_measured_velocity_fraction = threshold
-        velocity_fraction = self._last_measured_velocity_fraction
-        if threshold is None or velocity_fraction is None:
-            return None
-        if velocity_fraction <= threshold:
-            return None
-        return (
-            "measured joint velocity guard tripped: "
-            f"joint={self._last_measured_velocity_limit_joint}, "
-            f"abs_velocity={self._last_measured_velocity_abs_max:.6f} rad/s, "
-            f"fraction={velocity_fraction:.6f} exceeds "
-            f"max_measured_velocity_fraction={threshold:.6f}."
-        )
-
-    def _update_measured_velocity_diagnostics(
-        self,
-        planner_input: PlannerInput,
-    ) -> None:
-        velocity = np.asarray(planner_input.v, dtype=np.float64).reshape(-1)
-        if velocity.size == 0:
-            self._last_measured_velocity_abs_max = None
-            self._last_measured_velocity_fraction = None
-            self._last_measured_velocity_limit_joint = None
-            return
-
-        abs_velocity = np.abs(velocity)
-        if self._joint_velocity_limits is None:
-            self._last_measured_velocity_abs_max = float(np.max(abs_velocity))
-            self._last_measured_velocity_fraction = None
-            self._last_measured_velocity_limit_joint = None
-            return
-
-        limits = np.asarray(self._joint_velocity_limits, dtype=np.float64)
-        if velocity.shape != limits.shape:
-            raise UnsafeControlError(
-                "sensor velocity vector size does not match joint_velocity_limits: "
-                f"got {velocity.size}, expected {limits.size}."
-            )
-        fractions = abs_velocity / limits
-        worst_index = int(np.argmax(fractions))
-        self._last_measured_velocity_abs_max = float(abs_velocity[worst_index])
-        self._last_measured_velocity_fraction = float(fractions[worst_index])
-        self._last_measured_velocity_limit_joint = self._joint_names[worst_index]
-
-    def _publish_emergency_hold_for_velocity_guard(
-        self,
-        planner_input: PlannerInput,
-    ) -> None:
-        self._publish_emergency_hold(
-            planner_input,
-            reason="measured velocity guard",
-        )
-
     def _publish_emergency_hold(
         self,
         planner_input: PlannerInput,
         *,
         reason: str,
     ) -> None:
-        if not self._emergency_hold_on_velocity_guard_enabled():
-            return
         if self._published_control_count <= 0:
             return
 
@@ -1074,13 +940,6 @@ class SbMpcLfcBridgeNode(Node):
             "no valid emergency hold feedforward available; using zero feedforward."
         )
         return np.zeros(len(self._joint_names), dtype=np.float64)
-
-    def _emergency_hold_on_velocity_guard_enabled(self) -> bool:
-        return (
-            self.get_parameter("emergency_hold_on_velocity_guard")
-            .get_parameter_value()
-            .bool_value
-        )
 
     def _hold_on_disarm_enabled(self) -> bool:
         return (

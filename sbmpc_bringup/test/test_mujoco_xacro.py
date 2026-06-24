@@ -98,7 +98,7 @@ def test_mujoco_xacro_exposes_fer_arm_effort_interfaces_and_gripper_position() -
         )
 
     gripper = joints[FER_GRIPPER_JOINT_NAME]
-    assert interface_names(gripper, "command_interface") == ("position",)
+    assert interface_names(gripper, "command_interface") == ("effort",)
     assert interface_names(gripper, "state_interface") == (
         "position",
         "velocity",
@@ -170,7 +170,7 @@ def test_ros2_control_mjcf_uses_effort_compatible_arm_actuators() -> None:
         actuator = by_name[joint_name]
         assert actuator.tag == "motor"
         assert actuator.attrib["joint"] == joint_name
-    assert by_name["fer_finger_joint1"].tag == "position"
+    assert by_name["fer_finger_joint1"].tag == "motor"
     assert by_name["fer_finger_joint1"].attrib["joint"] == "fer_finger_joint1"
 
 

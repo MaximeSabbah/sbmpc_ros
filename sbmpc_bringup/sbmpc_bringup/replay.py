@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import os
 from pathlib import Path
@@ -70,6 +70,9 @@ class ReplayState:
     receive_wall_sec: float | None
     position: list[float]
     velocity: list[float]
+    # Measured joint effort (the FR3 link-side torque sensors) when present on the
+    # source message; enables offline inverse-dynamics / model-residual checks.
+    effort: list[float] = field(default_factory=list)
 
 
 def _stamp_sec(stamp) -> float:
@@ -87,6 +90,23 @@ def _vector_from_indices(values, indices: tuple[int, ...]) -> list[float]:
     return [float(values[index]) for index in indices]
 
 
+def _record_joint_torque_from_joint_state(
+    message,
+    *,
+    receive_wall_sec: float | None = None,
+) -> dict[str, object] | None:
+    """Record only the measured joint torque (tau_J). q/dq already live in
+    ``sensor_states``, so we deliberately do not duplicate the joint state here."""
+    indices = _joint_indices(tuple(message.name))
+    if indices is None or len(message.effort) < len(message.name):
+        return None
+    return {
+        "stamp_sec": _stamp_sec(message.header.stamp),
+        "receive_wall_sec": receive_wall_sec,
+        "effort": _vector_from_indices(message.effort, indices),
+    }
+
+
 def _record_state_from_joint_state(
     message,
     *,
@@ -100,11 +120,16 @@ def _record_state_from_joint_state(
         velocity = _vector_from_indices(message.velocity, indices)
     else:
         velocity = [0.0] * len(indices)
+    if len(message.effort) >= len(message.name):
+        effort = _vector_from_indices(message.effort, indices)
+    else:
+        effort = []
     return ReplayState(
         stamp_sec=_stamp_sec(message.header.stamp),
         receive_wall_sec=receive_wall_sec,
         position=position,
         velocity=velocity,
+        effort=effort,
     )
 
 
@@ -201,6 +226,7 @@ class ReplayRecorder:
         control_topic: str,
         diagnostics_topic: str,
         lfc_output_topic: str,
+        measured_torque_topic: str = "",
         record_lfc_output: bool = False,
         start_after_first_control: bool = True,
         startup_timeout_sec: float = 120.0,
@@ -238,6 +264,13 @@ class ReplayRecorder:
                         self._on_lfc_output,
                         qos,
                     )
+                if outer.measured_torque_topic:
+                    self.create_subscription(
+                        JointState,
+                        outer.measured_torque_topic,
+                        self._on_measured_torque,
+                        qos,
+                    )
 
             def _on_joint_state(self, message) -> None:
                 state = _record_state_from_joint_state(
@@ -271,6 +304,14 @@ class ReplayRecorder:
                 if command is not None:
                     self.outer.lfc_output_efforts.append(command)
 
+            def _on_measured_torque(self, message) -> None:
+                record = _record_joint_torque_from_joint_state(
+                    message,
+                    receive_wall_sec=time.monotonic(),
+                )
+                if record is not None:
+                    self.outer.measured_joint_torque.append(record)
+
             def _on_diagnostics(self, message) -> None:
                 try:
                     self.outer.diagnostics.append(json.loads(message.data))
@@ -282,6 +323,7 @@ class ReplayRecorder:
         self.duration_sec = float(duration_sec)
         self.recorded_wall_time_sec = 0.0
         self.output_path = output_path
+        self.measured_torque_topic = str(measured_torque_topic)
         self.record_lfc_output = bool(record_lfc_output)
         self.start_after_first_control = bool(start_after_first_control)
         self.startup_timeout_sec = float(startup_timeout_sec)
@@ -294,12 +336,14 @@ class ReplayRecorder:
         self.controls: list[dict[str, object]] = []
         self.diagnostics: list[dict[str, object]] = []
         self.lfc_output_efforts: list[ReplayJointEffortCommand] = []
+        self.measured_joint_torque: list[dict[str, object]] = []
         self.topics = {
             "joint_states": joint_states_topic,
             "sensor": sensor_topic,
             "control": control_topic,
             "diagnostics": diagnostics_topic,
             "lfc_output_effort": lfc_output_topic if self.record_lfc_output else None,
+            "measured_joint_torque": self.measured_torque_topic or None,
         }
 
     def run(self) -> dict[str, object]:
@@ -420,6 +464,7 @@ class ReplayRecorder:
             "lfc_output_efforts": [
                 asdict(command) for command in self.lfc_output_efforts
             ],
+            "measured_joint_torque": self.measured_joint_torque,
             "summary": summarize_payload(
                 self.joint_states,
                 self.sensor_states,
@@ -825,6 +870,14 @@ def record_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--diagnostics-topic", default=BRIDGE_DIAGNOSTICS_TOPIC)
     parser.add_argument("--lfc-output-topic", default=LFC_OUTPUT_JOINT_EFFORT_TOPIC)
     parser.add_argument(
+        "--measured-torque-topic",
+        default="/franka_robot_state_broadcaster/measured_joint_states",
+        help=(
+            "JointState topic carrying the robot's measured joint torque (tau_J); "
+            "empty on the MuJoCo sim. Only tau_J is stored (q/dq stay in sensor_states)."
+        ),
+    )
+    parser.add_argument(
         "--record-lfc-output",
         action="store_true",
         help="Record final LFC effort commands published by the controller.",
@@ -845,6 +898,7 @@ def record_main(argv: list[str] | None = None) -> None:
         control_topic=args.control_topic,
         diagnostics_topic=args.diagnostics_topic,
         lfc_output_topic=args.lfc_output_topic,
+        measured_torque_topic=args.measured_torque_topic,
         record_lfc_output=args.record_lfc_output,
         start_after_first_control=not args.include_warmup,
         startup_timeout_sec=args.startup_timeout_sec,

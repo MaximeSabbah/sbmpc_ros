@@ -276,8 +276,12 @@
     <motor name="fer_joint5" joint="fer_joint5" ctrlrange="-12 12" forcerange="-12 12"/>
     <motor name="fer_joint6" joint="fer_joint6" ctrlrange="-12 12" forcerange="-12 12"/>
     <motor name="fer_joint7" joint="fer_joint7" ctrlrange="-12 12" forcerange="-12 12"/>
-    <position name="fer_finger_joint1" joint="fer_finger_joint1" kp="350" kv="10"
-     ctrlrange="0 0.04" forcerange="-200 200"/>
+    <!-- Effort (motor) actuator so mujoco_ros2_control exposes the
+         fer_finger_joint1/effort command interface that the
+         effort_controllers/GripperActionController binds to. Force range
+         leaves headroom above the controller's max_effort (40 N). -->
+    <motor name="fer_finger_joint1" joint="fer_finger_joint1"
+     ctrlrange="-100 100" forcerange="-100 100"/>
   </actuator>
 
   <contact>

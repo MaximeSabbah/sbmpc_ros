@@ -121,7 +121,6 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["max_sensor_age_sec"] == 0.12
     assert params["max_planner_output_age_sec"] == 0.12
     assert params["enable_nonzero_control"] is False
-    assert params["retime_control_initial_state"] is True
     assert params["planner_mode"] == "exact_feedback"
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_num_steps"] == 1
@@ -172,17 +171,6 @@ def test_bridge_presets_cover_feedforward_and_exact_feedback() -> None:
     assert real_bringup["gain_limit_mode"] == "reject"
     assert real_bringup["feedforward_position_gain"] == 0.0
     assert real_bringup["feedforward_velocity_damping_gain"] == 2.0
-    assert real_bringup["joint_velocity_limits"] == [
-        2.175,
-        2.175,
-        2.175,
-        2.175,
-        2.61,
-        2.61,
-        2.61,
-    ]
-    assert real_bringup["max_measured_velocity_fraction"] == 0.30
-    assert real_bringup["emergency_hold_on_velocity_guard"] is True
     assert real_bringup["emergency_hold_position_gain"] == 1.0
     assert real_bringup["emergency_hold_velocity_gain"] == 2.0
     assert real_bringup["hold_on_disarm_after_control"] is True
