@@ -34,6 +34,17 @@ Visualization Manager:
       Frame Timeout: 15
       Marker Scale: 0.15
       Name: TF
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /sbmpc/trajectory_markers
+      Name: SB-MPC Rollouts
+      Namespaces:
+        sbmpc_rollout: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

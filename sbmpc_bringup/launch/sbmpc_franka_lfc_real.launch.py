@@ -249,6 +249,10 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "use_sim_time": False,
                 "enable_nonzero_control": False,
+                "publish_rollout_markers": ParameterValue(
+                    LaunchConfiguration("publish_rollout_markers"),
+                    value_type=bool,
+                ),
             },
         ],
         additional_env={
@@ -408,6 +412,15 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="2",
             ),
             DeclareLaunchArgument("record_lfc_output", default_value="false"),
+            DeclareLaunchArgument(
+                "publish_rollout_markers",
+                default_value="false",
+                description=(
+                    "Publish representative MPPI end-effector rollouts for "
+                    "RViz debugging. Disabled by default to preserve the "
+                    "validated controller timing path."
+                ),
+            ),
             DeclareLaunchArgument(
                 "rviz_config",
                 default_value=PathJoinSubstitution(

@@ -39,6 +39,7 @@ def generate_launch_description() -> LaunchDescription:
                 "record_replay_duration_sec"
             ),
             "record_lfc_output": LaunchConfiguration("record_lfc_output"),
+            "publish_rollout_markers": LaunchConfiguration("publish_rollout_markers"),
         }.items(),
     )
 
@@ -130,6 +131,15 @@ def generate_launch_description() -> LaunchDescription:
                 "record_replay_duration_sec", default_value="0"
             ),
             DeclareLaunchArgument("record_lfc_output", default_value="false"),
+            DeclareLaunchArgument(
+                "publish_rollout_markers",
+                default_value="false",
+                description=(
+                    "Publish representative MPPI end-effector rollouts for "
+                    "RViz debugging. Disabled by default to preserve the "
+                    "validated controller timing path."
+                ),
+            ),
             simulation,
             validator,
             RegisterEventHandler(

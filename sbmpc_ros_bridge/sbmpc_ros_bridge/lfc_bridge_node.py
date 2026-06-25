@@ -22,6 +22,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+from visualization_msgs.msg import MarkerArray
 
 from sbmpc_ros_bridge.diagnostics import BridgeDiagnostics
 from sbmpc_ros_bridge.joint_mapping import JointMapper
@@ -37,6 +38,10 @@ from sbmpc_ros_bridge.planner_adapter import (
     PlannerInput,
     SbMpcPlannerAdapter,
     planner_config_overrides_from_values,
+)
+from sbmpc_ros_bridge.rollout_markers import (
+    goal_position_from_planner_output,
+    make_trajectory_marker_array,
 )
 from sbmpc_ros_bridge.safety import (
     BridgeSafetyProfile,
@@ -165,6 +170,15 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_num_gain_samples", 0)
         self.declare_parameter("planner_compute_task_diagnostics", False)
         self.declare_parameter("planner_ocp", "pregrasp")
+        self.declare_parameter("publish_rollout_markers", False)
+        self.declare_parameter("rollout_marker_topic", "/sbmpc/trajectory_markers")
+        self.declare_parameter("rollout_marker_frame_id", "base")
+        self.declare_parameter("rollout_marker_max_samples", 16)
+        self.declare_parameter("rollout_marker_publish_rate_hz", 5.0)
+        self.declare_parameter("rollout_marker_line_width", 0.01)
+        self.declare_parameter("rollout_marker_sample_line_width", 0.004)
+        self.declare_parameter("rollout_marker_point_diameter", 0.025)
+        self.declare_parameter("rollout_marker_goal_diameter", 0.045)
 
         publish_rate_hz = (
             self.get_parameter("publish_rate_hz").get_parameter_value().double_value
@@ -270,6 +284,12 @@ class SbMpcLfcBridgeNode(Node):
                 else SbMpcPlannerAdapter(config_overrides=planner_config)
             )
         )
+        if self._publish_rollout_markers_enabled():
+            enable_rollout_capture = getattr(
+                self._planner, "set_rollout_capture_enabled", None
+            )
+            if callable(enable_rollout_capture):
+                enable_rollout_capture(True)
         self._safety_profile = (
             self._safety_profile_from_parameters()
             if safety_profile is None
@@ -304,6 +324,7 @@ class SbMpcLfcBridgeNode(Node):
         self._last_orientation_error: float | None = None
         self._last_object_error: float | None = None
         self._last_goal_position: list[float] | None = None
+        self._last_rollout_marker_publish_wall_sec: float | None = None
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
         self._planner_mode: str | None = planner_config.mode
@@ -325,6 +346,17 @@ class SbMpcLfcBridgeNode(Node):
             best_effort_qos(depth=CONTROL_QOS_DEPTH),
         )
         self._diagnostics_publisher = self.create_publisher(String, diagnostics_topic, 10)
+        self._rollout_marker_publisher = (
+            self.create_publisher(
+                MarkerArray,
+                self.get_parameter("rollout_marker_topic")
+                .get_parameter_value()
+                .string_value,
+                10,
+            )
+            if self._publish_rollout_markers_enabled()
+            else None
+        )
         self._sensor_callback_group = MutuallyExclusiveCallbackGroup()
         self._sensor_subscription = self.create_subscription(
             Sensor,
@@ -464,6 +496,13 @@ class SbMpcLfcBridgeNode(Node):
     def _planner_warmup_on_start_enabled(self) -> bool:
         return (
             self.get_parameter("planner_warmup_on_start")
+            .get_parameter_value()
+            .bool_value
+        )
+
+    def _publish_rollout_markers_enabled(self) -> bool:
+        return (
+            self.get_parameter("publish_rollout_markers")
             .get_parameter_value()
             .bool_value
         )
@@ -758,6 +797,7 @@ class SbMpcLfcBridgeNode(Node):
                 self._last_error = ""
                 self._state = "running"
                 self._observe_planning_deadline(step_wall_sec)
+                self._publish_rollout_markers(planner_input, planner_output)
             except UnsafeControlError as exc:
                 self._rejected_planner_output_count += 1
                 self._latch_fatal_error(f"Rejected planner output: {exc}")
@@ -820,6 +860,7 @@ class SbMpcLfcBridgeNode(Node):
                     self._record_planner_diagnostics(warmup_output)
                     if planner_input is not None:
                         self._predict_control_initial_state(planner_input, warmup_output)
+            self._warmup_rollout_marker_generation()
             reset = getattr(self._planner, "reset_runtime_state_after_warmup", None)
             if callable(reset):
                 with self._planner_lock:
@@ -830,6 +871,19 @@ class SbMpcLfcBridgeNode(Node):
         self._warmup_complete = True
         if self._snapshot_planner_input() is None:
             self._state = "waiting_for_sensor"
+
+    def _warmup_rollout_marker_generation(self) -> None:
+        if not self._publish_rollout_markers_enabled():
+            return
+        warmup = getattr(self._planner, "warmup_rollout_visualization", None)
+        if not callable(warmup):
+            return
+        start = perf_counter()
+        warmup(max_rollouts=self._rollout_marker_max_samples())
+        self.get_logger().info(
+            "SB-MPC rollout marker visualization warmed in "
+            f"{1000.0 * (perf_counter() - start):.1f} ms."
+        )
 
     def _observe_planning_deadline(self, planning_duration_sec: float) -> None:
         try:
@@ -1085,6 +1139,110 @@ class SbMpcLfcBridgeNode(Node):
 
         goal_array = np.asarray(goal_position, dtype=np.float64).reshape(-1)
         self._last_goal_position = goal_array.tolist()
+
+    def _rollout_marker_max_samples(self) -> int:
+        return max(
+            0,
+            int(
+                self.get_parameter("rollout_marker_max_samples")
+                .get_parameter_value()
+                .integer_value
+            ),
+        )
+
+    def _rollout_marker_publish_period_sec(self) -> float | None:
+        value = float(
+            self.get_parameter("rollout_marker_publish_rate_hz")
+            .get_parameter_value()
+            .double_value
+        )
+        if value <= 0.0:
+            return None
+        return 1.0 / value
+
+    def _rollout_marker_publish_due(self) -> bool:
+        period_sec = self._rollout_marker_publish_period_sec()
+        if period_sec is None:
+            return False
+        now_sec = perf_counter()
+        last_sec = self._last_rollout_marker_publish_wall_sec
+        if last_sec is not None and now_sec - last_sec < period_sec:
+            return False
+        self._last_rollout_marker_publish_wall_sec = now_sec
+        return True
+
+    def _publish_rollout_markers(
+        self,
+        planner_input: PlannerInput,
+        planner_output: object,
+    ) -> None:
+        if self._rollout_marker_publisher is None:
+            return
+        if not self._rollout_marker_publish_due():
+            return
+
+        try:
+            optimized_path_fn = getattr(self._planner, "planned_end_effector_path", None)
+            if not callable(optimized_path_fn):
+                return
+            optimized_path_result = optimized_path_fn(planner_input)
+            if optimized_path_result is None:
+                return
+            _, ee_path = optimized_path_result
+            ee_path = np.asarray(ee_path, dtype=np.float64)
+            if ee_path.ndim != 2 or ee_path.shape[1] != 3:
+                raise ValueError(f"unexpected optimized EE rollout shape: {ee_path.shape}.")
+
+            rollout_paths = None
+            rollout_path_fn = getattr(
+                self._planner,
+                "representative_end_effector_rollouts",
+                None,
+            )
+            if callable(rollout_path_fn):
+                rollout_paths = rollout_path_fn(
+                    planner_input,
+                    max_rollouts=self._rollout_marker_max_samples(),
+                )
+
+            goal_position = goal_position_from_planner_output(
+                planner_output,
+                ee_path[-1],
+            )
+            markers = make_trajectory_marker_array(
+                ee_path=ee_path,
+                rollout_paths=rollout_paths,
+                goal_position=goal_position,
+                frame_id=(
+                    self.get_parameter("rollout_marker_frame_id")
+                    .get_parameter_value()
+                    .string_value
+                ),
+                stamp=self.get_clock().now().to_msg(),
+                line_width=(
+                    self.get_parameter("rollout_marker_line_width")
+                    .get_parameter_value()
+                    .double_value
+                ),
+                sample_line_width=(
+                    self.get_parameter("rollout_marker_sample_line_width")
+                    .get_parameter_value()
+                    .double_value
+                ),
+                point_diameter=(
+                    self.get_parameter("rollout_marker_point_diameter")
+                    .get_parameter_value()
+                    .double_value
+                ),
+                goal_diameter=(
+                    self.get_parameter("rollout_marker_goal_diameter")
+                    .get_parameter_value()
+                    .double_value
+                ),
+            )
+            self._rollout_marker_publisher.publish(markers)
+        except Exception as exc:
+            self.get_logger().warn(f"failed to publish SB-MPC rollout markers: {exc}")
 
     def _publish_control(self, control: Control) -> None:
         try:

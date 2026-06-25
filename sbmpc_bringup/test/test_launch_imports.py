@@ -72,6 +72,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
             "load_gripper",
             "namespace",
             "pixi_env",
+            "publish_rollout_markers",
             "record_replay",
             "record_replay_autosave_period_sec",
             "record_replay_duration_sec",
@@ -101,6 +102,7 @@ def test_real_launch_imports_and_declares_expected_arguments() -> None:
     assert defaults["record_replay_output"] == "/tmp/sbmpc_real_replay.json"
     assert defaults["record_replay_duration_sec"] == "0"
     assert defaults["record_replay_autosave_period_sec"] == "2"
+    assert defaults["publish_rollout_markers"] == "false"
     assert "pregrasp.rviz" in defaults["rviz_config"]
     assert "sbmpc_bridge_real_bringup.yaml" in defaults["bridge_params_file"]
     assert "franka_arm_with_sbmpc_real.urdf.xacro" in defaults["robot_description_file"]

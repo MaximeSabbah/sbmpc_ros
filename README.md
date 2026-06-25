@@ -47,6 +47,9 @@ ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py use_rviz:=false
 
 # Keep running without the automatic metric collector
 ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py validate:=false
+
+# Show representative MPPI end-effector rollouts in RViz
+ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py publish_rollout_markers:=true
 ```
 
 ## Headless Validation
@@ -98,6 +101,9 @@ The real launch uses the same bridge configuration and readiness sequence:
 
 ```bash
 ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py
+
+# With RViz rollout visualization enabled for MPPI inspection
+ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py publish_rollout_markers:=true
 ```
 
 Use `enable_nonzero_control:=false` for a dry bringup that warms the planner and keeps LFC in PD hold. The ROS simulation behavior and timing should be accepted before enabling commands on hardware.

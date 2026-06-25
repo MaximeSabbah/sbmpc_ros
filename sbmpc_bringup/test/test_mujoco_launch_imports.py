@@ -84,6 +84,7 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
         "lfc_params_file",
         "mujoco_model",
         "pixi_env",
+        "publish_rollout_markers",
         "record_lfc_output",
         "record_replay",
         "record_replay_autosave_period_sec",
@@ -100,6 +101,7 @@ def test_mujoco_launch_imports_and_declares_expected_arguments() -> None:
     assert defaults["record_replay"] == "false"
     assert defaults["record_replay_output"] == "/tmp/sbmpc_ros_replay.json"
     assert defaults["record_replay_duration_sec"] == "0"
+    assert defaults["publish_rollout_markers"] == "false"
     assert defaults["controller_manager_name"] == "/controller_manager"
     assert defaults["allow_existing_ros_graph"] == "true"
     assert "sbmpc_bridge.yaml" in defaults["bridge_params_file"]

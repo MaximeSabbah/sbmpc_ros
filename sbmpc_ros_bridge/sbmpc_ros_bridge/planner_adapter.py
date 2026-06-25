@@ -203,6 +203,15 @@ class SbMpcPlannerAdapter:
         call_kwargs.update(kwargs)
         return self._controller.step(planner_input.q, planner_input.v, **call_kwargs)
 
+    def set_rollout_capture_enabled(self, enabled: bool) -> None:
+        setter = getattr(self._controller, "set_rollout_capture_enabled", None)
+        if callable(setter):
+            setter(bool(enabled))
+            return
+        solver = getattr(self._controller, "controller", None)
+        if solver is not None and hasattr(solver, "store_last_rollouts"):
+            solver.store_last_rollouts = bool(enabled)
+
     def predict_state(
         self,
         planner_input: PlannerInput,
@@ -227,6 +236,58 @@ class SbMpcPlannerAdapter:
         if callable(diagnostics):
             return diagnostics()
         return None
+
+    def warmup_rollout_visualization(self, *, max_rollouts: int) -> None:
+        planner = getattr(self._controller, "planner", None)
+        q = getattr(planner, "home_q", None)
+        nv = getattr(planner, "nv", None)
+        if q is None or nv is None:
+            return
+        v = np.zeros(int(nv), dtype=np.float32)
+        planned_path = getattr(self._controller, "planned_end_effector_path", None)
+        if callable(planned_path):
+            result = planned_path(q, v)
+            if result is not None:
+                np.asarray(result[1], dtype=np.float64)
+        rollouts = getattr(self._controller, "representative_end_effector_rollouts", None)
+        if callable(rollouts):
+            result = rollouts(q, v, max_rollouts=max_rollouts)
+            if result is not None:
+                np.asarray(result, dtype=np.float64)
+
+    def planned_end_effector_path(
+        self,
+        planner_input: PlannerInput,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        planned_path = getattr(self._controller, "planned_end_effector_path", None)
+        if not callable(planned_path):
+            return None
+        result = planned_path(planner_input.q, planner_input.v)
+        if result is None:
+            return None
+        q_path, ee_path = result
+        return (
+            np.asarray(q_path, dtype=np.float64),
+            np.asarray(ee_path, dtype=np.float64),
+        )
+
+    def representative_end_effector_rollouts(
+        self,
+        planner_input: PlannerInput,
+        *,
+        max_rollouts: int,
+    ) -> np.ndarray | None:
+        rollouts = getattr(self._controller, "representative_end_effector_rollouts", None)
+        if not callable(rollouts):
+            return None
+        result = rollouts(
+            planner_input.q,
+            planner_input.v,
+            max_rollouts=max_rollouts,
+        )
+        if result is None:
+            return None
+        return np.asarray(result, dtype=np.float64)
 
     @property
     def mpc_dt(self) -> float | None:

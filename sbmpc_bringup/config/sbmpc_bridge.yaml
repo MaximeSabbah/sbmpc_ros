@@ -18,6 +18,17 @@ sbmpc_lfc_bridge_node:
     planner_phase: PREGRASP
     planner_num_steps: 1
     planner_warmup_iterations: 3
+    # Opt in from launch with publish_rollout_markers:=true for RViz MPPI debug.
+    publish_rollout_markers: false
+    rollout_marker_topic: /sbmpc/trajectory_markers
+    rollout_marker_frame_id: base
+    # Draw sample 0 plus the lowest-cost sampled MPPI rollouts, not all 1024.
+    rollout_marker_max_samples: 16
+    rollout_marker_publish_rate_hz: 5.0
+    rollout_marker_line_width: 0.01
+    rollout_marker_sample_line_width: 0.004
+    rollout_marker_point_diameter: 0.025
+    rollout_marker_goal_diameter: 0.045
     # Single source of truth for the MPPI knobs (horizon, samples, dt, lambda,
     # smoothing, top-K gain samples) and the cost weights:
     # sbmpc/sbmpc/ocp_configs/<planner_ocp>.yaml.
