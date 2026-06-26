@@ -5,15 +5,6 @@ sbmpc_lfc_bridge_node:
     diagnostics_topic: /sbmpc/diagnostics
     # Keep the publish rate aligned with the OCP yaml's mpc.dt (0.04 s -> 25 Hz).
     publish_rate_hz: 25.0
-    planner_deadline_sec: 0.04
-    # Stop the complete launch if fresh measured state or a fresh optimization
-    # result is unavailable for three controller periods.
-    max_sensor_age_sec: 0.12
-    max_planner_output_age_sec: 0.12
-    enable_nonzero_control: false
-    force_zero_control: false
-    allow_joint_reordering: false
-    control_initial_state_prediction_sec: 0.0
     planner_mode: exact_feedback # exact_feedback or feedforward
     planner_phase: PREGRASP
     planner_num_steps: 1

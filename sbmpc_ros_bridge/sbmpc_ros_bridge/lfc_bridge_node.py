@@ -45,11 +45,8 @@ from sbmpc_ros_bridge.rollout_markers import (
     make_trajectory_marker_array,
 )
 from sbmpc_ros_bridge.safety import (
-    BridgeSafetyProfile,
     PlanningDeadlineMonitor,
     UnsafeControlError,
-    make_conservative_bringup_profile,
-    make_default_safety_profile,
     validate_planner_output,
 )
 
@@ -115,7 +112,6 @@ class SbMpcLfcBridgeNode(Node):
         self,
         *,
         planner: object | None = None,
-        safety_profile: BridgeSafetyProfile | None = None,
         publish_period_sec: float = 0.02,
         planner_deadline_sec: float | None = None,
     ) -> None:
@@ -132,18 +128,11 @@ class SbMpcLfcBridgeNode(Node):
             "planner_deadline_sec",
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
-        self.declare_parameter("max_sensor_age_sec", 0.0)
-        self.declare_parameter("max_planner_output_age_sec", 0.0)
         # Models real control-loop transport latency (sensor->plan->publish) by
         # replaying an aged planner output. 0.0 (real-robot default) is a no-op;
         # the MuJoCo sim sets it so the simulated closed loop sees the same
         # staleness as hardware and tuning transfers.
         self.declare_parameter("control_output_delay_sec", 0.0)
-        self.declare_parameter("max_abs_torque", 0.0)
-        self.declare_parameter("max_abs_torque_by_joint", [0.0] * 7)
-        self.declare_parameter("torque_limit_mode", "reject")
-        self.declare_parameter("max_gain_norm", 0.0)
-        self.declare_parameter("gain_limit_mode", "reject")
         self.declare_parameter("feedforward_position_gain", 0.0)
         self.declare_parameter("feedforward_velocity_damping_gain", 0.0)
         self.declare_parameter("emergency_hold_position_gain", 1.0)
@@ -218,7 +207,6 @@ class SbMpcLfcBridgeNode(Node):
         self._joint_mapper = JointMapper(expected_names=joint_names)
         self._sensor_lock = Lock()
         self._last_sensor: Sensor | None = None
-        self._last_sensor_arrival_sec: float | None = None
         self._latest_planner_output_lock = Lock()
         self._latest_planner_output: _LatestPlannerOutput | None = None
         self._planner_output_history: deque[tuple[float, _LatestPlannerOutput]] = deque(
@@ -297,11 +285,6 @@ class SbMpcLfcBridgeNode(Node):
             )
             if callable(enable_rollout_capture):
                 enable_rollout_capture(True)
-        self._safety_profile = (
-            self._safety_profile_from_parameters()
-            if safety_profile is None
-            else safety_profile
-        )
         self._deadline_monitor = PlanningDeadlineMonitor(
             max_planning_duration_sec=planner_deadline_sec,
             fail_closed=False,
@@ -399,7 +382,6 @@ class SbMpcLfcBridgeNode(Node):
                 self.get_logger().info(
                     f"Planner configuration from ROS parameters: {planner_config.active_items()}"
                 )
-                self._log_safety_limits()
                 mpc_dt = getattr(self._planner, "mpc_dt", None)
                 if mpc_dt is not None and abs(mpc_dt - publish_period_sec) > 1e-9:
                     self.get_logger().warn(
@@ -423,74 +405,6 @@ class SbMpcLfcBridgeNode(Node):
                 and self._planner_warmup_on_start_enabled()
             ):
                 self._start_warmup_thread()
-
-    def _safety_profile_from_parameters(self) -> BridgeSafetyProfile:
-        max_abs_torque = self._optional_positive_double_parameter("max_abs_torque")
-        max_abs_torque_by_joint = self._optional_positive_double_array_parameter(
-            "max_abs_torque_by_joint"
-        )
-        max_gain_norm = self._optional_positive_double_parameter("max_gain_norm")
-        if (
-            max_abs_torque is None
-            and max_abs_torque_by_joint is None
-            and max_gain_norm is None
-        ):
-            return make_default_safety_profile()
-
-        return make_conservative_bringup_profile(
-            max_abs_torque=max_abs_torque,
-            max_abs_torque_by_joint=max_abs_torque_by_joint,
-            torque_limit_mode=(
-                self.get_parameter("torque_limit_mode")
-                .get_parameter_value()
-                .string_value
-                .strip()
-                .lower()
-            ),
-            max_gain_norm=max_gain_norm,
-            gain_limit_mode=(
-                self.get_parameter("gain_limit_mode")
-                .get_parameter_value()
-                .string_value
-                .strip()
-                .lower()
-            ),
-        )
-
-    def _optional_positive_double_parameter(self, name: str) -> float | None:
-        value = self.get_parameter(name).get_parameter_value().double_value
-        return float(value) if value > 0.0 else None
-
-    def _optional_positive_double_array_parameter(
-        self,
-        name: str,
-    ) -> tuple[float, ...] | None:
-        parameter_value = self.get_parameter(name).get_parameter_value()
-        values = tuple(float(value) for value in parameter_value.double_array_value)
-        if not values:
-            values = tuple(float(value) for value in parameter_value.integer_array_value)
-        if not values or all(value <= 0.0 for value in values):
-            return None
-        if any(value <= 0.0 for value in values):
-            raise ValueError(f"{name} values must all be strictly positive or all zero.")
-        return values
-
-    def _log_safety_limits(self) -> None:
-        limits = self._safety_profile.planner_output_limits()
-        active_items = {}
-        if limits.max_abs_torque is not None:
-            active_items["max_abs_torque"] = limits.max_abs_torque
-            active_items["torque_limit_mode"] = limits.torque_limit_mode
-        if limits.max_abs_torque_by_joint is not None:
-            active_items["max_abs_torque_by_joint"] = list(
-                limits.max_abs_torque_by_joint
-            )
-            active_items["torque_limit_mode"] = limits.torque_limit_mode
-        if limits.max_gain_norm is not None:
-            active_items["max_gain_norm"] = limits.max_gain_norm
-            active_items["gain_limit_mode"] = limits.gain_limit_mode
-        if active_items:
-            self.get_logger().info(f"Bridge safety limits: {active_items}")
 
     def _force_zero_control_enabled(self) -> bool:
         self._force_zero_control = (
@@ -575,7 +489,6 @@ class SbMpcLfcBridgeNode(Node):
         self._received_sensor_count += 1
         with self._sensor_lock:
             self._last_sensor = message
-            self._last_sensor_arrival_sec = perf_counter()
 
     def diagnostics_snapshot(self) -> BridgeDiagnostics:
         return BridgeDiagnostics(
@@ -616,17 +529,6 @@ class SbMpcLfcBridgeNode(Node):
     def _on_timer(self) -> None:
         self._publish_hold_before_fatal_if_needed()
         self._raise_if_fatal()
-        sensor_staleness = self._sensor_staleness_error()
-        if sensor_staleness is not None:
-            planner_input = self._snapshot_planner_input()
-            if planner_input is not None:
-                self._publish_emergency_hold(
-                    planner_input,
-                    reason="sensor staleness guard",
-                )
-            self._latch_fatal_error(sensor_staleness)
-            self._publish_diagnostics()
-            self._raise_if_fatal()
 
         planner_input = self._snapshot_planner_input()
         if planner_input is None:
@@ -710,18 +612,6 @@ class SbMpcLfcBridgeNode(Node):
         if latest is None:
             return False
 
-        max_age_sec = self._optional_positive_double_parameter(
-            "max_planner_output_age_sec"
-        )
-        if max_age_sec is not None:
-            age_sec = perf_counter() - latest.created_at_sec
-            if age_sec > max_age_sec:
-                raise UnsafeControlError(
-                    "planner output is stale: "
-                    f"age_sec={age_sec:.6f} exceeds "
-                    f"max_planner_output_age_sec={max_age_sec:.6f}."
-                )
-
         prepare_start = perf_counter()
         planner_output = latest.planner_output
         # x_des sent to the LFC is the state the planner actually planned from
@@ -730,7 +620,6 @@ class SbMpcLfcBridgeNode(Node):
         control = planner_output_to_control(
             planner_output,
             latest.planner_input,
-            safety_profile=self._safety_profile,
         )
         control = self._apply_feedforward_feedback_regularization(control)
         control.header = deepcopy(planner_input.sensor.header)
@@ -823,7 +712,6 @@ class SbMpcLfcBridgeNode(Node):
                 validate_planner_output(
                     np.asarray(getattr(planner_output, "tau_ff")),
                     np.asarray(getattr(planner_output, "K")),
-                    limits=self._safety_profile.planner_output_limits(),
                 )
                 self._store_latest_planner_output(planner_input, planner_output)
                 self._accepted_planner_output_count += 1
@@ -924,22 +812,6 @@ class SbMpcLfcBridgeNode(Node):
         except UnsafeControlError as exc:
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
-
-    def _sensor_staleness_error(self) -> str | None:
-        max_age_sec = self._optional_positive_double_parameter("max_sensor_age_sec")
-        if max_age_sec is None:
-            return None
-        with self._sensor_lock:
-            last_arrival_sec = self._last_sensor_arrival_sec
-        if last_arrival_sec is None:
-            return None
-        age_sec = perf_counter() - last_arrival_sec
-        if age_sec <= max_age_sec:
-            return None
-        return (
-            "sensor stream is stale: "
-            f"age_sec={age_sec:.6f} exceeds max_sensor_age_sec={max_age_sec:.6f}."
-        )
 
     def _publish_emergency_hold(
         self,

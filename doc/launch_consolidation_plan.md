@@ -237,13 +237,41 @@ control-age/staleness (`AlwaysOnSafety`, `validate_control_age` — tied to `max
 emergency-PD-hold (`_publish_emergency_hold`, `hold_on_disarm_after_control`, `emergency_hold_*_gain`)
 — this is graceful-stop control behavior, not a hardware-handled limit.
 
-- [ ] **3.1** Strip the limiter from `safety.py`, keeping the control/validation/diagnostics core.
-- [ ] **3.2** Remove the 5 limit params + the 4 helper methods from `lfc_bridge_node.py`; replace
-  `validate_planner_output(..., limits=...)` call sites with the no-limits validation.
-- [ ] **3.3** Update `lfc_msg_adapter.py` to call validation without limits.
-- [ ] **3.4** Update `__init__.py` exports and `test_safety.py`; run the bridge test suite.
-- [ ] **3.5 Verify.** `colcon test --packages-select sbmpc_ros_bridge` green; live armed run shows
-  unchanged commanded torque (limiter was already inert).
+- [x] **3.1** Stripped `safety.py` to the correctness/diagnostics core. KEPT: `UnsafeControlError`,
+  `SBMPC_TO_LFC_GAIN_SCALE`, `sbmpc_gain_to_lfc_gain`, `validate_planner_output` (finite/shape only),
+  `compute_lfc_state_error`/`compute_lfc_control`, `PlanningDeadlineMonitor`. Dropped `Literal`/`field`
+  imports (now unused).
+- [x] **3.2** Bridge: removed the 5 limit params **and both staleness params**
+  (`max_sensor_age_sec`, `max_planner_output_age_sec`), the `safety_profile=` ctor arg, `self._safety_profile`,
+  the 4 helper methods (`_safety_profile_from_parameters`, `_optional_positive_double_parameter`,
+  `_optional_positive_double_array_parameter`, `_log_safety_limits`), `_sensor_staleness_error`, the
+  `_on_timer` sensor-staleness block, the planner-output staleness block in `_publish_latest_control`,
+  and the now-dead `_last_sensor_arrival_sec` tracking. `validate_planner_output(...)` called with no
+  `limits=`. KEPT the disarm emergency-PD-hold and `PlanningDeadlineMonitor` diagnostics.
+- [x] **3.3** `lfc_msg_adapter.py`: dropped `safety_limits`/`safety_profile` params; `planner_output_to_control`
+  keeps only the `gain_scale` default; validation called without limits.
+- [x] **3.4** `__init__.py` exports trimmed; `test_safety.py` reduced to the kept functions + a new
+  finite/shape guard for `validate_planner_output`; removed the clip/limit/staleness/profile tests from
+  `test_lfc_msg_adapter.py` and `test_fake_ros_loop.py` (and the now-unused `HighTorquePlanner`).
+- [x] **3.5 Verify.** `sbmpc_ros_bridge` **59 passed / 1 skipped**; `sbmpc_bringup` **57 passed / 2 skipped**;
+  clean `colcon build` of both. (Live armed run still recommended before first hardware arm.)
+
+> **Deviations from the plan's literal REMOVE/KEEP lists (user-authorized at checkpoint, recorded per 4.2):**
+> 1. **Wrapper pruned too.** User chose "prune the wrapper": removed `BridgeSafetyProfile`,
+>    `MonitoringOnly`, `make_default_safety_profile` and all `safety_profile=` plumbing (they carried
+>    only the constant `gain_scale=-1.0` after the limits left). The deadline monitor was already built
+>    directly in the bridge.
+> 2. **Staleness removed (overrides the plan KEEP list).** User: "all those safety layers are
+>    counterproductive" — removed **both** `max_planner_output_age_sec` and `max_sensor_age_sec`, which
+>    also retired `AlwaysOnSafety`, `validate_control_age`, `compute_control_age_sec`. With both gone,
+>    `_optional_positive_double_parameter` had zero users and was deleted (re-aligning with the original list).
+> 3. **Kept (user-confirmed edge question):** `PlanningDeadlineMonitor` diagnostics + the disarm
+>    emergency-PD-hold; plus the correctness core (finite/shape validation, gain negation, LFC math).
+> 4. **YAML cleanup (user did this concurrently in `sbmpc_bridge.yaml`):** removed `max_sensor_age_sec`
+>    + `max_planner_output_age_sec` (required — the bridge no longer declares them, so leaving them would
+>    crash on undeclared-param), and the **redundant** `planner_deadline_sec: 0.04` (the bridge falls back
+>    to `publish_period_sec` = 1/`publish_rate_hz` = 0.04 s, identical) and `enable_nonzero_control: false`
+>    (already the bridge default + set by the launch). `test_bringup_config.py` updated to match.
 
 **Review checkpoint C.** ⟶ user review.
 

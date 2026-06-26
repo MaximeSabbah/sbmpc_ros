@@ -25,7 +25,6 @@ from sbmpc_ros_bridge.joint_mapping import PANDA_ARM_JOINT_NAMES
 from sbmpc_ros_bridge.lfc_bridge_node import SbMpcLfcBridgeNode
 from sbmpc_ros_bridge.lfc_control_probe import estimate_lfc_command
 from sbmpc_ros_bridge.lfc_msg_adapter import float64_multi_array_to_numpy
-from sbmpc_ros_bridge.safety import make_conservative_bringup_profile
 
 
 LFC_QOS = QoSProfile(
@@ -109,17 +108,6 @@ class BadGainAfterFirstStepPlanner(FakePlanner):
             tau_ff=output.tau_ff,
             K=np.full((7, 14), np.nan, dtype=np.float64),
             diagnostics=output.diagnostics,
-        )
-
-
-class HighTorquePlanner(FakePlanner):
-    def step(self, planner_input) -> FakePlannerOutput:
-        self.step_inputs.append(planner_input)
-        self.step_calls += 1
-        return FakePlannerOutput(
-            tau_ff=np.asarray([20.0, -30.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
-            K=np.zeros((7, 14), dtype=np.float64),
-            diagnostics=FakePlannerDiagnostics(),
         )
 
 
@@ -337,37 +325,6 @@ def test_control_thread_publishes_controls() -> None:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 
 
-def test_fake_ros_loop_clips_feedforward_with_bringup_safety_profile() -> None:
-    planner = HighTorquePlanner()
-    bridge = SbMpcLfcBridgeNode(
-        planner=planner,
-        safety_profile=make_conservative_bringup_profile(
-            max_abs_torque=1.0,
-            torque_limit_mode="clip",
-        ),
-        publish_period_sec=0.02,
-    )
-    bridge._control_enabled = True
-    sensor_publisher = FakeSensorPublisher(enabled=True)
-    collector = ControlCollector()
-    executor = build_executor(bridge, sensor_publisher, collector)
-
-    try:
-        spin_for(executor, 0.25)
-
-        assert collector.controls
-        feedforward = float64_multi_array_to_numpy(
-            collector.controls[-1].feedforward
-        ).reshape(-1)
-        np.testing.assert_allclose(
-            feedforward,
-            np.asarray([1.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0]),
-        )
-        assert bridge.diagnostics_snapshot().last_control_max_abs_feedforward == 1.0
-    finally:
-        teardown_executor(executor, bridge, sensor_publisher, collector)
-
-
 def test_fake_ros_loop_counts_deadline_misses() -> None:
     planner = FakePlanner(step_sleep_sec=0.03)
     bridge = SbMpcLfcBridgeNode(
@@ -445,90 +402,6 @@ def test_fake_ros_loop_does_not_recover_after_transient_bad_gain() -> None:
         assert "feedback_gain contains non-finite values" in snapshot.last_error
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
-
-
-def test_fake_ros_loop_fails_closed_on_stale_sensor() -> None:
-    planner = FakePlanner()
-    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "max_sensor_age_sec",
-                Parameter.Type.DOUBLE,
-                0.04,
-            )
-        ]
-    )
-    bridge._on_sensor(make_sensor())
-    assert bridge._last_sensor_arrival_sec is not None
-    bridge._last_sensor_arrival_sec -= 1.0
-
-    try:
-        with pytest.raises(RuntimeError, match="sensor stream is stale"):
-            bridge._on_timer()
-
-        snapshot = bridge.diagnostics_snapshot()
-        assert snapshot.state == "error"
-        assert "sensor stream is stale" in snapshot.last_error
-    finally:
-        bridge.destroy_node()
-
-
-def test_fake_ros_loop_publishes_emergency_hold_before_stale_planner_fatal() -> None:
-    class CapturingPublisher:
-        def __init__(self) -> None:
-            self.messages: list[Control] = []
-
-        def publish(self, message: Control) -> None:
-            self.messages.append(message)
-
-    planner = FakePlanner()
-    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    publisher = CapturingPublisher()
-    bridge._control_publisher = publisher
-    bridge._control_enabled = True
-    bridge.set_parameters(
-        [
-            Parameter(
-                "max_planner_output_age_sec",
-                Parameter.Type.DOUBLE,
-                0.001,
-            ),
-        ]
-    )
-    bridge._warmup_complete = True
-    bridge._published_control_count = 1
-    bridge._on_sensor(make_sensor())
-    planner_input = bridge._snapshot_planner_input()
-    assert planner_input is not None
-    bridge._store_latest_planner_output(
-        planner_input,
-        FakePlannerOutput(
-            tau_ff=np.asarray([0.5] * 7, dtype=np.float64),
-            K=np.eye(7, 14, dtype=np.float64),
-        ),
-    )
-    time.sleep(0.01)
-
-    try:
-        with pytest.raises(RuntimeError, match="planner output is stale"):
-            bridge._on_timer()
-
-        assert len(publisher.messages) == 1
-        hold = publisher.messages[0]
-        np.testing.assert_allclose(
-            float64_multi_array_to_numpy(hold.feedforward).reshape(-1),
-            np.asarray([0.25] * 7, dtype=np.float64),
-        )
-        gain = float64_multi_array_to_numpy(hold.feedback_gain)
-        np.testing.assert_allclose(gain[:, :7], np.eye(7) * 1.0)
-        np.testing.assert_allclose(gain[:, 7:], np.eye(7) * 2.0)
-        np.testing.assert_allclose(hold.initial_state.joint_state.velocity, [0.0] * 7)
-        snapshot = bridge.diagnostics_snapshot()
-        assert snapshot.state == "error"
-        assert "planner output is stale" in snapshot.last_error
-    finally:
-        bridge.destroy_node()
 
 
 def test_fake_ros_loop_adds_feedforward_velocity_damping_with_correct_sign() -> None:

@@ -10,9 +10,7 @@ from std_msgs.msg import Float64MultiArray, MultiArrayDimension, MultiArrayLayou
 from sbmpc_ros_bridge.joint_mapping import JointMapper
 from sbmpc_ros_bridge.planner_adapter import PlannerInput
 from sbmpc_ros_bridge.safety import (
-    BridgeSafetyProfile,
     SBMPC_TO_LFC_GAIN_SCALE,
-    ControlSafetyLimits,
     sbmpc_gain_to_lfc_gain,
     validate_planner_output,
 )
@@ -49,21 +47,10 @@ def planner_output_to_control(
     planned_state: PlannerInput | Sensor,
     *,
     gain_scale: float | None = None,
-    safety_limits: ControlSafetyLimits | None = None,
-    safety_profile: BridgeSafetyProfile | None = None,
 ) -> Control:
-    if safety_profile is None:
-        effective_gain_scale = (
-            SBMPC_TO_LFC_GAIN_SCALE if gain_scale is None else gain_scale
-        )
-        effective_limits = safety_limits
-    else:
-        effective_gain_scale = safety_profile.always_on.gain_scale
-        if gain_scale is not None:
-            effective_gain_scale = gain_scale
-        effective_limits = safety_profile.planner_output_limits()
-        if safety_limits is not None:
-            effective_limits = safety_limits
+    effective_gain_scale = (
+        SBMPC_TO_LFC_GAIN_SCALE if gain_scale is None else gain_scale
+    )
 
     sensor_snapshot = (
         planned_state.sensor if isinstance(planned_state, PlannerInput) else planned_state
@@ -71,7 +58,6 @@ def planner_output_to_control(
     tau_ff, feedback_gain = validate_planner_output(
         planner_output.tau_ff,
         planner_output.K,
-        limits=effective_limits,
     )
 
     control = Control()

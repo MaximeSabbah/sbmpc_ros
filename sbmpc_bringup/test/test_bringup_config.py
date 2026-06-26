@@ -122,10 +122,6 @@ def test_bridge_config_points_to_the_lfc_topics_and_fer_joint_names() -> None:
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 25.0
-    assert params["planner_deadline_sec"] == 0.04
-    assert params["max_sensor_age_sec"] == 0.12
-    assert params["max_planner_output_age_sec"] == 0.12
-    assert params["enable_nonzero_control"] is False
     assert params["publish_rollout_markers"] is False
     assert params["planner_mode"] == "exact_feedback"
     assert params["planner_phase"] == "PREGRASP"
