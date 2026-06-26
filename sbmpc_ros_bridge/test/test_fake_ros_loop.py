@@ -19,6 +19,7 @@ from rclpy.qos import (
 from linear_feedback_controller_msgs.msg import Control, Sensor
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header, String
+from std_srvs.srv import SetBool
 
 from sbmpc_ros_bridge.joint_mapping import PANDA_ARM_JOINT_NAMES
 from sbmpc_ros_bridge.lfc_bridge_node import SbMpcLfcBridgeNode
@@ -234,15 +235,7 @@ def teardown_executor(executor: SingleThreadedExecutor, *nodes: Node) -> None:
 def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=False)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -297,15 +290,7 @@ def test_bridge_destroy_closes_planner() -> None:
 def test_fake_ros_loop_publishes_controls_near_target_rate_and_diagnostics() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -334,15 +319,7 @@ def test_control_thread_publishes_controls() -> None:
         planner=planner,
         publish_period_sec=0.02,
     )
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -370,15 +347,7 @@ def test_fake_ros_loop_clips_feedforward_with_bringup_safety_profile() -> None:
         ),
         publish_period_sec=0.02,
     )
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -406,15 +375,7 @@ def test_fake_ros_loop_counts_deadline_misses() -> None:
         publish_period_sec=0.02,
         planner_deadline_sec=0.02,
     )
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -441,15 +402,7 @@ def test_fake_ros_loop_counts_deadline_misses() -> None:
 def test_fake_ros_loop_fails_closed_after_bad_gain() -> None:
     planner = BadGainAfterFirstStepPlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -475,15 +428,7 @@ def test_fake_ros_loop_fails_closed_after_bad_gain() -> None:
 def test_fake_ros_loop_does_not_recover_after_transient_bad_gain() -> None:
     planner = BadGainOncePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            )
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -541,13 +486,9 @@ def test_fake_ros_loop_publishes_emergency_hold_before_stale_planner_fatal() -> 
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
     publisher = CapturingPublisher()
     bridge._control_publisher = publisher
+    bridge._control_enabled = True
     bridge.set_parameters(
         [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            ),
             Parameter(
                 "max_planner_output_age_sec",
                 Parameter.Type.DOUBLE,
@@ -593,13 +534,9 @@ def test_fake_ros_loop_publishes_emergency_hold_before_stale_planner_fatal() -> 
 def test_fake_ros_loop_adds_feedforward_velocity_damping_with_correct_sign() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge._control_enabled = True
     bridge.set_parameters(
         [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            ),
             Parameter(
                 "feedforward_velocity_damping_gain",
                 Parameter.Type.DOUBLE,
@@ -647,15 +584,7 @@ def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
         assert snapshot.nonzero_control_count == 0
 
         control_count_before_enable = len(collector.controls)
-        bridge.set_parameters(
-            [
-                Parameter(
-                    "enable_nonzero_control",
-                    Parameter.Type.BOOL,
-                    True,
-                )
-            ]
-        )
+        bridge._control_enabled = True
         spin_for(executor, 0.12)
 
         assert len(collector.controls) > control_count_before_enable
@@ -679,15 +608,7 @@ def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
 def test_fake_ros_loop_publishes_hold_when_disarmed_after_control() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            ),
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -697,15 +618,7 @@ def test_fake_ros_loop_publishes_hold_when_disarmed_after_control() -> None:
         assert collector.controls
 
         control_count_before_disarm = len(collector.controls)
-        bridge.set_parameters(
-            [
-                Parameter(
-                    "enable_nonzero_control",
-                    Parameter.Type.BOOL,
-                    False,
-                )
-            ]
-        )
+        bridge._control_enabled = False
         spin_for(executor, 0.08)
 
         assert len(collector.controls) > control_count_before_disarm
@@ -732,15 +645,7 @@ def test_fake_ros_loop_can_keep_planned_initial_state_for_delayed_control() -> N
 
     planner = FakePlanner(on_step=publish_new_sensor_during_planning)
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
-    bridge.set_parameters(
-        [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            ),
-        ]
-    )
+    bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=False)
     collector = ControlCollector()
     executor = build_executor(bridge, sensor_publisher, collector)
@@ -761,13 +666,9 @@ def test_fake_ros_loop_can_keep_planned_initial_state_for_delayed_control() -> N
 def test_fake_ros_loop_predicts_delayed_planning_state() -> None:
     planner = PredictingPlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge._control_enabled = True
     bridge.set_parameters(
         [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            ),
             Parameter(
                 "control_initial_state_prediction_sec",
                 Parameter.Type.DOUBLE,
@@ -794,13 +695,9 @@ def test_fake_ros_loop_predicts_delayed_planning_state() -> None:
 def test_fake_ros_loop_force_zero_control_gate_blocks_nonzero_outputs() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge._control_enabled = True
     bridge.set_parameters(
         [
-            Parameter(
-                "enable_nonzero_control",
-                Parameter.Type.BOOL,
-                True,
-            ),
             Parameter(
                 "force_zero_control",
                 Parameter.Type.BOOL,
@@ -884,3 +781,43 @@ def test_control_output_delay_selects_aged_planner_output() -> None:
         assert len(bridge._planner_output_history) == 0
     finally:
         bridge.destroy_node()
+
+
+def test_set_nonzero_control_service_enforces_warmup_precondition() -> None:
+    bridge = SbMpcLfcBridgeNode(planner=FakePlanner(), publish_period_sec=0.02)
+    client_node = Node("set_nonzero_control_test_client")
+    client = client_node.create_client(
+        SetBool, "/sbmpc_lfc_bridge_node/set_nonzero_control"
+    )
+    executor = build_executor(bridge, client_node)
+
+    def call(data: bool) -> SetBool.Response:
+        assert client.wait_for_service(timeout_sec=5.0)
+        future = client.call_async(SetBool.Request(data=data))
+        deadline = time.monotonic() + 5.0
+        while not future.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.01)
+        response = future.result()
+        assert response is not None
+        return response
+
+    try:
+        # Arming is refused while warmup is incomplete (LFC must stay in PD-hold).
+        bridge._warmup_complete = False
+        refused = call(True)
+        assert refused.success is False
+        assert "warmup" in refused.message
+        assert bridge._nonzero_control_enabled() is False
+
+        # Once warmup completes, arming is accepted.
+        bridge._warmup_complete = True
+        armed = call(True)
+        assert armed.success is True
+        assert bridge._nonzero_control_enabled() is True
+
+        # Disarming is always allowed, regardless of warmup state.
+        disarmed = call(False)
+        assert disarmed.success is True
+        assert bridge._nonzero_control_enabled() is False
+    finally:
+        teardown_executor(executor, bridge, client_node)

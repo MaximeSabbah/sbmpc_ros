@@ -10,6 +10,7 @@ from time import perf_counter
 
 import numpy as np
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 import rclpy
 from linear_feedback_controller_msgs.msg import Control, Sensor
 from rclpy._rclpy_pybind11 import RCLError
@@ -202,6 +203,12 @@ class SbMpcLfcBridgeNode(Node):
             self.get_parameter("joint_names").get_parameter_value().string_array_value
         )
         self._force_zero_control = self._force_zero_control_enabled()
+        # Arming is a runtime command via the ~/set_nonzero_control service (D15).
+        # The `enable_nonzero_control` parameter only seeds the initial value.
+        self._control_lock = Lock()
+        self._control_enabled = (
+            self.get_parameter("enable_nonzero_control").get_parameter_value().bool_value
+        )
         self._joint_names = joint_names
         self._closing = Event()
         self._planner_lock = Lock()
@@ -365,6 +372,11 @@ class SbMpcLfcBridgeNode(Node):
             best_effort_qos(depth=SENSOR_QOS_DEPTH),
             callback_group=self._sensor_callback_group,
         )
+        self._set_nonzero_control_service = self.create_service(
+            SetBool,
+            "~/set_nonzero_control",
+            self._on_set_nonzero_control,
+        )
         self._timer = self.create_timer(publish_period_sec, self._on_timer)
         self._planner_thread = Thread(
             target=self._run_planner_worker,
@@ -487,11 +499,32 @@ class SbMpcLfcBridgeNode(Node):
         return self._force_zero_control
 
     def _nonzero_control_enabled(self) -> bool:
-        return (
-            self.get_parameter("enable_nonzero_control")
-            .get_parameter_value()
-            .bool_value
+        with self._control_lock:
+            return self._control_enabled
+
+    def _on_set_nonzero_control(
+        self,
+        request: SetBool.Request,
+        response: SetBool.Response,
+    ) -> SetBool.Response:
+        if request.data and not self._warmup_complete:
+            response.success = False
+            response.message = (
+                "cannot arm: planner warmup is not complete; the bridge stays "
+                "in PD-hold until warmup finishes."
+            )
+            return response
+
+        with self._control_lock:
+            self._control_enabled = bool(request.data)
+        response.success = True
+        response.message = (
+            "armed: nonzero control enabled."
+            if request.data
+            else "disarmed: nonzero control disabled."
         )
+        self.get_logger().info(response.message)
+        return response
 
     def _planner_warmup_on_start_enabled(self) -> bool:
         return (

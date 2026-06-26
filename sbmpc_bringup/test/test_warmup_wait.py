@@ -198,64 +198,65 @@ def test_switch_controllers_calls_controller_manager(monkeypatch) -> None:
     assert spun and spun[0][0] is node
 
 
-def test_set_remote_bool_parameter_arms_bridge(monkeypatch) -> None:
-    class Result:
-        successful = True
+def test_set_nonzero_control_calls_arming_service(monkeypatch) -> None:
+    class Request:
+        def __init__(self) -> None:
+            self.data = None
+
+    FakeSetBool = type("SetBool", (), {"Request": Request})
+
+    class Response:
+        success = True
 
     class Future:
         def result(self):
-            return types.SimpleNamespace(results=[Result()])
+            return Response()
 
     class Client:
-        def __init__(self, node, remote_node_name: str) -> None:
-            self.node = node
-            self.remote_node_name = remote_node_name
-            self.parameters = []
+        def __init__(self) -> None:
+            self.requests = []
 
-        def wait_for_services(self, *, timeout_sec: float) -> bool:
+        def wait_for_service(self, *, timeout_sec: float) -> bool:
             assert timeout_sec == 3.0
             return True
 
-        def set_parameters(self, parameters):
-            self.parameters = parameters
+        def call_async(self, request):
+            self.requests.append(request)
             return Future()
 
-    class BoolParameter:
-        class Type:
-            BOOL = "bool"
+    class Node:
+        def __init__(self) -> None:
+            self.client = Client()
+            self.service_type = None
+            self.service_name = ""
 
-        def __init__(self, name: str, parameter_type: str, value: bool) -> None:
-            self.name = name
-            self.type = parameter_type
-            self.value = value
+        def create_client(self, service_type, service_name: str):
+            self.service_type = service_type
+            self.service_name = service_name
+            return self.client
 
-    node = object()
-    clients = []
-
-    def make_client(node_arg, remote_node_name):
-        client = Client(node_arg, remote_node_name)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(warmup_wait, "AsyncParameterClient", make_client)
-    monkeypatch.setattr(warmup_wait, "Parameter", BoolParameter)
+    node = Node()
+    spun = []
+    monkeypatch.setattr(warmup_wait, "SetBool", FakeSetBool)
     monkeypatch.setattr(
         warmup_wait.rclpy,
         "spin_until_future_complete",
-        lambda node_arg, future, timeout_sec: None,
+        lambda node_arg, future, timeout_sec: spun.append(
+            (node_arg, future, timeout_sec)
+        ),
     )
 
-    assert warmup_wait.set_remote_bool_parameter(
+    assert warmup_wait.set_nonzero_control(
         node,
-        remote_node_name="/sbmpc_lfc_bridge_node",
-        parameter_name="enable_nonzero_control",
+        bridge_node_name="/sbmpc_lfc_bridge_node",
         value=True,
         timeout_sec=3.0,
     )
-    assert clients[0].node is node
-    assert clients[0].remote_node_name == "/sbmpc_lfc_bridge_node"
-    assert clients[0].parameters[0].name == "enable_nonzero_control"
-    assert clients[0].parameters[0].value is True
+
+    assert node.service_type is FakeSetBool
+    assert node.service_name == "/sbmpc_lfc_bridge_node/set_nonzero_control"
+    assert node.client.requests[0].data is True
+    assert spun and spun[0][0] is node
 
 
 def test_main_ignores_ros_args_appended_by_launch_node(monkeypatch) -> None:
@@ -282,7 +283,7 @@ def test_main_ignores_ros_args_appended_by_launch_node(monkeypatch) -> None:
             "/sbmpc_lfc_bridge_node",
             "--enable-nonzero-control",
             "true",
-            "--parameter-timeout-sec",
+            "--service-timeout-sec",
             "3.5",
             "--ros-args",
             "--params-file",
@@ -299,4 +300,4 @@ def test_main_ignores_ros_args_appended_by_launch_node(monkeypatch) -> None:
     assert calls[0]["switch_timeout_sec"] == 2.5
     assert calls[0]["bridge_node_name"] == "/sbmpc_lfc_bridge_node"
     assert calls[0]["enable_nonzero_control"] is True
-    assert calls[0]["parameter_timeout_sec"] == 3.5
+    assert calls[0]["service_timeout_sec"] == 3.5

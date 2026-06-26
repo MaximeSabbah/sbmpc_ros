@@ -6,9 +6,8 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from rclpy.parameter import Parameter
-from rclpy.parameter_client import AsyncParameterClient
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 
 from sbmpc_bringup.constants import BRIDGE_DIAGNOSTICS_TOPIC
 
@@ -78,7 +77,7 @@ def wait_for_warmup(
     switch_timeout_sec: float = 10.0,
     bridge_node_name: str = "",
     enable_nonzero_control: bool = False,
-    parameter_timeout_sec: float = 10.0,
+    service_timeout_sec: float = 10.0,
 ) -> bool:
     rclpy.init()
     node = WarmupWaiter(
@@ -107,13 +106,12 @@ def wait_for_warmup(
             timeout_sec=switch_timeout_sec,
         ):
             return False
-        if parameter_update_requested(bridge_node_name):
-            return set_remote_bool_parameter(
+        if enable_nonzero_control and parameter_update_requested(bridge_node_name):
+            return set_nonzero_control(
                 node,
-                remote_node_name=bridge_node_name,
-                parameter_name="enable_nonzero_control",
-                value=enable_nonzero_control,
-                timeout_sec=parameter_timeout_sec,
+                bridge_node_name=bridge_node_name,
+                value=True,
+                timeout_sec=service_timeout_sec,
             )
         return True
     finally:
@@ -176,25 +174,24 @@ def switch_controllers(
     return bool(result is not None and result.ok)
 
 
-def set_remote_bool_parameter(
+def set_nonzero_control(
     node: Node,
     *,
-    remote_node_name: str,
-    parameter_name: str,
+    bridge_node_name: str,
     value: bool,
     timeout_sec: float,
 ) -> bool:
-    client = AsyncParameterClient(node, remote_node_name.strip())
-    if not client.wait_for_services(timeout_sec=timeout_sec):
+    service_name = f"{bridge_node_name.strip().rstrip('/')}/set_nonzero_control"
+    client = node.create_client(SetBool, service_name)
+    if not client.wait_for_service(timeout_sec=timeout_sec):
         return False
 
-    future = client.set_parameters(
-        [Parameter(parameter_name, Parameter.Type.BOOL, bool(value))]
-    )
+    request = SetBool.Request()
+    request.data = bool(value)
+    future = client.call_async(request)
     rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_sec)
     response = future.result()
-    results = getattr(response, "results", response)
-    return bool(results) and all(result.successful for result in results)
+    return bool(response is not None and response.success)
 
 
 def parse_bool(value: str) -> bool:
@@ -219,7 +216,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--switch-timeout-sec", type=float, default=10.0)
     parser.add_argument("--bridge-node", default="")
     parser.add_argument("--enable-nonzero-control", type=parse_bool, default=False)
-    parser.add_argument("--parameter-timeout-sec", type=float, default=10.0)
+    parser.add_argument("--service-timeout-sec", type=float, default=10.0)
     args, _ = parser.parse_known_args(argv)
 
     if not wait_for_warmup(
@@ -234,7 +231,7 @@ def main(argv: list[str] | None = None) -> None:
         switch_timeout_sec=args.switch_timeout_sec,
         bridge_node_name=args.bridge_node,
         enable_nonzero_control=args.enable_nonzero_control,
-        parameter_timeout_sec=args.parameter_timeout_sec,
+        service_timeout_sec=args.service_timeout_sec,
     ):
         raise SystemExit(
             "Timed out waiting for SB-MPC bridge warmup, MuJoCo reset, "

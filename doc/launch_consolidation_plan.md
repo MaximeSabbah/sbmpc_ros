@@ -180,19 +180,39 @@ preflight is **shared** by both backends (D22 — no longer a divergence).
 
 > Outcome: arming the robot is an explicit, precondition-checked RPC, not a silent param write.
 
-- [ ] **2.1 Bridge service.** In `lfc_bridge_node.py`, add a `std_srvs/srv/SetBool` service
-  `~/set_nonzero_control`. Handler: `data=true` → arm only if warmup complete (else
-  `success=false`, message says why); `data=false` → disarm (always allowed). Back it with a
-  thread-safe internal `self._control_enabled`; `enable_nonzero_control` param becomes the initial
-  value only. Audit all readers of `_nonzero_control_enabled()` to use the internal flag.
-- [ ] **2.2 Warmup tool.** In `warmup_wait.py`, replace `set_remote_bool_parameter(... enable_nonzero_control ...)`
-  with a `SetBool` client call to `~/set_nonzero_control`; keep the `--enable-nonzero-control` CLI flag.
-- [ ] **2.3 Launch.** Bridge still starts with `enable_nonzero_control:=false`; warmup step arms via
-  the service when the `enable_nonzero_control` arg is true. No launch-interface change.
-- [ ] **2.4 Tests.** Add a bridge test for the service (arm refused before warmup, allowed after,
-  disarm always). Update `warmup_wait` tests for the service call. Update any test that armed via
-  the param.
-- [ ] **2.5 Verify.** Unit tests green; live: confirm `ros2 service call .../set_nonzero_control std_srvs/srv/SetBool "{data: true}"` arms and is rejected pre-warmup.
+- [x] **2.1 Bridge service.** Added `std_srvs/srv/SetBool` service `~/set_nonzero_control` (created
+  next to the timer in `__init__`). Handler `_on_set_nonzero_control`: `data=true` → arm only if
+  `_warmup_complete` (else `success=false` with a "warmup not complete" message); `data=false` →
+  disarm (always `success=true`). Backed by a lock-guarded `self._control_enabled` (`_control_lock`)
+  seeded once from the `enable_nonzero_control` param. `_nonzero_control_enabled()` now reads the
+  internal flag under the lock; all four readers (init log, `diagnostics_snapshot`, `_on_timer`,
+  `_run_planner_worker`) go through it, so none read the param directly anymore. Added
+  `std_srvs` to `package.xml`.
+- [x] **2.2 Warmup tool.** Replaced `set_remote_bool_parameter` (AsyncParameterClient) with
+  `set_nonzero_control` — a `SetBool` client call to `f"{bridge_node}/set_nonzero_control"`. Kept
+  the `--enable-nonzero-control` flag; renamed `--parameter-timeout-sec`→`--service-timeout-sec`
+  (and the `parameter_timeout_sec`→`service_timeout_sec` kwarg) since it now times a service, not a
+  param write. `wait_for_warmup` only arms (`value=True`) when `enable_nonzero_control` is true;
+  disarmed is the no-op default (bridge already starts disarmed).
+- [x] **2.3 Launch.** No change needed: the warmup step already passes `--bridge-node` +
+  `--enable-nonzero-control`, and never passed the renamed timeout flag. Bridge still starts
+  `enable_nonzero_control:=false`.
+- [x] **2.4 Tests.** Added `test_set_nonzero_control_service_enforces_warmup_precondition` (real
+  in-process rclpy client against the registered service: refused pre-warmup, armed after, disarm
+  always). Rewrote the warmup_wait param test as `test_set_nonzero_control_calls_arming_service`
+  (mock `SetBool` client) and updated the CLI-flag test. Migrated the 15 `enable_nonzero_control`
+  param-arming sites in `test_fake_ros_loop.py` to direct `bridge._control_enabled = …`
+  (matches the existing `_warmup_complete=` test idiom; the `_on_timer` warmup gate still governs
+  when control actually flows).
+- [x] **2.5 Verify.** `sbmpc_ros_bridge` 70 passed/1 skipped; `sbmpc_bringup` 57 passed/2 skipped;
+  clean `colcon build` of both. The in-process service test substitutes for the live
+  `ros2 service call` check (it exercises the real registered service); a full-stack live arm is
+  still worth a manual smoke before the first armed hardware run.
+
+> **Doc debt (defer to Phase 4):** arming is now an explicit RPC, not a param. The README/docs must
+> be updated to (a) drop the "set `enable_nonzero_control` parameter" instructions, (b) document
+> `ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"`
+> as the way to arm, and (c) note arming is rejected until warmup completes. Captured in 4.1.
 
 **Review checkpoint B.** ⟶ user review.
 
@@ -233,6 +253,11 @@ emergency-PD-hold (`_publish_emergency_hold`, `hold_on_disarm_after_control`, `e
 
 - [ ] **4.1** Update launch commands in `sbmpc_ros/README.md`, `sbmpc_containers/README.md`, and the
   `sbmpc/docs/*.md` references to `ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py backend:=...`.
+  **Also (Phase 2 doc debt):** replace any "set the `enable_nonzero_control` parameter to arm"
+  instructions with the service-call workflow —
+  `ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"`
+  — and state that arming is rejected until planner warmup completes. Make the arming story
+  identical wording for sim and real.
 - [ ] **4.2** Update this plan's checkboxes; note any deviations.
 
 ---
