@@ -69,28 +69,6 @@ def test_real_xacro_uses_agimus_franka_hardware_plugin() -> None:
     )
 
 
-def test_real_xacro_can_render_fake_hardware_for_dry_checks() -> None:
-    control = ros2_control(
-        render_real_urdf(
-            use_fake_hardware="true",
-            fake_sensor_commands="true",
-        )
-    )
-    hardware = control.find("hardware")
-    assert hardware is not None
-
-    plugin = hardware.find("plugin")
-    assert plugin is not None
-    assert plugin.text == "mock_components/GenericSystem"
-
-    params = params_by_name(hardware)
-    assert params["fake_sensor_commands"] == "true"
-    assert "agimus_franka_hardware/AgimusFrankaHardwareInterface" not in ET.tostring(
-        control,
-        encoding="unicode",
-    )
-
-
 def test_real_xacro_exposes_arm_position_velocity_effort_interfaces() -> None:
     control = ros2_control(render_real_urdf())
     joints = {joint.attrib["name"]: joint for joint in control.findall("joint")}

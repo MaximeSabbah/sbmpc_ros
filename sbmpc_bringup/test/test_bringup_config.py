@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import yaml
@@ -22,15 +21,31 @@ from sbmpc_bringup.constants import (
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
-LAUNCH_DIR = Path(__file__).resolve().parents[1] / "launch"
+
+# One config set serves both backends: shared controllers + LFC params, one
+# bridge config, and a single physical sim overlay (gravity compensation).
 EXPECTED_CONFIG_FILES = {
     "franka_controllers.yaml",
     "franka_lfc_params.yaml",
     "franka_lfc_params_sim.yaml",
     "sbmpc_bridge.yaml",
-    "sbmpc_bridge_feedforward.yaml",
-    "sbmpc_bridge_real_bringup.yaml",
 }
+
+# The sbmpc OCP yaml (planner_ocp) owns the MPPI knobs. The bridge config must
+# not duplicate them, otherwise the two repos drift apart.
+MPPI_KNOBS_OWNED_BY_OCP_YAML = (
+    "planner_num_samples",
+    "planner_horizon",
+    "planner_num_parallel_computations",
+    "planner_num_control_points",
+    "planner_temperature",
+    "planner_dt",
+    "planner_lambda_mpc",
+    "planner_noise_scale",
+    "planner_std_dev_scale",
+    "planner_smoothing",
+    "planner_num_gain_samples",
+)
 
 
 def load_yaml(name: str) -> dict[str, object]:
@@ -38,17 +53,7 @@ def load_yaml(name: str) -> dict[str, object]:
         return yaml.safe_load(handle)
 
 
-def load_launch_module(name: str):
-    path = LAUNCH_DIR / name
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_config_directory_contains_only_supported_presets() -> None:
+def test_config_directory_contains_only_the_supported_files() -> None:
     assert {path.name for path in CONFIG_DIR.glob("*.yaml")} == EXPECTED_CONFIG_FILES
 
 
@@ -71,11 +76,10 @@ def test_franka_controllers_yaml_declares_expected_controller_types() -> None:
         "linear_feedback_controller/LinearFeedbackController"
     )
     assert cm_params[GRIPPER_ACTION_CONTROLLER_NAME]["type"] == (
-        "position_controllers/GripperActionController"
+        "effort_controllers/GripperActionController"
     )
 
     gripper = config[GRIPPER_ACTION_CONTROLLER_NAME]["ros__parameters"]
-    assert gripper["type"] == "position_controllers/GripperActionController"
     assert gripper["joint"] == FER_GRIPPER_JOINT_NAME
     assert gripper["allow_stalling"] is True
 
@@ -95,10 +99,12 @@ def test_franka_lfc_params_match_the_expected_fer_interface_layout() -> None:
     assert tuple(controller["chainable_controller"]["command_interfaces"]) == (
         effort_command_interfaces()
     )
+    # The real FCI applies gravity compensation, so the LFC removes it on real.
     assert controller["remove_gravity_compensation_effort"] is True
 
 
 def test_sim_lfc_params_only_override_direct_effort_gravity_handling() -> None:
+    # MuJoCo has no gravity compensation, so the sim keeps it in the LFC output.
     config = load_yaml("franka_lfc_params_sim.yaml")
 
     assert config == {
@@ -108,9 +114,8 @@ def test_sim_lfc_params_only_override_direct_effort_gravity_handling() -> None:
     }
 
 
-def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> None:
-    config = load_yaml("sbmpc_bridge.yaml")
-    params = config["sbmpc_lfc_bridge_node"]["ros__parameters"]
+def test_bridge_config_points_to_the_lfc_topics_and_fer_joint_names() -> None:
+    params = load_yaml("sbmpc_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
 
     assert params["sensor_topic"] == BRIDGE_SENSOR_TOPIC
     assert params["control_topic"] == BRIDGE_CONTROL_TOPIC
@@ -121,6 +126,7 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["max_sensor_age_sec"] == 0.12
     assert params["max_planner_output_age_sec"] == 0.12
     assert params["enable_nonzero_control"] is False
+    assert params["publish_rollout_markers"] is False
     assert params["planner_mode"] == "exact_feedback"
     assert params["planner_phase"] == "PREGRASP"
     assert params["planner_num_steps"] == 1
@@ -128,70 +134,9 @@ def test_bridge_params_file_points_to_the_lfc_topics_and_fer_joint_names() -> No
     assert params["planner_warmup_iterations"] == 3
 
 
-# The sbmpc OCP yaml (planner_ocp) owns the MPPI knobs. The bridge presets
-# must not duplicate them, otherwise the two repos drift apart.
-MPPI_KNOBS_OWNED_BY_OCP_YAML = (
-    "planner_num_samples",
-    "planner_horizon",
-    "planner_num_parallel_computations",
-    "planner_num_control_points",
-    "planner_temperature",
-    "planner_dt",
-    "planner_lambda_mpc",
-    "planner_noise_scale",
-    "planner_std_dev_scale",
-    "planner_smoothing",
-    "planner_num_gain_samples",
-)
-
-
-def test_bridge_presets_cover_feedforward_and_exact_feedback() -> None:
-    feedforward = load_yaml("sbmpc_bridge_feedforward.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    feedback = load_yaml("sbmpc_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    real_bringup = load_yaml("sbmpc_bridge_real_bringup.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
-
-    assert feedforward["planner_mode"] == "feedforward"
-    assert feedback["planner_mode"] == "exact_feedback"
-    assert real_bringup["planner_mode"] == "feedforward"
-    assert real_bringup["planner_compute_task_diagnostics"] is True
-    assert real_bringup["planner_ocp"] == "pregrasp"
-    assert real_bringup["max_sensor_age_sec"] == 0.20
-    assert real_bringup["max_planner_output_age_sec"] == 0.20
-    assert real_bringup["max_abs_torque_by_joint"] == [
-        87.0,
-        87.0,
-        87.0,
-        87.0,
-        12.0,
-        12.0,
-        12.0,
-    ]
-    assert real_bringup["torque_limit_mode"] == "reject"
-    assert real_bringup["max_gain_norm"] == 6.0
-    assert real_bringup["gain_limit_mode"] == "reject"
-    assert real_bringup["feedforward_position_gain"] == 0.0
-    assert real_bringup["feedforward_velocity_damping_gain"] == 2.0
-    assert real_bringup["emergency_hold_position_gain"] == 1.0
-    assert real_bringup["emergency_hold_velocity_gain"] == 2.0
-    assert real_bringup["hold_on_disarm_after_control"] is True
-    for params in (feedforward, feedback, real_bringup):
-        assert params["publish_rate_hz"] == 25.0
-        assert params["planner_ocp"] == "pregrasp"
-        for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML:
-            assert knob not in params, (
-                f"{knob} duplicates the sbmpc OCP yaml; tune it there instead."
-            )
-
-
-def test_mujoco_launch_partitions_simulation_and_bridge_cpus(monkeypatch) -> None:
-    launch_module = load_launch_module("sbmpc_franka_lfc_mujoco_sim.launch.py")
-    monkeypatch.setattr(
-        launch_module.os,
-        "sched_getaffinity",
-        lambda pid: {0, 1, 2, 3},
-    )
-
-    assert launch_module.simulation_cpu_prefixes() == (
-        "taskset -c 0,1",
-        "taskset -c 2,3",
-    )
+def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> None:
+    params = load_yaml("sbmpc_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML:
+        assert knob not in params, (
+            f"{knob} duplicates the sbmpc OCP yaml; tune it there instead."
+        )

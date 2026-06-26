@@ -5,8 +5,6 @@ import subprocess
 import time
 from typing import Callable, Iterable, Protocol
 
-from launch.substitutions import LaunchConfiguration
-
 from sbmpc_bringup.constants import (
     GRIPPER_ACTION_CONTROLLER_NAME,
     JOINT_STATE_BROADCASTER_NAME,
@@ -210,9 +208,9 @@ def wait_for_clean_sim_runtime(
 
 
 def assert_clean_ros_graph(context, *args, **kwargs) -> list[object]:
-    del args, kwargs
-    if _launch_bool(LaunchConfiguration("allow_existing_ros_graph").perform(context)):
-        return []
+    # Fail-closed: a stale ROS control graph or simulation process colliding with
+    # a fresh MuJoCo launch is a real footgun, so there is no bypass.
+    del context, args, kwargs
 
     result = wait_for_clean_sim_runtime()
     if not result.stale_nodes and not result.stale_processes:
@@ -228,14 +226,8 @@ def assert_clean_ros_graph(context, *args, **kwargs) -> list[object]:
         )
         stale_parts.append("processes: " + process_list)
     raise RuntimeError(
-        "Refusing to launch SB-MPC Franka simulation because an existing ROS "
-        "control graph or simulation process is already running or still visible "
+        "Refusing to launch SB-MPC Franka bringup because an existing ROS "
+        "control graph or SB-MPC process is already running or still visible "
         f"after waiting for graph settling: {'; '.join(stale_parts)}. Stop the "
-        "previous launch cleanly before retrying. "
-        "If this is intentional, pass "
-        "allow_existing_ros_graph:=true."
+        "previous launch cleanly before retrying."
     )
-
-
-def _launch_bool(value: object) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}

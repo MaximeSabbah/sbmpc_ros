@@ -37,6 +37,7 @@ def control_message() -> SimpleNamespace:
                 name=list(FER_ARM_JOINT_NAMES),
                 position=[0.1 * index for index in range(7)],
                 velocity=[-0.2 * index for index in range(7)],
+                effort=[],
             )
         ),
     )

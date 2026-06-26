@@ -16,6 +16,20 @@ SBMPC_JOINT_STATES_TOPIC = "/sbmpc/joint_states"
 SBMPC_DYNAMIC_JOINT_STATES_TOPIC = "/sbmpc/dynamic_joint_states"
 LFC_OUTPUT_JOINT_EFFORT_TOPIC = "/output_joint_effort"
 
+# Node / service names shared by the unified bringup launch and its helper nodes.
+CONTROLLER_MANAGER_NAME = "/controller_manager"
+BRIDGE_NODE_NAME = "/sbmpc_lfc_bridge_node"
+RESET_WORLD_SERVICE = "/mujoco_ros2_control_node/reset_world"
+
+# MuJoCo keyframe the hardware interface initializes to and that the warmup step
+# resets the world to before arming.
+DEFAULT_KEYFRAME = "home"
+
+# Controller-spawner switch timeout (seconds). Bounds LFC activation only, which
+# involves no JIT and must fail fast. The warmup wait, by contrast, is unbounded
+# (the launch passes --timeout-sec 0) because planner JIT can exceed minutes.
+CONTROLLER_SWITCH_TIMEOUT_SEC = 60
+
 
 def hardware_state_interfaces(
     joint_names: tuple[str, ...] = FER_ARM_JOINT_NAMES,
