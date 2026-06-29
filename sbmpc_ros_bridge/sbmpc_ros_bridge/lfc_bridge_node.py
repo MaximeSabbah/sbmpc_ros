@@ -142,7 +142,6 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_warmup_on_start", True)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
         self.declare_parameter("planner_mode", "")
-        self.declare_parameter("planner_phase", "PREGRASP")
         self.declare_parameter("planner_num_steps", 1)
         # The MPPI/solver knobs below default to "unset" (0 / empty): the
         # sbmpc OCP yaml (planner_ocp) is the single source of truth, and only
@@ -224,9 +223,12 @@ class SbMpcLfcBridgeNode(Node):
                 .integer_value
             ),
         )
+        # `phase` is intentionally not a ROS param: the controller owns its phase
+        # (the pregrasp controller ignores it; the pick-and-place state machine
+        # starts at PREGRASP and advances at runtime from the planner output's
+        # next_phase). The adapter still accepts a phase override for that path.
         planner_config = planner_config_overrides_from_values(
             mode=self.get_parameter("planner_mode").get_parameter_value().string_value,
-            phase=self.get_parameter("planner_phase").get_parameter_value().string_value,
             num_steps=(
                 self.get_parameter("planner_num_steps").get_parameter_value().integer_value
             ),

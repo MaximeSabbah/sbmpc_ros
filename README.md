@@ -1,89 +1,124 @@
 # sbmpc_ros
 
-ROS 2 wiring for the synchronous SB-MPC Franka pregrasp controller and `linear_feedback_controller`.
+ROS 2 wiring for the synchronous SB-MPC Franka pregrasp controller and the
+`linear_feedback_controller` (LFC). One launch file serves both the MuJoCo
+simulation and the real Franka, switched by `backend:=mujoco|real`.
 
-## Controller Contract
+## Controller contract
 
-The default bridge uses the same YAML-defined controller as `sbmpc/scripts/panda_pregrasp.py`:
+The bridge publishes one coherent planner output per cycle (feedforward `tau_ff`
+and feedback gain `K` together) at 25 Hz (`dt = 0.04 s`), retaining the shifted
+MPPI solution as the warm start. The MPPI knobs (horizon, samples, dt, smoothing,
+top-K gain samples) and the cost weights have a single source of truth:
+`sbmpc/sbmpc/ocp_configs/<planner_ocp>.yaml`. The bridge config only carries
+deployment settings.
 
-- requested publication rate: 25 Hz (`dt=0.04`)
-- MPPI horizon: 10
-- feedforward samples: 1024
-- same-cycle exact-gain samples: 512
-- one coherent planner output containing both `tau_ff` and `K`
-- shifted MPPI solution retained as the warm start
-- no rolling gain window, background gain worker, or trajectory reseeding
+Active files:
 
-The active files are:
-
-- `sbmpc_bringup/config/sbmpc_bridge.yaml`: exact feedback controller
-- `sbmpc_bringup/config/sbmpc_bridge_feedforward.yaml`: feedforward-only diagnostic baseline
-- `sbmpc_bringup/launch/sbmpc_pregrasp_demo.launch.py`: simulation, visualization, and validation entry point
+- `sbmpc_bringup/launch/sbmpc_franka_bringup.launch.py` — the one bringup launch (both backends).
+- `sbmpc_bringup/config/sbmpc_bridge.yaml` — bridge deployment config (topics, rate, mode, task, joint names).
+- `sbmpc_bringup/config/franka_controllers.yaml`, `franka_lfc_params.yaml` — controller + LFC params.
+- `sbmpc_bringup/config/franka_lfc_params_sim.yaml` — MuJoCo-only overlay (no gravity compensation; the real FCI does it).
 
 ## Build
 
 ```bash
 cd /workspace/ros2_ws
 source /opt/ros/jazzy/setup.bash
+source /opt/sbmpc_deps_ws/install/setup.bash
 colcon build --symlink-install --packages-select sbmpc_ros_bridge sbmpc_bringup
 source install/setup.bash
 ```
 
-## Live MuJoCo And RViz
+## Run (MuJoCo simulation)
+
+`backend` defaults to `mujoco`:
 
 ```bash
-cd /workspace/ros2_ws
-source install/setup.bash
-ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py
 ```
 
-This opens the live MuJoCo viewer immediately. RViz uses software OpenGL and is deliberately launched only after JAX warmup completes, avoiding the compilation-time GPU contention that previously crashed it. The validator prints task error, gain health, torque/velocity/position usage, and planner timing after 16 seconds; the simulation remains open for interactive tuning.
+The LFC activates in PD-hold while JAX compiles; the warmup step then resets
+MuJoCo to the `home` keyframe and arms the bridge only if requested (see
+**Arming**). RViz starts after warmup to avoid compile-time GPU contention.
 
-Useful arguments:
+Launch arguments (defaults in parentheses):
+
+| Arg | Default | Meaning |
+|-----|---------|---------|
+| `backend` | `mujoco` | `mujoco` (physics sim) or `real` (Franka FCI). |
+| `enable_nonzero_control` | `false` | If true, the warmup step arms the bridge (via the SetBool service) after warmup. |
+| `use_rviz` | `true` | Launch RViz. |
+| `headless` | `true` | Open the MuJoCo viewer when `false` (mujoco only). |
+| `robot_ip` | `172.17.1.2` | Franka FCI IP (real only). |
+| `publish_rollout_markers` | `false` | Publish MPPI rollout markers for RViz. |
+| `record_replay` | `""` | Path to write a replay JSON; empty disables recording. |
+| `use_gripper` | `true` | Actuate the gripper (sim: `gripper_action_controller`; real: `agimus_franka_gripper`). |
 
 ```bash
-# MuJoCo only
-ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py use_rviz:=false
-
-# Keep running without the automatic metric collector
-ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py validate:=false
+# Open the MuJoCo viewer, no RViz
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py headless:=false use_rviz:=false
 
 # Show representative MPPI end-effector rollouts in RViz
-ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py publish_rollout_markers:=true
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py publish_rollout_markers:=true
 ```
 
-## Headless Validation
+`planner_mode` is intentionally not a launch arg — it lives in `sbmpc_bridge.yaml`
+(`exact_feedback` by default; set to `feedforward` there for open-loop checks).
+
+## Run (real robot)
 
 ```bash
-ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py \
-  headless:=true \
-  use_rviz:=false \
-  max_p95_planning_ms:=0 \
-  shutdown_after_validation:=true
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py backend:=real robot_ip:=172.17.1.2
 ```
 
-Set `max_p95_planning_ms:=40` to enforce the strict 25 Hz controller budget. The MPPI knobs (horizon, samples, dt, smoothing, and the top-K `num_gain_samples`) live in one place: `sbmpc/sbmpc/ocp_configs/pregrasp.yaml`; the bridge presets only carry deployment settings (topics, rate, deadline, mode). With the yaml's 128 gain samples, the measured synchronous exact controller is ~32 ms per update (p95 ~34 ms) on the RTX 5000 Ada setup, within the 40 ms budget. Note: 256 gain samples measured p95 ~40 ms and 512 ~43 ms, so raising the top-K count breaks the 25 Hz budget on this GPU.
+The real and sim paths differ only where physics forces it (HW plugin, gravity
+compensation, no world-reset on hardware, the gripper FCI node). On real, the LFC
+activates up front and PD-holds the current position until you arm the MPC —
+verify that "it only holds, does not move" before the first armed run.
 
-## Record And Replay
+## Arming
 
-Recording remains available for repeatable RViz/offline inspection:
+Arming is an explicit, precondition-checked service on the bridge; the bridge
+always starts disarmed (LFC stays in PD-hold). Arming is rejected until planner
+warmup completes. The story is identical in sim and real.
 
 ```bash
-ros2 launch sbmpc_bringup sbmpc_pregrasp_demo.launch.py \
-  headless:=true \
-  use_rviz:=false \
-  record_replay:=true \
-  record_replay_output:=/tmp/sbmpc_pregrasp_replay.json
+# Arm
+ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"
+
+# Disarm (always allowed)
+ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: false}"
 ```
 
-Replay summary or visualization:
+Pass `enable_nonzero_control:=true` at launch to have the warmup step arm
+automatically once warmup finishes; otherwise warm up disarmed and arm manually.
+
+## Record and replay
 
 ```bash
-replay_sbmpc_trajectory /tmp/sbmpc_pregrasp_replay.json --dry-run
-replay_sbmpc_trajectory /tmp/sbmpc_pregrasp_replay.json
+# Record until shutdown (commanded LFC output is always captured; schema matches sim/real)
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py \
+  record_replay:=/tmp/sbmpc_replay.json
+
+# Summarize or visualize a recording
+replay_sbmpc_trajectory /tmp/sbmpc_replay.json --dry-run
+replay_sbmpc_trajectory /tmp/sbmpc_replay.json
 ```
 
-## Planner Smoke
+## Validate a live simulation
+
+`validate_sbmpc_sim` is a standalone tool (not part of the launch). Start the
+sim, then in another shell:
+
+```bash
+ros2 run sbmpc_bringup validate_sbmpc_sim --assert-stable
+```
+
+It reads `/sbmpc/diagnostics` and `/joint_states` and reports task error, gain
+health, and planner timing over the run window (`--duration-sec`, default 16 s).
+
+## Planner smoke (no ROS graph)
 
 ```bash
 /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
@@ -94,24 +129,6 @@ replay_sbmpc_trajectory /tmp/sbmpc_pregrasp_replay.json
 
 The MPPI knobs come from `sbmpc/sbmpc/ocp_configs/pregrasp.yaml` (override with
 `--planner-ocp` or the individual `--planner-*` flags only when experimenting).
-
-## Real Robot
-
-The real launch uses the same bridge configuration and readiness sequence:
-
-```bash
-ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py
-
-# With RViz rollout visualization enabled for MPPI inspection
-ros2 launch sbmpc_bringup sbmpc_franka_lfc_real.launch.py publish_rollout_markers:=true
-```
-
-Use `enable_nonzero_control:=false` for a dry bringup that warms the planner and keeps LFC in PD hold. The ROS simulation behavior and timing should be accepted before enabling commands on hardware.
-
-In simulation, the LFC is active in PD hold while JAX compiles. After warmup,
-the bringup resets MuJoCo to the `home` keyframe and only then applies the
-requested `enable_nonzero_control` value, so the robot is never left
-uncontrolled during startup.
 
 ## Tests
 

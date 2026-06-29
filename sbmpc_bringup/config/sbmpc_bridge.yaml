@@ -6,11 +6,10 @@ sbmpc_lfc_bridge_node:
     # Keep the publish rate aligned with the OCP yaml's mpc.dt (0.04 s -> 25 Hz).
     publish_rate_hz: 25.0
     planner_mode: exact_feedback # exact_feedback or feedforward
-    planner_phase: PREGRASP
     planner_num_steps: 1
     planner_warmup_iterations: 3
-    # Opt in from launch with publish_rollout_markers:=true for RViz MPPI debug.
-    publish_rollout_markers: false
+    # Rollout markers are toggled by the launch arg publish_rollout_markers:=true
+    # (RViz MPPI debug); the keys below only style them when enabled.
     rollout_marker_topic: /sbmpc/trajectory_markers
     rollout_marker_frame_id: base
     # Draw sample 0 plus the lowest-cost sampled MPPI rollouts, not all 1024.

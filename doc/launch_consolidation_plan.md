@@ -279,14 +279,14 @@ emergency-PD-hold (`_publish_emergency_hold`, `hold_on_disarm_after_control`, `e
 
 ## 8. Phase 4 — Docs & housekeeping
 
-- [ ] **4.1** Update launch commands in `sbmpc_ros/README.md`, `sbmpc_containers/README.md`, and the
-  `sbmpc/docs/*.md` references to `ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py backend:=...`.
-  **Also (Phase 2 doc debt):** replace any "set the `enable_nonzero_control` parameter to arm"
-  instructions with the service-call workflow —
-  `ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"`
-  — and state that arming is rejected until planner warmup completes. Make the arming story
-  identical wording for sim and real.
-- [ ] **4.2** Update this plan's checkboxes; note any deviations.
+- [x] **4.1** Rewrote `sbmpc_ros/README.md` to the current codebase: the one
+  `sbmpc_franka_bringup.launch.py backend:=mujoco|real`, the 8-arg table, the service-arming workflow
+  (`ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"`,
+  rejected pre-warmup, identical sim/real), `record_replay:=<path>`, the standalone `validate_sbmpc_sim`
+  tool, and the current 4-file config set (no feedforward yaml). **Scope narrowed at user direction:**
+  the `sbmpc/docs/*.md` roadmaps were declared outdated and left untouched; `sbmpc_containers/README.md`
+  still has stale launch commands (offered, pending user go-ahead).
+- [x] **4.2** Plan checkboxes updated; deviations recorded in the Phase 3 blockquote and here.
 
 ---
 
