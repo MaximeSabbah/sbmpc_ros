@@ -111,9 +111,9 @@ def test_declares_exactly_the_eight_arguments_with_expected_defaults() -> None:
 
     assert set(defaults) == EXPECTED_ARGUMENTS
     assert defaults["backend"] == "mujoco"
-    assert defaults["enable_nonzero_control"] == "false"
+    assert defaults["enable_nonzero_control"] == "true"
     assert defaults["use_rviz"] == "true"
-    assert defaults["headless"] == "true"
+    assert defaults["headless"] == "false"
     assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["publish_rollout_markers"] == "false"
     assert defaults["record_replay"] == ""

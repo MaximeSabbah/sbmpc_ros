@@ -421,10 +421,11 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "enable_nonzero_control",
-                default_value="false",
+                default_value="true",
                 description=(
-                    "Arm the bridge (send nonzero control) after warmup. Disarmed "
-                    "otherwise; the LFC PD-holds the start pose."
+                    "Arm the bridge (send nonzero control) after warmup. Default "
+                    "true so the sim runs out of the box. On real hardware pass "
+                    "enable_nonzero_control:=false for a disarmed PD-hold bringup."
                 ),
             ),
             DeclareLaunchArgument(
@@ -434,8 +435,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "headless",
-                default_value="true",
-                description="mujoco only: open the MuJoCo viewer when false. Ignored on real.",
+                default_value="false",
+                description="mujoco only: open the MuJoCo viewer (default). Set true to run without it. Ignored on real.",
             ),
             DeclareLaunchArgument(
                 "robot_ip",

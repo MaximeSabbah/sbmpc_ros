@@ -32,44 +32,46 @@ source install/setup.bash
 
 ## Run (MuJoCo simulation)
 
-`backend` defaults to `mujoco`:
+`backend` defaults to `mujoco`, the viewer opens, and the bridge arms itself once
+warmup finishes — so the simulation runs out of the box. The one command that
+loads the sim, shows the MPPI rollouts, and starts moving after warmup:
 
 ```bash
-ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py publish_rollout_markers:=true
 ```
 
-The LFC activates in PD-hold while JAX compiles; the warmup step then resets
-MuJoCo to the `home` keyframe and arms the bridge only if requested (see
-**Arming**). RViz starts after warmup to avoid compile-time GPU contention.
+The LFC activates in PD-hold while JAX compiles (~20 s); the warmup step then
+resets MuJoCo to the `home` keyframe and arms the bridge. RViz starts after warmup
+to avoid compile-time GPU contention.
 
 Launch arguments (defaults in parentheses):
 
 | Arg | Default | Meaning |
 |-----|---------|---------|
 | `backend` | `mujoco` | `mujoco` (physics sim) or `real` (Franka FCI). |
-| `enable_nonzero_control` | `false` | If true, the warmup step arms the bridge (via the SetBool service) after warmup. |
+| `enable_nonzero_control` | `true` | Arm the bridge (via the SetBool service) after warmup. **Set `false` on real hardware for a disarmed bringup.** |
 | `use_rviz` | `true` | Launch RViz. |
-| `headless` | `true` | Open the MuJoCo viewer when `false` (mujoco only). |
+| `headless` | `false` | Run mujoco without the viewer when `true` (mujoco only). |
 | `robot_ip` | `172.17.1.2` | Franka FCI IP (real only). |
 | `publish_rollout_markers` | `false` | Publish MPPI rollout markers for RViz. |
 | `record_replay` | `""` | Path to write a replay JSON; empty disables recording. |
 | `use_gripper` | `true` | Actuate the gripper (sim: `gripper_action_controller`; real: `agimus_franka_gripper`). |
 
 ```bash
-# Open the MuJoCo viewer, no RViz
-ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py headless:=false use_rviz:=false
-
-# Show representative MPPI end-effector rollouts in RViz
-ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py publish_rollout_markers:=true
+# Headless, disarmed sim (e.g. for recording or CI)
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py \
+  headless:=true use_rviz:=false enable_nonzero_control:=false
 ```
-
-`planner_mode` is intentionally not a launch arg — it lives in `sbmpc_bridge.yaml`
-(`exact_feedback` by default; set to `feedforward` there for open-loop checks).
 
 ## Run (real robot)
 
+`enable_nonzero_control` defaults to `true`, so on real hardware pass
+`enable_nonzero_control:=false` for a disarmed bringup and arm explicitly once
+you have verified the PD-hold (see **Arming**):
+
 ```bash
-ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py backend:=real robot_ip:=172.17.1.2
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py \
+  backend:=real robot_ip:=172.17.1.2 enable_nonzero_control:=false
 ```
 
 The real and sim paths differ only where physics forces it (HW plugin, gravity
@@ -79,9 +81,11 @@ verify that "it only holds, does not move" before the first armed run.
 
 ## Arming
 
-Arming is an explicit, precondition-checked service on the bridge; the bridge
-always starts disarmed (LFC stays in PD-hold). Arming is rejected until planner
-warmup completes. The story is identical in sim and real.
+Arming is an explicit, precondition-checked service on the bridge. The bridge
+*process* starts disarmed (LFC PD-holds); the warmup step then arms it via the
+service when `enable_nonzero_control` is true (the default in sim, opt-in on
+real). Arming is rejected until planner warmup completes. Arm or disarm manually
+at any time:
 
 ```bash
 # Arm
@@ -90,10 +94,6 @@ ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBoo
 # Disarm (always allowed)
 ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: false}"
 ```
-
-Pass `enable_nonzero_control:=true` at launch to have the warmup step arm
-automatically once warmup finishes; otherwise warm up disarmed and arm manually.
-
 ## Record and replay
 
 ```bash
