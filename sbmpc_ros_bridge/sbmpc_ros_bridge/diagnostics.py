@@ -37,6 +37,8 @@ class BridgeDiagnostics:
     last_orientation_error: float | None
     last_object_error: float | None
     last_goal_position: list[float] | None
+    last_reference_q: list[float] | None
+    last_reference_v: list[float] | None
     last_control_max_abs_feedforward: float | None
     last_control_gain_norm: float | None
     last_error: str

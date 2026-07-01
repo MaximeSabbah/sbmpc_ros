@@ -42,6 +42,8 @@ class FakePlannerOutput:
     phase: str = "PREGRASP"
     next_phase: str = "DESCEND"
     diagnostics: object | None = None
+    reference_q: np.ndarray | None = None
+    reference_v: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -60,13 +62,30 @@ class FakePlannerDiagnostics:
 
 
 class FakePlanner:
-    def __init__(self, *, step_sleep_sec: float = 0.0, on_step=None) -> None:
+    def __init__(
+        self,
+        *,
+        step_sleep_sec: float = 0.0,
+        on_step=None,
+        gain_mode: str = "exact_feedback",
+        feedback_gain: np.ndarray | None = None,
+        reference_q: np.ndarray | None = None,
+        reference_v: np.ndarray | None = None,
+    ) -> None:
         self.warmup_calls = 0
         self.step_calls = 0
         self.close_calls = 0
         self.step_inputs = []
         self.step_sleep_sec = step_sleep_sec
         self.on_step = on_step
+        self.gain_mode = gain_mode
+        self.feedback_gain = (
+            np.eye(7, 14, dtype=np.float64)
+            if feedback_gain is None
+            else np.asarray(feedback_gain, dtype=np.float64)
+        )
+        self.reference_q = reference_q
+        self.reference_v = reference_v
 
     def warmup(self) -> FakePlannerOutput:
         self.warmup_calls += 1
@@ -88,8 +107,10 @@ class FakePlanner:
             self.on_step()
         return FakePlannerOutput(
             tau_ff=np.asarray([0.5] * 7, dtype=np.float64),
-            K=np.eye(7, 14, dtype=np.float64),
-            diagnostics=FakePlannerDiagnostics(),
+            K=self.feedback_gain,
+            diagnostics=FakePlannerDiagnostics(gain_mode=self.gain_mode),
+            reference_q=self.reference_q,
+            reference_v=self.reference_v,
         )
 
     def gravity_torques(self, q) -> np.ndarray:
@@ -221,7 +242,9 @@ def teardown_executor(executor: SingleThreadedExecutor, *nodes: Node) -> None:
 
 
 def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> None:
-    planner = FakePlanner()
+    reference_q = np.asarray([0.1 * index for index in range(7)], dtype=np.float64)
+    reference_v = np.asarray([-0.2 * index for index in range(7)], dtype=np.float64)
+    planner = FakePlanner(reference_q=reference_q, reference_v=reference_v)
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
     bridge._control_enabled = True
     sensor_publisher = FakeSensorPublisher(enabled=False)
@@ -260,6 +283,8 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.last_planner_step_wall_time_ms is not None
         assert snapshot.last_position_error == pytest.approx(0.25)
         assert snapshot.last_goal_position == [0.55, 0.0, 0.4]
+        assert snapshot.last_reference_q == pytest.approx(reference_q.tolist())
+        assert snapshot.last_reference_v == pytest.approx(reference_v.tolist())
         assert snapshot.planner_mode == "exact_feedback"
         assert snapshot.last_planner_command_time_ms == pytest.approx(9.5)
     finally:
@@ -405,7 +430,10 @@ def test_fake_ros_loop_does_not_recover_after_transient_bad_gain() -> None:
 
 
 def test_fake_ros_loop_adds_feedforward_velocity_damping_with_correct_sign() -> None:
-    planner = FakePlanner()
+    planner = FakePlanner(
+        gain_mode="feedforward",
+        feedback_gain=np.zeros((7, 14), dtype=np.float64),
+    )
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
     bridge._control_enabled = True
     bridge.set_parameters(
@@ -434,6 +462,33 @@ def test_fake_ros_loop_adds_feedforward_velocity_damping_with_correct_sign() -> 
         measured.joint_state.position = list(control.initial_state.joint_state.position)
         estimate = estimate_lfc_command(control, measured)
         assert estimate.feedback_effort[1] == pytest.approx(-1.0)
+    finally:
+        teardown_executor(executor, bridge, sensor_publisher, collector)
+
+
+def test_feedforward_diagonal_helper_ignores_exact_feedback_mode() -> None:
+    planner = FakePlanner(
+        gain_mode="exact_feedback",
+        feedback_gain=np.zeros((7, 14), dtype=np.float64),
+    )
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    bridge._control_enabled = True
+    bridge.set_parameters(
+        [
+            Parameter("feedforward_position_gain", Parameter.Type.DOUBLE, 3.0),
+            Parameter("feedforward_velocity_damping_gain", Parameter.Type.DOUBLE, 2.0),
+        ]
+    )
+    sensor_publisher = FakeSensorPublisher(enabled=True)
+    collector = ControlCollector()
+    executor = build_executor(bridge, sensor_publisher, collector)
+
+    try:
+        spin_for(executor, 0.20)
+
+        assert collector.controls
+        gain = float64_multi_array_to_numpy(collector.controls[-1].feedback_gain)
+        np.testing.assert_allclose(gain, np.zeros((7, 14), dtype=np.float64))
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

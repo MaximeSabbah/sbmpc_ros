@@ -6,6 +6,11 @@ sbmpc_lfc_bridge_node:
     # Keep the publish rate aligned with the OCP yaml's mpc.dt (0.04 s -> 25 Hz).
     publish_rate_hz: 25.0
     planner_mode: exact_feedback # exact_feedback or feedforward
+    # Optional feedforward-mode-only diagonal LFC helper around the planner's
+    # current trajectory reference. Keep disabled by default so feedforward
+    # audits measure the native MPC torque, not an added tracking controller.
+    feedforward_position_gain: 0.0
+    feedforward_velocity_damping_gain: 0.0
     planner_num_steps: 1
     planner_warmup_iterations: 3
     # Rollout markers are toggled by the launch arg publish_rollout_markers:=true

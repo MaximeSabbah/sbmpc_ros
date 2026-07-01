@@ -316,6 +316,8 @@ class SbMpcLfcBridgeNode(Node):
         self._last_orientation_error: float | None = None
         self._last_object_error: float | None = None
         self._last_goal_position: list[float] | None = None
+        self._last_reference_q: list[float] | None = None
+        self._last_reference_v: list[float] | None = None
         self._last_rollout_marker_publish_wall_sec: float | None = None
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
@@ -522,6 +524,8 @@ class SbMpcLfcBridgeNode(Node):
             last_orientation_error=self._last_orientation_error,
             last_object_error=self._last_object_error,
             last_goal_position=self._last_goal_position,
+            last_reference_q=self._last_reference_q,
+            last_reference_v=self._last_reference_v,
             last_control_max_abs_feedforward=self._last_control_max_abs_feedforward,
             last_control_gain_norm=self._last_control_gain_norm,
             last_error=self._last_error,
@@ -623,7 +627,10 @@ class SbMpcLfcBridgeNode(Node):
             planner_output,
             latest.planner_input,
         )
-        control = self._apply_feedforward_feedback_regularization(control)
+        control = self._apply_feedforward_feedback_regularization(
+            control,
+            planner_output=planner_output,
+        )
         control.header = deepcopy(planner_input.sensor.header)
         self._last_control_prepare_time_ms = 1000.0 * (
             perf_counter() - prepare_start
@@ -912,6 +919,8 @@ class SbMpcLfcBridgeNode(Node):
     def _apply_feedforward_feedback_regularization(
         self,
         control: Control,
+        *,
+        planner_output: object | None = None,
     ) -> Control:
         position_gain = self._nonnegative_double_parameter(
             "feedforward_position_gain"
@@ -921,8 +930,16 @@ class SbMpcLfcBridgeNode(Node):
         )
         if position_gain <= 0.0 and velocity_gain <= 0.0:
             return control
+        if self._planner_output_gain_mode(planner_output) != "feedforward":
+            return control
 
         joint_count = len(control.initial_state.joint_state.position)
+        reference_state = self._planner_reference_state(planner_output, joint_count)
+        if reference_state is not None:
+            q_ref, v_ref = reference_state
+            control.initial_state.joint_state.position = q_ref.tolist()
+            control.initial_state.joint_state.velocity = v_ref.tolist()
+
         gain = float64_multi_array_to_numpy(control.feedback_gain).copy()
         expected_shape = (joint_count, 2 * joint_count)
         if gain.shape != expected_shape:
@@ -936,10 +953,42 @@ class SbMpcLfcBridgeNode(Node):
             gain[:, joint_count:] += (
                 np.eye(joint_count, dtype=np.float64) * velocity_gain
             )
-            control.initial_state.joint_state.velocity = [0.0] * joint_count
+            if reference_state is None:
+                control.initial_state.joint_state.velocity = [0.0] * joint_count
 
         control.feedback_gain = numpy_to_float64_multi_array(gain)
         return control
+
+    def _planner_output_gain_mode(self, planner_output: object | None) -> str | None:
+        diagnostics = getattr(planner_output, "diagnostics", None)
+        mode = getattr(diagnostics, "gain_mode", None)
+        if mode is None:
+            mode = self._planner_mode
+        if mode is None:
+            return None
+        return str(mode).strip().lower()
+
+    @staticmethod
+    def _planner_reference_state(
+        planner_output: object | None,
+        joint_count: int,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        if planner_output is None:
+            return None
+        q_ref = getattr(planner_output, "reference_q", None)
+        v_ref = getattr(planner_output, "reference_v", None)
+        if q_ref is None or v_ref is None:
+            return None
+        q = np.asarray(q_ref, dtype=np.float64).reshape(-1)
+        v = np.asarray(v_ref, dtype=np.float64).reshape(-1)
+        if q.shape != (joint_count,) or v.shape != (joint_count,):
+            raise UnsafeControlError(
+                "planner reference state is incompatible with feedforward tracking: "
+                f"q_ref={q.shape}, v_ref={v.shape}, expected ({joint_count},)."
+            )
+        if not np.all(np.isfinite(q)) or not np.all(np.isfinite(v)):
+            raise UnsafeControlError("planner reference state contains non-finite values.")
+        return q, v
 
     def _latch_fatal_error(self, message: str) -> None:
         with self._fatal_error_lock:
@@ -1037,6 +1086,14 @@ class SbMpcLfcBridgeNode(Node):
         )
         self._last_planner_command_time_ms = self._maybe_float(
             getattr(diagnostics, "planner_command_time_ms", None)
+        )
+        self._last_reference_q = self._maybe_float_vector(
+            getattr(planner_output, "reference_q", None),
+            expected_size=len(self._joint_names),
+        )
+        self._last_reference_v = self._maybe_float_vector(
+            getattr(planner_output, "reference_v", None),
+            expected_size=len(self._joint_names),
         )
 
         goal_position = getattr(diagnostics, "goal_position", None)
@@ -1214,6 +1271,21 @@ class SbMpcLfcBridgeNode(Node):
         if value is None:
             return None
         return float(value)
+
+    @staticmethod
+    def _maybe_float_vector(
+        value: object | None,
+        *,
+        expected_size: int | None = None,
+    ) -> list[float] | None:
+        if value is None:
+            return None
+        array = np.asarray(value, dtype=np.float64).reshape(-1)
+        if expected_size is not None and array.shape != (expected_size,):
+            return None
+        if not np.all(np.isfinite(array)):
+            return None
+        return array.tolist()
 
     @staticmethod
     def _maybe_text(value: object | None) -> str | None:

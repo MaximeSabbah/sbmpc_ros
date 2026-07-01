@@ -5,12 +5,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES
+from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES, SBMPC_JOINT_STATES_TOPIC
 from sbmpc_bringup.replay import (
     _control_record_from_message,
     _print_record_summary,
     summarize_payload,
 )
+
+
+def test_recorder_default_joint_states_topic_matches_sim_broadcaster() -> None:
+    assert SBMPC_JOINT_STATES_TOPIC == "/joint_states"
 
 
 def stamp(sec: int = 1, nanosec: int = 2) -> SimpleNamespace:

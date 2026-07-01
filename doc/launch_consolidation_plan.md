@@ -301,7 +301,7 @@ diff (single-source generation vs. a parity test). Not started here.
 ## 10. Recorded controller-debug signal set (reference)
 
 When `record_replay` is on, the replay JSON contains (timestamped, identical schema both backends):
-measured state q/dq/τ (`/sbmpc/joint_states`, `/sensor`); **LFC input** `/control` (MPC feedforward
+measured state q/dq/τ (`/joint_states`, `/sensor`); **LFC input** `/control` (MPC feedforward
 τ, feedback gain K, reference x₀); **LFC output / commanded torque** `/output_joint_effort`;
 diagnostics/timing (`/sbmpc/diagnostics`: planning ms, deadline misses, accept/reject counts);
 and, on real only, measured link-side τ_J (`franka_robot_state_broadcaster/measured_joint_states`).

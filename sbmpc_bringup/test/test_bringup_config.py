@@ -122,10 +122,12 @@ def test_bridge_config_points_to_the_lfc_topics_and_fer_joint_names() -> None:
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 25.0
-    assert params["planner_mode"] == "exact_feedback"
+    assert params["planner_mode"] == "feedforward"
     assert params["planner_num_steps"] == 1
     assert params["planner_ocp"] == "pregrasp"
     assert params["planner_warmup_iterations"] == 3
+    assert params["feedforward_position_gain"] == 0.0
+    assert params["feedforward_velocity_damping_gain"] == 0.0
 
 
 def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> None:
