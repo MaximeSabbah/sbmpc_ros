@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 import os
@@ -54,16 +53,12 @@ from sbmpc_ros_bridge.safety import (
 CONTROL_QOS_DEPTH = 10
 SENSOR_QOS_DEPTH = 1
 CONTROLLER_MANAGER_CPU_COUNT = 2
-# How many recent planner outputs to retain so the publish path can replay an
-# aged one when control_output_delay_sec models the real loop latency in sim.
-PLANNER_OUTPUT_HISTORY_LEN = 64
 
 
 @dataclass(frozen=True, slots=True)
 class _LatestPlannerOutput:
     planner_input: PlannerInput
     planner_output: object
-    created_at_sec: float
 
 
 class _NoopPlannerAdapter:
@@ -128,11 +123,6 @@ class SbMpcLfcBridgeNode(Node):
             "planner_deadline_sec",
             0.0 if planner_deadline_sec is None else planner_deadline_sec,
         )
-        # Models real control-loop transport latency (sensor->plan->publish) by
-        # replaying an aged planner output. 0.0 (real-robot default) is a no-op;
-        # the MuJoCo sim sets it so the simulated closed loop sees the same
-        # staleness as hardware and tuning transfers.
-        self.declare_parameter("control_output_delay_sec", 0.0)
         self.declare_parameter("feedforward_position_gain", 0.0)
         self.declare_parameter("feedforward_velocity_damping_gain", 0.0)
         self.declare_parameter("emergency_hold_position_gain", 1.0)
@@ -208,9 +198,6 @@ class SbMpcLfcBridgeNode(Node):
         self._last_sensor: Sensor | None = None
         self._latest_planner_output_lock = Lock()
         self._latest_planner_output: _LatestPlannerOutput | None = None
-        self._planner_output_history: deque[tuple[float, _LatestPlannerOutput]] = deque(
-            maxlen=PLANNER_OUTPUT_HISTORY_LEN
-        )
         self._fatal_error_lock = Lock()
         self._fatal_error: str | None = None
         self._planner_request = Event()
@@ -608,13 +595,8 @@ class SbMpcLfcBridgeNode(Node):
         self._raise_if_fatal()
 
     def _publish_latest_control(self, planner_input: PlannerInput) -> bool:
-        delay_sec = self._control_output_delay_sec()
-        now_sec = self._ros_time_sec() if delay_sec > 0.0 else 0.0
         with self._latest_planner_output_lock:
-            if delay_sec > 0.0:
-                latest = self._select_delayed_planner_output(now_sec, delay_sec)
-            else:
-                latest = self._latest_planner_output
+            latest = self._latest_planner_output
         if latest is None:
             return False
 
@@ -645,7 +627,6 @@ class SbMpcLfcBridgeNode(Node):
     def _clear_latest_planner_output(self) -> None:
         with self._latest_planner_output_lock:
             self._latest_planner_output = None
-            self._planner_output_history.clear()
 
     def _store_latest_planner_output(
         self, planner_input: PlannerInput, planner_output: object
@@ -653,43 +634,9 @@ class SbMpcLfcBridgeNode(Node):
         entry = _LatestPlannerOutput(
             planner_input=planner_input,
             planner_output=planner_output,
-            created_at_sec=perf_counter(),
         )
-        created_ros_sec = self._ros_time_sec()
         with self._latest_planner_output_lock:
             self._latest_planner_output = entry
-            self._planner_output_history.append((created_ros_sec, entry))
-
-    def _ros_time_sec(self) -> float:
-        return self.get_clock().now().nanoseconds * 1e-9
-
-    def _control_output_delay_sec(self) -> float:
-        value = float(
-            self.get_parameter("control_output_delay_sec")
-            .get_parameter_value()
-            .double_value
-        )
-        return max(0.0, value)
-
-    def _select_delayed_planner_output(
-        self, now_sec: float, delay_sec: float
-    ) -> _LatestPlannerOutput | None:
-        """Return the freshest stored planner output at least ``delay_sec`` old.
-
-        Caller must hold ``self._latest_planner_output_lock``. The history is in
-        chronological order, so we keep the newest entry whose age has reached
-        the modelled transport delay. This makes the simulated control loop
-        experience the same sensor->plan->publish staleness as the real robot;
-        with ``control_output_delay_sec``=0 this path is never taken and the
-        real-robot behaviour is unchanged.
-        """
-        selected: _LatestPlannerOutput | None = None
-        for created_sec, entry in self._planner_output_history:
-            if now_sec - created_sec >= delay_sec:
-                selected = entry
-            else:
-                break
-        return selected
 
     def _run_planner_worker(self) -> None:
         while not self._closing.is_set():
@@ -727,6 +674,7 @@ class SbMpcLfcBridgeNode(Node):
                 self._last_error = ""
                 self._state = "running"
                 self._observe_planning_deadline(step_wall_sec)
+                self._log_solve(step_wall_sec, planner_input, planner_output)
                 self._publish_rollout_markers(planner_input, planner_output)
             except UnsafeControlError as exc:
                 self._rejected_planner_output_count += 1
@@ -821,6 +769,65 @@ class SbMpcLfcBridgeNode(Node):
         except UnsafeControlError as exc:
             self._last_error = str(exc)
             self.get_logger().warn(str(exc))
+
+    def _log_solve(
+        self,
+        step_wall_sec: float,
+        planner_input: PlannerInput,
+        planner_output: object,
+    ) -> None:
+        """Log one line per planner solve with the time the controller spent.
+
+        Runs on the planner worker thread (off the 25 Hz publish path) and is
+        called AFTER ``step_wall_sec`` is measured, so the optional EE-error FK
+        below never inflates ``planning_time_ms``, the reported wall time, or the
+        control publish path.
+        """
+        diagnostics = getattr(planner_output, "diagnostics", None)
+        budget_ms = 1000.0 * self._deadline_monitor.max_planning_duration_sec
+        wall_ms = 1000.0 * step_wall_sec
+
+        def fmt(value: object, spec: str = "{:.1f}") -> str:
+            return "n/a" if value is None else spec.format(float(value))
+
+        over = " OVER" if budget_ms > 0.0 and wall_ms > budget_ms else ""
+        self.get_logger().info(
+            f"[sbmpc solve #{self._planner_step_count}] "
+            f"wall {wall_ms:.1f}/{budget_ms:.1f}ms{over} | "
+            f"plan {fmt(getattr(diagnostics, 'planning_time_ms', None))} "
+            f"(cmd {fmt(getattr(diagnostics, 'planner_command_time_ms', None))}, "
+            f"prep {fmt(getattr(diagnostics, 'planner_prepare_time_ms', None))}) | "
+            f"|tau|={fmt(getattr(diagnostics, 'torque_norm', None))} "
+            f"|gain|={fmt(getattr(diagnostics, 'gain_norm', None))} "
+            f"eeErr={fmt(self._ee_position_error(planner_input, diagnostics), '{:.4f}')}m | "
+            f"deadline_miss={self._deadline_monitor.deadline_miss_count}"
+        )
+
+    def _ee_position_error(
+        self,
+        planner_input: PlannerInput,
+        diagnostics: object,
+    ) -> float | None:
+        """Distance from the measured EE to the goal (one jitted MJX FK).
+
+        Best-effort and never raises: a logging metric must not fault the loop.
+        """
+        goal = getattr(diagnostics, "goal_position", None)
+        ee_position = getattr(self._planner, "ee_position", None)
+        if goal is None or not callable(ee_position):
+            return None
+        try:
+            ee = ee_position(planner_input.q)
+            if ee is None:
+                return None
+            return float(
+                np.linalg.norm(
+                    np.asarray(ee, dtype=np.float64)
+                    - np.asarray(goal, dtype=np.float64)
+                )
+            )
+        except Exception:
+            return None
 
     def _publish_emergency_hold(
         self,

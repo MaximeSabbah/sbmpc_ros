@@ -223,6 +223,19 @@ class SbMpcPlannerAdapter:
             return None
         return predict_state(planner_input.q, planner_input.v, tau_ff, duration_sec)
 
+    def ee_position(self, q: np.ndarray) -> np.ndarray | None:
+        """End-effector position for a joint vector (jitted MJX FK, functional).
+
+        Used off the control hot path (per-solve status log). Returns ``None``
+        if the controller does not expose a planner with ``ee_position``.
+        """
+        planner = getattr(self._controller, "planner", None)
+        ee_position = getattr(planner, "ee_position", None)
+        if not callable(ee_position):
+            return None
+        result = ee_position(np.asarray(q, dtype=np.float32).reshape(-1))
+        return np.asarray(result, dtype=np.float64).reshape(-1)
+
     def gravity_torques(self, q: np.ndarray) -> np.ndarray | None:
         planner = getattr(self._controller, "planner", None)
         gravity_torques = getattr(planner, "gravity_torques", None)

@@ -396,8 +396,16 @@ def launch_setup(context, *args, **kwargs):
         f"record_replay={record_replay_path or '(off)'}"
     )
 
+    telemetry_hint = (
+        "SB-MPC live telemetry: the bridge logs one line per planner solve "
+        "(solve wall time vs deadline, plan/cmd/prep ms, |tau|, |gain|, "
+        f"deadline_miss) to this console; full per-step diagnostics stream on "
+        f"{BRIDGE_DIAGNOSTICS_TOPIC} (ros2 topic echo)."
+    )
+
     return [
         LogInfo(msg=summary),
+        LogInfo(msg=telemetry_hint),
         robot_state_publisher,
         control_node,
         rviz,
