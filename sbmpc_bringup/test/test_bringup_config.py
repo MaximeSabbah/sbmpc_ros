@@ -23,12 +23,14 @@ from sbmpc_bringup.constants import (
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 
 # One config set serves both backends: shared controllers + LFC params, one
-# bridge config, and a single physical sim overlay (gravity compensation).
+# bridge config per planner (sbmpc | hydrax), and a single physical sim
+# overlay (gravity compensation).
 EXPECTED_CONFIG_FILES = {
     "franka_controllers.yaml",
     "franka_lfc_params.yaml",
     "franka_lfc_params_sim.yaml",
     "sbmpc_bridge.yaml",
+    "hydrax_bridge.yaml",
 }
 
 # The sbmpc OCP yaml (planner_ocp) owns the MPPI knobs. The bridge config must
@@ -122,9 +124,27 @@ def test_bridge_config_points_to_the_lfc_topics_and_fer_joint_names() -> None:
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 25.0
-    assert params["planner_mode"] == "feedforward"
+    # exact_feedback is the deployed sbmpc mode (2026-07-01 direction); this
+    # assertion had drifted from the committed yaml while the suite was not
+    # collecting under the pixi runtime (pytest plugin incompatibility).
+    assert params["planner_mode"] == "exact_feedback"
     assert params["planner_num_steps"] == 1
     assert params["planner_ocp"] == "pregrasp"
+    assert params["planner_warmup_iterations"] == 3
+    assert params["feedforward_position_gain"] == 0.0
+    assert params["feedforward_velocity_damping_gain"] == 0.0
+
+
+def test_hydrax_bridge_config_is_transport_only() -> None:
+    params = load_yaml("hydrax_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
+
+    assert params["sensor_topic"] == BRIDGE_SENSOR_TOPIC
+    assert params["control_topic"] == BRIDGE_CONTROL_TOPIC
+    assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
+    assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
+    assert params["publish_rate_hz"] == 25.0
+    assert params["planner_impl"] == "hydrax"
+    assert params["planner_mode"] == "feedforward"
     assert params["planner_warmup_iterations"] == 3
     assert params["feedforward_position_gain"] == 0.0
     assert params["feedforward_velocity_damping_gain"] == 0.0
@@ -135,4 +155,14 @@ def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> 
     for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML:
         assert knob not in params, (
             f"{knob} duplicates the sbmpc OCP yaml; tune it there instead."
+        )
+
+
+def test_hydrax_bridge_config_does_not_duplicate_the_hydrax_tuning_surface() -> None:
+    # The hydrax OCP tuning lives exclusively in hydrax/configs/pregrasp.yaml;
+    # the bridge preset is transport wiring only.
+    params = load_yaml("hydrax_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
+    for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML + ("planner_cost_weights", "planner_ocp"):
+        assert knob not in params, (
+            f"{knob} duplicates hydrax/configs/pregrasp.yaml; tune it there instead."
         )

@@ -19,6 +19,7 @@ LAUNCH_FILE = "sbmpc_franka_bringup.launch.py"
 
 EXPECTED_ARGUMENTS = {
     "backend",
+    "planner",
     "enable_nonzero_control",
     "use_rviz",
     "headless",
@@ -106,11 +107,12 @@ def includes(actions) -> list[IncludeLaunchDescription]:
 # --- argument surface -------------------------------------------------------
 
 
-def test_declares_exactly_the_eight_arguments_with_expected_defaults() -> None:
+def test_declares_exactly_the_nine_arguments_with_expected_defaults() -> None:
     defaults = declared_argument_defaults(MODULE.generate_launch_description())
 
     assert set(defaults) == EXPECTED_ARGUMENTS
     assert defaults["backend"] == "mujoco"
+    assert defaults["planner"] == "hydrax"
     assert defaults["enable_nonzero_control"] == "true"
     assert defaults["use_rviz"] == "true"
     assert defaults["headless"] == "false"

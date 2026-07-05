@@ -67,21 +67,35 @@ def launch_setup(context, *args, **kwargs):
     is_mujoco = backend == "mujoco"
     use_sim_time = is_mujoco
 
+    # Which solver backs the bridge (orthogonal to the plant backend above).
+    planner = LaunchConfiguration("planner").perform(context).strip().lower()
+    if planner not in {"sbmpc", "hydrax"}:
+        raise RuntimeError(f"planner must be 'sbmpc' or 'hydrax', got {planner!r}.")
+    is_hydrax = planner == "hydrax"
+
     # Single config set for both backends; sim adds exactly one physical overlay.
     controllers_file = _share("config", "franka_controllers.yaml")
     lfc_params_file = _share("config", "franka_lfc_params.yaml")
     sim_lfc_params_file = _share("config", "franka_lfc_params_sim.yaml")
-    bridge_params_file = _share("config", "sbmpc_bridge.yaml")
+    bridge_params_file = _share(
+        "config", "hydrax_bridge.yaml" if is_hydrax else "sbmpc_bridge.yaml"
+    )
     rviz_config = _share("rviz", "pregrasp.rviz")
 
-    # The bridge runs inside the pixi runtime; these come from the environment,
-    # not the launch interface (plan §3).
+    # The bridge runs inside the selected planner's Python runtime (pixi for
+    # sbmpc, uv for hydrax); these come from the environment, not the launch
+    # interface (plan §3).
     bridge_runtime_script = EnvironmentVariable(
         "SBMPC_BRIDGE_RUNTIME_SCRIPT",
-        default_value="/workspace/sbmpc_containers/scripts/pixi_ros_run.sh",
+        default_value=(
+            "/workspace/sbmpc_containers/scripts/uv_ros_run.sh"
+            if is_hydrax
+            else "/workspace/sbmpc_containers/scripts/pixi_ros_run.sh"
+        ),
     )
     pixi_env = EnvironmentVariable("PIXI_ENV", default_value="cuda")
     sbmpc_dir = EnvironmentVariable("SBMPC_DIR", default_value="/workspace/sbmpc")
+    hydrax_dir = EnvironmentVariable("HYDRAX_DIR", default_value="/workspace/hydrax")
 
     # --- robot_description: one xacro per backend, same agimus_franka macro ---
     if is_mujoco:
@@ -164,6 +178,10 @@ def launch_setup(context, *args, **kwargs):
             bridge_params_file,
             {
                 "use_sim_time": use_sim_time,
+                # Structural pairing with the runtime wrapper selected above:
+                # the preset yaml repeats it, but the launch owns the choice
+                # (a missing/stale preset must not silently flip the planner).
+                "planner_impl": planner,
                 # Always start disarmed; the warmup step arms after JIT/warmup.
                 "enable_nonzero_control": False,
                 "publish_rollout_markers": ParameterValue(
@@ -389,7 +407,7 @@ def launch_setup(context, *args, **kwargs):
     )
 
     summary = (
-        f"SB-MPC Franka bringup | backend={backend} | "
+        f"SB-MPC Franka bringup | backend={backend} | planner={planner} | "
         f"rviz={_is_true(context, 'use_rviz')} | gripper={_is_true(context, 'use_gripper')} | "
         f"arm_after_warmup={_is_true(context, 'enable_nonzero_control')} | "
         f"rollout_markers={_is_true(context, 'publish_rollout_markers')} | "
@@ -426,6 +444,18 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="mujoco",
                 choices=["mujoco", "real"],
                 description="mujoco (physics sim) or real (Franka FCI).",
+            ),
+            DeclareLaunchArgument(
+                "planner",
+                default_value="hydrax",
+                choices=["sbmpc", "hydrax"],
+                description=(
+                    "Which solver backs the bridge (orthogonal to `backend`). "
+                    "Selects the bridge preset yaml and the runtime wrapper: "
+                    "sbmpc runs in its pixi env, hydrax in its uv env. "
+                    "Defaults to hydrax; pass planner:=sbmpc for the legacy "
+                    "backend."
+                ),
             ),
             DeclareLaunchArgument(
                 "enable_nonzero_control",

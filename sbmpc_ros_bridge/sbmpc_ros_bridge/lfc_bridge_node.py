@@ -131,6 +131,13 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_warmup_iterations", 3)
         self.declare_parameter("planner_warmup_on_start", True)
         self.declare_parameter("joint_names", list(JointMapper.panda().expected_names))
+        # Which planner implementation backs the bridge ("sbmpc" | "hydrax").
+        # Orthogonal to the launch's plant backend (mujoco|real); the launch
+        # `planner` argument sets it together with the runtime wrapper. The
+        # hydrax planner takes its OCP tuning exclusively from
+        # hydrax/configs/pregrasp.yaml — the planner_* parameters below
+        # configure the sbmpc backend only.
+        self.declare_parameter("planner_impl", "sbmpc")
         self.declare_parameter("planner_mode", "")
         self.declare_parameter("planner_num_steps", 1)
         # The MPPI/solver knobs below default to "unset" (0 / empty): the
@@ -259,13 +266,16 @@ class SbMpcLfcBridgeNode(Node):
             ),
             ocp=self.get_parameter("planner_ocp").get_parameter_value().string_value,
         )
+        planner_impl = (
+            self.get_parameter("planner_impl").get_parameter_value().string_value
+        ).strip().lower() or "sbmpc"
         self._planner = (
             planner
             if planner is not None
             else (
                 _NoopPlannerAdapter()
                 if self._force_zero_control
-                else SbMpcPlannerAdapter(config_overrides=planner_config)
+                else self._build_planner_adapter(planner_impl, planner_config)
             )
         )
         if self._publish_rollout_markers_enabled():
@@ -638,6 +648,25 @@ class SbMpcLfcBridgeNode(Node):
         with self._latest_planner_output_lock:
             self._latest_planner_output = entry
 
+    def _build_planner_adapter(
+        self,
+        planner_impl: str,
+        planner_config: "PlannerConfigOverrides",
+    ):
+        """Construct the planner adapter selected by ``planner_impl``."""
+        if planner_impl == "hydrax":
+            from sbmpc_ros_bridge.hydrax_planner_adapter import (
+                HydraxPlannerAdapter,
+            )
+
+            return HydraxPlannerAdapter(mode=planner_config.mode)
+        if planner_impl != "sbmpc":
+            raise ValueError(
+                f"Unsupported planner_impl '{planner_impl}'. "
+                "Choose 'sbmpc' or 'hydrax'."
+            )
+        return SbMpcPlannerAdapter(config_overrides=planner_config)
+
     def _run_planner_worker(self) -> None:
         while not self._closing.is_set():
             if not self._planner_request.wait(timeout=0.1):
@@ -935,17 +964,23 @@ class SbMpcLfcBridgeNode(Node):
         velocity_gain = self._nonnegative_double_parameter(
             "feedforward_velocity_damping_gain"
         )
-        if position_gain <= 0.0 and velocity_gain <= 0.0:
-            return control
         if self._planner_output_gain_mode(planner_output) != "feedforward":
             return control
 
+        # In feedforward mode LFC's desired state must track the planner's
+        # reference whenever one is provided: the planner may publish a
+        # nonzero K (e.g. the hydrax backend's constant joint impedance),
+        # so this substitution must not depend on the scalar add-on gains
+        # below being set.
         joint_count = len(control.initial_state.joint_state.position)
         reference_state = self._planner_reference_state(planner_output, joint_count)
         if reference_state is not None:
             q_ref, v_ref = reference_state
             control.initial_state.joint_state.position = q_ref.tolist()
             control.initial_state.joint_state.velocity = v_ref.tolist()
+
+        if position_gain <= 0.0 and velocity_gain <= 0.0:
+            return control
 
         gain = float64_multi_array_to_numpy(control.feedback_gain).copy()
         expected_shape = (joint_count, 2 * joint_count)

@@ -106,32 +106,32 @@ def test_mujoco_xacro_exposes_fer_arm_effort_interfaces_and_gripper_position() -
     )
 
 
-def test_ros2_control_mjcf_uses_calibrated_fer_joint_dynamics() -> None:
-    urdf_root = render_mujoco_urdf()
-    urdf_joints = {joint.attrib["name"]: joint for joint in urdf_root.findall("joint")}
-
+def test_ros2_control_mjcf_uses_menagerie_standard_joint_dynamics() -> None:
+    # Deliberate policy since "update model damping" (f501a7c): the MJCF arm
+    # joints use the MuJoCo Menagerie Panda standard (class default
+    # armature=0.1, damping=1) rather than mapping the URDF's calibrated
+    # mu_viscous/friction per joint. The real joint friction (small viscous +
+    # Coulomb, per the De Luca/Gaz identification) is a separate,
+    # not-yet-identified model — the hydrax pregrasp model documents the same
+    # decision, keeping the two plants' joint dynamics identical.
     mjcf_root = ET.parse(FER_ROS2_CONTROL_MODEL).getroot()
+
+    panda_default = mjcf_root.find("./default/default[@class='panda']/joint")
+    assert panda_default is not None
+    assert float(panda_default.attrib["armature"]) == pytest.approx(0.1)
+    assert float(panda_default.attrib["damping"]) == pytest.approx(1.0)
+
     mjcf_joints = {
         joint.attrib["name"]: joint
         for joint in mjcf_root.findall(".//joint")
         if joint.attrib.get("name") in FER_ARM_JOINT_NAMES
     }
-
     assert set(mjcf_joints) == set(FER_ARM_JOINT_NAMES)
     for joint_name in FER_ARM_JOINT_NAMES:
-        dynamics = urdf_joints[joint_name].find("dynamics")
-        assert dynamics is not None
-
-        # MuJoCo ignores Franka's non-standard mu_viscous URDF attribute.
-        # We map mu_viscous to MuJoCo damping as an explicit calibrated
-        # surrogate, while preserving the standard friction as frictionloss.
-        assert float(dynamics.attrib["damping"]) == pytest.approx(0.003)
-        assert float(mjcf_joints[joint_name].attrib["damping"]) == pytest.approx(
-            float(dynamics.attrib["mu_viscous"])
-        )
-        assert float(mjcf_joints[joint_name].attrib["frictionloss"]) == pytest.approx(
-            float(dynamics.attrib["friction"])
-        )
+        # Arm joints inherit the class default; no per-joint overrides.
+        assert "damping" not in mjcf_joints[joint_name].attrib
+        assert "frictionloss" not in mjcf_joints[joint_name].attrib
+        assert "armature" not in mjcf_joints[joint_name].attrib
 
 
 def test_ros2_control_scene_declares_pick_place_task_contract() -> None:

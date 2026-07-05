@@ -1,0 +1,30 @@
+sbmpc_lfc_bridge_node:
+  ros__parameters:
+    sensor_topic: /sensor
+    control_topic: /control
+    diagnostics_topic: /sbmpc/diagnostics
+    # Keep the publish rate aligned with the hydrax control period
+    # (task dt = 0.04 s -> 25 Hz).
+    publish_rate_hz: 25.0
+    planner_impl: hydrax
+    planner_mode: feedforward # exact_feedback arrives with port plan Phase 4
+    planner_warmup_iterations: 3
+    # Transport and deployment wiring ONLY. The OCP tuning (cost weights,
+    # solver knobs, plan timing) lives exclusively in hydrax's single
+    # tuning surface: hydrax/configs/pregrasp.yaml — the same file the
+    # Tier A gates certify. Nothing here can override it.
+    #
+    # Optional feedforward-mode-only diagonal LFC helper on top of the
+    # planner's published gains. Keep disabled: the hydrax feedforward mode
+    # already publishes the constant joint impedance (per-joint kp/kd from
+    # the task options) through K.
+    feedforward_position_gain: 0.0
+    feedforward_velocity_damping_gain: 0.0
+    joint_names:
+      - fer_joint1
+      - fer_joint2
+      - fer_joint3
+      - fer_joint4
+      - fer_joint5
+      - fer_joint6
+      - fer_joint7
