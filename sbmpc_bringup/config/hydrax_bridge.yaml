@@ -20,6 +20,18 @@ sbmpc_lfc_bridge_node:
     # the task options) through K.
     feedforward_position_gain: 0.0
     feedforward_velocity_damping_gain: 0.0
+    # Rollout markers are toggled by the launch arg publish_rollout_markers:=true
+    # (RViz MPPI debug); the keys below only style them when enabled. hydrax
+    # already traces the gripper path of every rollout, so capture is free.
+    rollout_marker_topic: /sbmpc/trajectory_markers
+    rollout_marker_frame_id: base
+    # Draw the zero-noise nominal plus the lowest-cost sampled rollouts.
+    rollout_marker_max_samples: 16
+    rollout_marker_publish_rate_hz: 5.0
+    rollout_marker_line_width: 0.01
+    rollout_marker_sample_line_width: 0.004
+    rollout_marker_point_diameter: 0.025
+    rollout_marker_goal_diameter: 0.045
     joint_names:
       - fer_joint1
       - fer_joint2

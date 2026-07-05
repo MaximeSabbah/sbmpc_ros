@@ -136,7 +136,15 @@ def test_diagnostic_helpers(adapter):
     np.testing.assert_allclose(q_pred, planner_input.q, atol=1e-3)
     assert v_pred.shape == (7,)
 
-    # Unimplemented visualization hooks must return None without raising
+    assert adapter.diagnostics_snapshot() is None
+
+
+def test_rollout_visualization_capture(adapter):
+    planner_input = _planner_input(adapter)
+
+    # Disabled: getters return None and nothing is stored.
+    adapter.set_rollout_capture_enabled(False)
+    adapter.step(planner_input)
     assert adapter.planned_end_effector_path(planner_input) is None
     assert (
         adapter.representative_end_effector_rollouts(
@@ -144,9 +152,47 @@ def test_diagnostic_helpers(adapter):
         )
         is None
     )
-    assert adapter.diagnostics_snapshot() is None
+
+    # Enabled: EE paths of the last solve, nominal first.
     adapter.set_rollout_capture_enabled(True)
-    adapter.warmup_rollout_visualization(max_rollouts=4)
+    adapter.warmup_rollout_visualization(max_rollouts=4)  # no data yet: no-op
+    adapter.step(planner_input)
+
+    result = adapter.planned_end_effector_path(planner_input)
+    assert result is not None
+    _, ee_path = result
+    horizon = ee_path.shape[0]
+    assert ee_path.shape == (horizon, 3)
+    assert np.all(np.isfinite(ee_path))
+
+    rollouts = adapter.representative_end_effector_rollouts(
+        planner_input, max_rollouts=4
+    )
+    assert rollouts.shape == (4, horizon, 3)
+    assert np.all(np.isfinite(rollouts))
+    # First representative rollout is the zero-noise nominal = planned path.
+    np.testing.assert_allclose(rollouts[0], ee_path, rtol=1e-5, atol=1e-6)
+
+    # Marker-publisher consumption path (same as the bridge uses).
+    from builtin_interfaces.msg import Time
+
+    from sbmpc_ros_bridge.rollout_markers import make_trajectory_marker_array
+
+    markers = make_trajectory_marker_array(
+        ee_path=np.asarray(ee_path, dtype=np.float64),
+        rollout_paths=rollouts,
+        goal_position=np.zeros(3),
+        frame_id="base",
+        stamp=Time(),
+        line_width=0.01,
+        sample_line_width=0.004,
+        point_diameter=0.025,
+        goal_diameter=0.045,
+    )
+    assert len(markers.markers) > 0
+
+    adapter.set_rollout_capture_enabled(False)
+    assert adapter.planned_end_effector_path(planner_input) is None
 
 
 def test_exact_feedback_not_implemented_yet():

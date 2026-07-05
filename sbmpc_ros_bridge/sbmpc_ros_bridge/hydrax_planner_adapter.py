@@ -166,6 +166,15 @@ class HydraxPlannerAdapter:
         self._mjx_data = mjx.make_data(self._task.model)
         self._step_index = 0
 
+        # Rollout visualization capture (RViz markers). hydrax computes the
+        # gripper-site path of every rollout during optimize
+        # (Trajectory.trace_sites), so capture only keeps device references —
+        # the host copy happens in the viz getters, off the hot path, at the
+        # marker publish rate.
+        self._capture_rollouts = False
+        self._last_trace_sites = None
+        self._last_costs = None
+
         # CPU-side model for FK / gravity / state prediction (off hot path)
         self._cpu_model = deepcopy(self._task.mj_model)
         self._cpu_model.opt.timestep = 0.001
@@ -201,6 +210,8 @@ class HydraxPlannerAdapter:
             initial_knots=self._initial_knots
         )
         self._step_index = 0
+        self._last_trace_sites = None
+        self._last_costs = None
         self._started = False
 
     # --- control hot path ----------------------------------------------
@@ -232,7 +243,10 @@ class HydraxPlannerAdapter:
         prepare_ms = 1000.0 * (time.perf_counter() - prepare_start)
 
         command_start = time.perf_counter()
-        self._params, _ = self._jit_optimize(state, self._params)
+        self._params, rollouts = self._jit_optimize(state, self._params)
+        if self._capture_rollouts:
+            self._last_trace_sites = rollouts.trace_sites
+            self._last_costs = rollouts.costs
         tau_ff = np.asarray(
             self._jax.block_until_ready(
                 self._ctrl.get_action(self._params, t)
@@ -305,22 +319,57 @@ class HydraxPlannerAdapter:
         return None
 
     def set_rollout_capture_enabled(self, enabled: bool) -> None:
-        del enabled  # rollout visualization is not implemented yet
+        self._capture_rollouts = bool(enabled)
+        if not self._capture_rollouts:
+            self._last_trace_sites = None
+            self._last_costs = None
 
     def warmup_rollout_visualization(self, *, max_rollouts: int) -> None:
-        del max_rollouts
+        """Exercise the viz getters once so their host paths are warm."""
+        self.planned_end_effector_path(None)
+        self.representative_end_effector_rollouts(
+            None, max_rollouts=max_rollouts
+        )
 
     def planned_end_effector_path(
-        self, planner_input: PlannerInput
+        self, planner_input: PlannerInput | None
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        del planner_input
-        return None
+        """EE path of the warm-started nominal (sample 0) of the last solve.
+
+        The joint path is not tracked in hydrax's rollout traces; only the
+        EE path (the part the marker publisher consumes) is returned.
+        """
+        del planner_input  # the last solve's rollouts already fix the state
+        if self._last_trace_sites is None:
+            return None
+        # trace_sites: (num_samples, H+1, num_trace_sites, 3); site 0 is the
+        # gripper. Sample 0 is FeedbackMPPI's zero-noise nominal.
+        ee_path = np.asarray(
+            self._last_trace_sites[0, :, 0, :], dtype=np.float64
+        )
+        q_path = np.empty((0, self._plan_q.shape[1]), dtype=np.float64)
+        return q_path, ee_path
 
     def representative_end_effector_rollouts(
-        self, planner_input: PlannerInput, *, max_rollouts: int
+        self, planner_input: PlannerInput | None, *, max_rollouts: int
     ) -> np.ndarray | None:
-        del planner_input, max_rollouts
-        return None
+        """Nominal plus lowest-cost sampled EE rollouts from the last solve."""
+        del planner_input
+        max_rollouts = int(max_rollouts)
+        if self._last_trace_sites is None or self._last_costs is None:
+            return None
+        if max_rollouts <= 0:
+            horizon = int(self._last_trace_sites.shape[1])
+            return np.empty((0, horizon, 3), dtype=np.float32)
+
+        totals = np.asarray(self._last_costs, dtype=np.float64).sum(axis=1)
+        # Sample 0 (the nominal) first, then the lowest-cost others.
+        others = np.argsort(totals[1:])[: max(0, max_rollouts - 1)] + 1
+        selected = np.concatenate([[0], others]).astype(int)
+        traces = np.asarray(
+            self._last_trace_sites[selected, :, 0, :], dtype=np.float32
+        )
+        return traces
 
     @property
     def mpc_dt(self) -> float | None:
