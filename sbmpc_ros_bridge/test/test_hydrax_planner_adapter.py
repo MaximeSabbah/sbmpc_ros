@@ -52,6 +52,7 @@ def test_config_matches_the_single_tuning_surface(adapter):
     assert ctrl.num_knots == config.num_knots
     assert ctrl.spline_type == config.spline_type
     assert ctrl.iterations == config.iterations
+    assert ctrl.num_gain_samples == config.num_gain_samples
     np.testing.assert_allclose(
         np.asarray(ctrl.noise_std),
         config.noise_scale * np.asarray(options.tau_max),
