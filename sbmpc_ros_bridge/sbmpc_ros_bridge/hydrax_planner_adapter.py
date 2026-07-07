@@ -152,6 +152,7 @@ class HydraxPlannerAdapter:
             num_samples=config.num_samples,
             noise_std=config.noise_scale * tau_max,
             temperature=config.temperature,
+            mean_adaptation_rate=config.mean_adaptation_rate,
             num_gain_samples=config.num_gain_samples,
             compute_gains=self._exact_feedback,
             plan_horizon=config.plan_horizon,
@@ -184,6 +185,9 @@ class HydraxPlannerAdapter:
             initial_knots=self._initial_knots
         )
         self._jit_optimize = jax.jit(self._ctrl.optimize)
+        # Jitted spline query: eagerly it costs ~0.6 ms on the 25 Hz hot
+        # path (measured Phase 1.5), jitted ~0.2 ms; warmup compiles it.
+        self._jit_get_action = jax.jit(self._ctrl.get_action)
         self._mjx_data = mjx.make_data(self._task.model)
         self._step_index = 0
 
@@ -270,7 +274,7 @@ class HydraxPlannerAdapter:
             self._last_costs = rollouts.costs
         tau_ff = np.asarray(
             self._jax.block_until_ready(
-                self._ctrl.get_action(self._params, t)
+                self._jit_get_action(self._params, t)
             ),
             dtype=np.float64,
         )
