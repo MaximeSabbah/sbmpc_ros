@@ -196,6 +196,63 @@ def test_rollout_visualization_capture(adapter):
     assert adapter.planned_end_effector_path(planner_input) is None
 
 
-def test_exact_feedback_not_implemented_yet():
-    with pytest.raises(NotImplementedError):
-        HydraxPlannerAdapter(mode="exact_feedback")
+@pytest.fixture(scope="module")
+def fb_adapter() -> HydraxPlannerAdapter:
+    # exact_feedback pairs the same glue with compute_gains=True; the first
+    # solve JIT-compiles the gain graph (the bridge does this in warmup).
+    return HydraxPlannerAdapter(mode="exact_feedback")
+
+
+def test_exact_feedback_publishes_the_solver_gains(fb_adapter):
+    """K is the solve's F-MPPI gain: time-varying, finite, healthy."""
+    assert fb_adapter._ctrl.compute_gains is True
+    fb_adapter.warmup()
+    fb_adapter.reset_runtime_state_after_warmup()
+    planner_input = _planner_input(fb_adapter)
+
+    first = fb_adapter.step(planner_input)
+    assert first.K.shape == (7, 14)
+    assert np.all(np.isfinite(first.K))
+    validate_planner_output(first.tau_ff, first.K)
+    # The solver's du/dx gains, not the feedforward-mode constant impedance
+    opts = fb_adapter._task.options
+    impedance = -np.hstack([np.diag(opts.kp_fixed), np.diag(opts.kd_fixed)])
+    assert not np.allclose(first.K, impedance)
+    # Recomputed every solve (fresh sampling noise ⇒ a new gain estimate)
+    second = fb_adapter.step(planner_input)
+    assert not np.allclose(second.K, first.K)
+    # V-A3 health readouts flow out of the solver with the gains
+    diag = first.diagnostics
+    assert diag.gain_mode == "exact_feedback"
+    assert diag.gain_ess >= 1.0
+    assert 0.0 <= diag.gain_nominal_weight <= 1.0
+    assert diag.gain_norm == pytest.approx(np.linalg.norm(first.K))
+
+
+def test_exact_feedback_lfc_anchor_is_the_solve_state(fb_adapter):
+    """The F-MPPI law through LFC: K_lfc = -K and the anchor is x0.
+
+    control.initial_state must stay the measured snapshot the solve
+    started from (the bridge's reference substitution is feedforward-only),
+    so LFC applies tau_ff + (-K)(x0 - x) = tau_ff + K (x - x0).
+    """
+    fb_adapter.reset_runtime_state_after_warmup()
+    planner_input = _planner_input(fb_adapter)
+    out = fb_adapter.step(planner_input)
+
+    control = planner_output_to_control(out, planner_input)
+    lfc_gain = float64_multi_array_to_numpy(control.feedback_gain)
+    np.testing.assert_allclose(lfc_gain, -out.K, rtol=1e-6)
+    np.testing.assert_allclose(
+        control.initial_state.joint_state.position, planner_input.q
+    )
+    np.testing.assert_allclose(
+        control.initial_state.joint_state.velocity, planner_input.v
+    )
+    feedforward = float64_multi_array_to_numpy(control.feedforward).reshape(-1)
+    np.testing.assert_allclose(feedforward, out.tau_ff)
+
+
+def test_unknown_mode_is_rejected():
+    with pytest.raises(ValueError):
+        HydraxPlannerAdapter(mode="bogus")

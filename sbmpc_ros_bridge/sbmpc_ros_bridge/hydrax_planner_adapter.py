@@ -23,9 +23,20 @@ Conventions (audited against the bridge, 2026-07-03):
   feedforward mode this adapter therefore publishes the constant joint
   impedance as ``K = -[diag(kp) | diag(kd)]``, which LFC receives as
   ``+[Kp | Kd]``.
+- In **exact_feedback** mode the published K is the solve's F-MPPI gain
+  (``FeedbackMPPIParams.gains``), and the anchor changes meaning: the
+  bridge's reference substitution is gated on
+  ``gain_mode == "feedforward"``, so ``control.initial_state`` stays the
+  measured snapshot the solve started from — x₀, the linearization
+  point. LFC then applies ``tau_ff + (-K)(x₀ - x) = tau_ff + K (x - x₀)``,
+  the Feedback-MPPI law: K multiplies only the drift since planning
+  (the tracking error is already baked into tau_ff, which replans from
+  x₀ at 25 Hz). The K anchored at the *reference* would double-count
+  the tracking error — that is why the anchor differs between modes.
 - ``reference_q``/``reference_v`` are the minimum-jerk plan point at the
-  solve time; the bridge substitutes them into the published
-  ``control.initial_state`` so LFC's desired state tracks the plan.
+  solve time; in feedforward mode the bridge substitutes them into the
+  published ``control.initial_state`` so LFC's desired state tracks the
+  plan (in exact_feedback they remain diagnostics only).
 - The plan clock is the adapter's own step counter times the control
   period; it starts when the plan starts (after
   ``reset_runtime_state_after_warmup``), mirroring the trajectory mode of
@@ -52,6 +63,7 @@ from sbmpc_ros_bridge.planner_adapter import (
 DEFAULT_HYDRAX_JAX_CACHE_DIR = "/workspace/hydrax/.jax_cache"
 
 GAIN_MODE_FEEDFORWARD = "feedforward"
+GAIN_MODE_EXACT_FEEDBACK = "exact_feedback"
 
 
 @dataclass(frozen=True)
@@ -69,6 +81,10 @@ class HydraxPlannerDiagnostics:
     object_error: float | None = None
     planner_prepare_time_ms: float | None = None
     planner_command_time_ms: float | None = None
+    # V-A3 gain-health readouts (exact_feedback only): effective sample
+    # size of the gain-batch softmax and the zero-noise nominal's weight
+    gain_ess: float | None = None
+    gain_nominal_weight: float | None = None
 
 
 @dataclass(frozen=True)
@@ -96,12 +112,12 @@ class HydraxPlannerAdapter:
         jax_cache_dir: str | None = DEFAULT_HYDRAX_JAX_CACHE_DIR,
     ) -> None:
         self._mode = (mode or GAIN_MODE_FEEDFORWARD).strip().lower()
-        if self._mode != GAIN_MODE_FEEDFORWARD:
-            raise NotImplementedError(
-                "the hydrax backend currently supports only feedforward "
-                "mode; exact_feedback arrives with the FeedbackMPPI gain "
-                "computation (port plan Phase 4)."
+        if self._mode not in (GAIN_MODE_FEEDFORWARD, GAIN_MODE_EXACT_FEEDBACK):
+            raise ValueError(
+                f"planner_mode must be '{GAIN_MODE_FEEDFORWARD}' or "
+                f"'{GAIN_MODE_EXACT_FEEDBACK}', got {self._mode!r}."
             )
+        self._exact_feedback = self._mode == GAIN_MODE_EXACT_FEEDBACK
         self.jax_cache_dir = configure_jax_compilation_cache(jax_cache_dir)
 
         try:
@@ -127,13 +143,17 @@ class HydraxPlannerAdapter:
         opts = self._task.options
         tau_max = np.asarray(opts.tau_max, dtype=np.float64)
 
-        # Controller pairing glue (mirrors examples/panda_pregrasp.py)
+        # Controller pairing glue (mirrors examples/panda_pregrasp.py).
+        # The mode switch is the K source and nothing else: gains are
+        # compiled into the solve only when they will be published, so the
+        # feedforward mode pays nothing for the gain path.
         self._ctrl = FeedbackMPPI(
             self._task,
             num_samples=config.num_samples,
             noise_std=config.noise_scale * tau_max,
             temperature=config.temperature,
             num_gain_samples=config.num_gain_samples,
+            compute_gains=self._exact_feedback,
             plan_horizon=config.plan_horizon,
             spline_type=config.spline_type,
             num_knots=config.num_knots,
@@ -259,23 +279,37 @@ class HydraxPlannerAdapter:
         if advance_clock:
             self._step_index += 1
 
+        # The published K: the solve's F-MPPI gains (du/dx, anchored at
+        # this solve's state) in exact_feedback, the constant impedance in
+        # feedforward. See the module docstring for the anchor semantics.
+        if self._exact_feedback:
+            gain_dudx = np.asarray(self._params.gains, dtype=np.float64)
+            gain_ess = float(self._params.gain_ess)
+            gain_nominal_weight = float(self._params.gain_nominal_weight)
+        else:
+            gain_dudx = self._gain_dudx.copy()
+            gain_ess = None
+            gain_nominal_weight = None
+
         ee = self.ee_position(q)
         position_error = float(np.linalg.norm(ee - self._goal_pos))
 
         return HydraxPlannerOutput(
             tau_ff=tau_ff,
-            K=self._gain_dudx.copy(),
+            K=gain_dudx,
             reference_q=self._plan_q[i_ref].copy(),
             reference_v=self._plan_v[i_ref].copy(),
             diagnostics=HydraxPlannerDiagnostics(
                 planning_time_ms=prepare_ms + command_ms,
-                gain_norm=float(np.linalg.norm(self._gain_dudx)),
+                gain_norm=float(np.linalg.norm(gain_dudx)),
                 torque_norm=float(np.linalg.norm(tau_ff)),
                 goal_position=self._goal_pos.copy(),
                 gain_mode=self._mode,
                 position_error=position_error,
                 planner_prepare_time_ms=prepare_ms,
                 planner_command_time_ms=command_ms,
+                gain_ess=gain_ess,
+                gain_nominal_weight=gain_nominal_weight,
             ),
         )
 

@@ -7,7 +7,13 @@ sbmpc_lfc_bridge_node:
     # (task dt = 0.04 s -> 25 Hz).
     publish_rate_hz: 25.0
     planner_impl: hydrax
-    planner_mode: feedforward # exact_feedback arrives with port plan Phase 4
+    # THE mode switch of the hydrax controller (user decision 2026-07-06:
+    # set here, not by a launch argument): exact_feedback publishes the
+    # solve's F-MPPI gains anchored at x0 (tau = tau_ff + K (x - x0));
+    # feedforward publishes the constant joint impedance anchored on the
+    # plan reference. Remember: launch reads this file from the ros2_ws
+    # INSTALL space — rebuild sbmpc_bringup after editing.
+    planner_mode: exact_feedback
     planner_warmup_iterations: 3
     # Transport and deployment wiring ONLY. The OCP tuning (cost weights,
     # solver knobs, plan timing) lives exclusively in hydrax's single
