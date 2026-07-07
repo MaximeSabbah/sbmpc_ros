@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -97,6 +100,60 @@ def launch_setup(context, *args, **kwargs):
     sbmpc_dir = EnvironmentVariable("SBMPC_DIR", default_value="/workspace/sbmpc")
     hydrax_dir = EnvironmentVariable("HYDRAX_DIR", default_value="/workspace/hydrax")
 
+    # --- sim start pose (the V-A5 placement seam, live) ---
+    # random regenerates the scene's home keyframe: qpos drawn fresh within
+    # the V-A5-certified ±0.2 rad/joint envelope AND gravity-comp ctrl
+    # recomputed at the drawn pose (the keyframe ctrl holds the arm before
+    # the LFC stack activates). Generation runs in the planner runtime —
+    # the launch python has no mujoco. The reference plan still starts at
+    # the nominal home pose, so the run shows the controller absorbing the
+    # placement gap, exactly like a hand-placed real robot.
+    initial_q = LaunchConfiguration("initial_q").perform(context).strip().lower()
+    if initial_q not in {"home", "random"}:
+        raise RuntimeError(f"initial_q must be 'home' or 'random', got {initial_q!r}.")
+    initial_q_actions = []
+    xacro_model_override = []
+    if initial_q == "random":
+        if not is_mujoco:
+            raise RuntimeError(
+                "initial_q:=random needs backend:=mujoco "
+                "(the real robot starts wherever it physically is)."
+            )
+        generator = subprocess.run(
+            [
+                bridge_runtime_script.perform(context),
+                "python",
+                "-m",
+                "sbmpc_bringup.initial_q",
+                "--scene",
+                os.path.join(
+                    get_package_share_directory("sbmpc_bringup"),
+                    "mujoco",
+                    "fer_pick_place_ros2_control_scene.xml",
+                ),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if generator.returncode != 0:
+            raise RuntimeError(
+                "initial_q:=random keyframe generation failed:\n"
+                + generator.stderr[-2000:]
+            )
+        draw = json.loads(generator.stdout.strip().splitlines()[-1])
+        xacro_model_override = [" mujoco_model:=", draw["mujoco_model"]]
+        initial_q_actions = [
+            LogInfo(
+                msg=(
+                    "initial_q=random start pose [rad]: "
+                    + " ".join(f"{q:.3f}" for q in draw["q_arm"])
+                    + "  (offset from home: "
+                    + " ".join(f"{o:+.3f}" for o in draw["offset"])
+                    + ")"
+                )
+            )
+        ]
+
     # --- robot_description: one xacro per backend, same agimus_franka macro ---
     if is_mujoco:
         robot_description_content = Command(
@@ -106,6 +163,7 @@ def launch_setup(context, *args, **kwargs):
                 _share("urdf", "franka_arm_with_sbmpc_mujoco.urdf.xacro"),
                 " headless:=",
                 LaunchConfiguration("headless"),
+                *xacro_model_override,
             ]
         )
     else:
@@ -408,6 +466,7 @@ def launch_setup(context, *args, **kwargs):
 
     summary = (
         f"SB-MPC Franka bringup | backend={backend} | planner={planner} | "
+        f"initial_q={initial_q} | "
         f"rviz={_is_true(context, 'use_rviz')} | gripper={_is_true(context, 'use_gripper')} | "
         f"arm_after_warmup={_is_true(context, 'enable_nonzero_control')} | "
         f"rollout_markers={_is_true(context, 'publish_rollout_markers')} | "
@@ -423,6 +482,7 @@ def launch_setup(context, *args, **kwargs):
 
     return [
         LogInfo(msg=summary),
+        *initial_q_actions,
         LogInfo(msg=telemetry_hint),
         robot_state_publisher,
         control_node,
@@ -475,6 +535,19 @@ def generate_launch_description() -> LaunchDescription:
                 "headless",
                 default_value="false",
                 description="mujoco only: open the MuJoCo viewer (default). Set true to run without it. Ignored on real.",
+            ),
+            DeclareLaunchArgument(
+                "initial_q",
+                default_value="home",
+                choices=["home", "random"],
+                description=(
+                    "mujoco only: arm start pose. home = the scene keyframe; "
+                    "random = a fresh uniform draw within ±0.2 rad/joint "
+                    "around home (the V-A5-certified placement envelope), "
+                    "logged at launch. The reference plan still starts at "
+                    "home, so the controller must absorb the gap — the "
+                    "hand-placed-robot case, watchable in the viewer."
+                ),
             ),
             DeclareLaunchArgument(
                 "robot_ip",

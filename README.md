@@ -88,6 +88,7 @@ Launch arguments (defaults in parentheses):
 | `enable_nonzero_control` | `true` | Arm the bridge (via the SetBool service) after warmup. **Set `false` on real hardware for a disarmed bringup.** |
 | `use_rviz` | `true` | Launch RViz. |
 | `headless` | `false` | Run mujoco without the viewer when `true` (mujoco only). |
+| `initial_q` | `home` | Arm start pose (mujoco only). `random` draws a fresh pose within ±0.2 rad/joint of home (the V-A5-certified placement envelope, logged at launch) — the reference plan still starts at home, so you watch the controller absorb the gap, as with a hand-placed real robot. |
 | `robot_ip` | `172.17.1.2` | Franka FCI IP (real only). |
 | `publish_rollout_markers` | `false` | Publish MPPI rollout markers for RViz. |
 | `record_replay` | `""` | Path to write a replay JSON; empty disables recording. |
@@ -217,6 +218,25 @@ uv run python examples/panda_pregrasp.py --mode feedback --disturb
 uv run python examples/panda_pregrasp.py --mode feedback --mass_scale 0.9
 uv run python examples/panda_pregrasp.py --mode feedback --latency 0.04
 
+# Initial-configuration robustness (V-A5) — run before any robot session
+# where the arm is hand-placed rather than parked exactly at the home
+# pose. The reference plan always starts at the hardcoded start_q, so the
+# controller must close the placement gap; the sweep perturbs the start
+# by 0.05/0.1/0.2 rad per joint x 8 seeds (~25 s per run, one process
+# each; failures keep their trajectory for --replay). Requires the
+# nominal V-A1/V-A4 report from above.
+#
+# feedback (the deployed mode): expect VERDICT PASS — certified 24/24 on
+# 2026-07-07, placement error absorbed within the reach at no extra
+# torque up to +-0.2 rad/joint.
+uv run python examples/panda_pregrasp_q0_sweep.py --mode feedback
+# feedforward: a tolerance MEASUREMENT, expect FAIL beyond small offsets
+# (the fixed impedance yanks kp*dq at arming: 2026-07-07 grid passed
+# 6/8 at +-0.05, 1/8 at +-0.1, 0/8 at +-0.2 rad, demand up to 2.5x
+# tau_max). Only arm feedforward mode with the arm parked at the home
+# pose.
+uv run python examples/panda_pregrasp_q0_sweep.py --mode feedforward
+
 # Watch a recorded run in the MuJoCo viewer (needs a display; the reference
 # plan renders as a transparent ghost robot):
 uv run python examples/panda_pregrasp.py --replay --show_reference
@@ -290,12 +310,34 @@ To compare against the feedforward mode: set `planner_mode: feedforward` in
 `sbmpc_bringup/config/hydrax_bridge.yaml`, rebuild `sbmpc_bringup`
 (rule 3), relaunch.
 
+To watch the hand-placed-start case (V-A5) live — the arm starts off-home
+while the reference plan still begins at home, and the controller absorbs
+the gap during the reach:
+
+```bash
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py initial_q:=random
+```
+
+The drawn pose is logged at launch (`initial_q=random start pose [rad]:
+...`). Expect the same `validate_sbmpc_sim` numbers as the nominal run
+(verified 2026-07-07: 0 deadline misses / 3304 solves, task error min
+1.7 mm from a draw with offsets up to 0.19 rad).
+
 ### Step 4 — the real robot
 
 Staged protocol (details: port plan §V-B4): keep
 `max_velocity_fraction: 0.10` in `hydrax/hydrax/configs/pregrasp.yaml` for
 the first sessions (0.20 is the sim-validated value), start disarmed,
 verify the PD-hold, then arm:
+
+Arm placement (V-A5, measured 2026-07-07): the reference plan always
+starts at the hardcoded home `start_q`, so a hand-placed start is a
+tracking error the controller must absorb. In `exact_feedback` mode that
+is certified up to ±0.2 rad per joint (24/24 runs, no extra torque). In
+`feedforward` mode the fixed impedance demands `kp·Δq` the moment it
+arms — ±0.1 rad already asks for more than τ_max and would trip the
+robot's reflexes — so **only arm feedforward mode with the arm parked at
+the home pose**.
 
 ```bash
 ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py \

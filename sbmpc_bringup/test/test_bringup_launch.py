@@ -23,6 +23,7 @@ EXPECTED_ARGUMENTS = {
     "enable_nonzero_control",
     "use_rviz",
     "headless",
+    "initial_q",
     "robot_ip",
     "publish_rollout_markers",
     "record_replay",
@@ -107,7 +108,7 @@ def includes(actions) -> list[IncludeLaunchDescription]:
 # --- argument surface -------------------------------------------------------
 
 
-def test_declares_exactly_the_nine_arguments_with_expected_defaults() -> None:
+def test_declares_exactly_the_ten_arguments_with_expected_defaults() -> None:
     defaults = declared_argument_defaults(MODULE.generate_launch_description())
 
     assert set(defaults) == EXPECTED_ARGUMENTS
@@ -116,6 +117,7 @@ def test_declares_exactly_the_nine_arguments_with_expected_defaults() -> None:
     assert defaults["enable_nonzero_control"] == "true"
     assert defaults["use_rviz"] == "true"
     assert defaults["headless"] == "false"
+    assert defaults["initial_q"] == "home"
     assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["publish_rollout_markers"] == "false"
     assert defaults["record_replay"] == ""

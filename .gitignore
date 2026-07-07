@@ -3,3 +3,4 @@ install/
 log/
 **/__pycache__/
 **/.pytest_cache/
+*.initial_q_random.xml
