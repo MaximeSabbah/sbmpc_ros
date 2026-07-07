@@ -1,24 +1,59 @@
 # sbmpc_ros
 
-ROS 2 wiring for the synchronous SB-MPC Franka pregrasp controller and the
+ROS 2 wiring for the Franka pregrasp MPC controllers and the
 `linear_feedback_controller` (LFC). One launch file serves both the MuJoCo
-simulation and the real Franka, switched by `backend:=mujoco|real`.
+simulation and the real Franka, switched by `backend:=mujoco|real`, and two
+solver backends, switched by `planner:=hydrax|sbmpc`.
+
+## Planner backends
+
+| | `planner:=hydrax` (default) | `planner:=sbmpc` (legacy) |
+|---|---|---|
+| Solver | Feedback-MPPI in the hydrax fork (`/workspace/hydrax`) | original `sbmpc` package |
+| Python runtime | uv venv (`scripts/uv_ros_run.sh` in sbmpc_containers) | pixi env (`pixi_ros_run.sh`) |
+| Bridge preset | `sbmpc_bringup/config/hydrax_bridge.yaml` | `sbmpc_bringup/config/sbmpc_bridge.yaml` |
+| OCP tuning surface | `hydrax/hydrax/configs/pregrasp.yaml` | `sbmpc/sbmpc/ocp_configs/pregrasp.yaml` |
+
+The bridge machinery (topics, safety, watchdog, arming, replay) is identical
+for both; the `planner` argument selects the preset yaml, the Python runtime
+wrapper, and the adapter inside the bridge node.
+
+**Gain modes** (`planner_mode` in the preset yaml — the yaml is the mode
+switch, there is no launch argument for it):
+
+- `feedforward` — K published to LFC is a constant joint impedance
+  (`Kp/Kd` from the task options) anchored on the plan reference. The
+  proven, most-precise mode; the flip-back on the robot.
+- `exact_feedback` — K is the solve's Feedback-MPPI gain `du*/dx0`,
+  anchored at the state the plan was solved from (x0), so LFC applies
+  `tau_ff + K (x - x0)`: the F-MPPI paper's law, no impedance anywhere.
+  This is the deployed hydrax mode.
+
+After editing a preset yaml, rebuild the install space (launch reads configs
+from there, not from the source tree):
+
+```bash
+cd /workspace/ros2_ws && colcon build --packages-select sbmpc_bringup && source install/setup.bash
+```
 
 ## Controller contract
 
 The bridge publishes one coherent planner output per cycle (feedforward `tau_ff`
 and feedback gain `K` together) at 25 Hz (`dt = 0.04 s`), retaining the shifted
-MPPI solution as the warm start. The MPPI knobs (horizon, samples, dt, smoothing,
-top-K gain samples) and the cost weights have a single source of truth:
-`sbmpc/sbmpc/ocp_configs/<planner_ocp>.yaml`. The bridge config only carries
-deployment settings.
+MPPI solution as the warm start. The OCP tuning has a single source of truth
+per backend (table above); the bridge presets carry deployment settings only —
+nothing in the ROS parameter layer can override the OCP values (guard tests
+enforce this).
 
 Active files:
 
-- `sbmpc_bringup/launch/sbmpc_franka_bringup.launch.py` — the one bringup launch (both backends).
-- `sbmpc_bringup/config/sbmpc_bridge.yaml` — bridge deployment config (topics, rate, mode, task, joint names).
+- `sbmpc_bringup/launch/sbmpc_franka_bringup.launch.py` — the one bringup launch (both backends, both planners).
+- `sbmpc_bringup/config/hydrax_bridge.yaml` — hydrax bridge preset (topics, rate, `planner_mode`, joint names, rollout-marker styling).
+- `sbmpc_bringup/config/sbmpc_bridge.yaml` — sbmpc bridge preset.
 - `sbmpc_bringup/config/franka_controllers.yaml`, `franka_lfc_params.yaml` — controller + LFC params.
 - `sbmpc_bringup/config/franka_lfc_params_sim.yaml` — MuJoCo-only overlay (no gravity compensation; the real FCI does it).
+- `sbmpc_ros_bridge/hydrax_planner_adapter.py` — the hydrax adapter (K conventions and anchor semantics are documented in its module docstring).
+- `hydrax/doc/feedback_mppi_panda_port_plan.md` (in the hydrax repo) — the canonical plan, decisions log, and validation gates of the Feedback-MPPI port.
 
 ## Build
 
@@ -49,6 +84,7 @@ Launch arguments (defaults in parentheses):
 | Arg | Default | Meaning |
 |-----|---------|---------|
 | `backend` | `mujoco` | `mujoco` (physics sim) or `real` (Franka FCI). |
+| `planner` | `hydrax` | `hydrax` (Feedback-MPPI, uv runtime) or `sbmpc` (legacy, pixi runtime). |
 | `enable_nonzero_control` | `true` | Arm the bridge (via the SetBool service) after warmup. **Set `false` on real hardware for a disarmed bringup.** |
 | `use_rviz` | `true` | Launch RViz. |
 | `headless` | `false` | Run mujoco without the viewer when `true` (mujoco only). |
@@ -118,7 +154,7 @@ ros2 run sbmpc_bringup validate_sbmpc_sim --assert-stable
 It reads `/sbmpc/diagnostics` and `/joint_states` and reports task error, gain
 health, and planner timing over the run window (`--duration-sec`, default 16 s).
 
-## Planner smoke (no ROS graph)
+## Planner smoke (no ROS graph, sbmpc backend)
 
 ```bash
 /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
@@ -127,8 +163,151 @@ health, and planner timing over the run window (`--duration-sec`, default 16 s).
   --planner-mode exact_feedback
 ```
 
-The MPPI knobs come from `sbmpc/sbmpc/ocp_configs/pregrasp.yaml` (override with
-`--planner-ocp` or the individual `--planner-*` flags only when experimenting).
+The sbmpc MPPI knobs come from `sbmpc/sbmpc/ocp_configs/pregrasp.yaml`
+(override with `--planner-ocp` or the individual `--planner-*` flags only when
+experimenting). The hydrax equivalent of a no-ROS check is the V-B1 contract
+test (see the verification runbook below).
+
+## Verifying the Feedback-MPPI stack from scratch
+
+The complete check-out ritual for the hydrax Feedback-MPPI controller — what
+to run, in which environment, and what "good" looks like. Assumes the
+container from `sbmpc_containers` is running and
+`check_unified_env.sh` passes (see that repo's README for the fresh-machine
+setup). Deep background: `hydrax/doc/feedback_mppi_panda_port_plan.md`.
+
+**Rules of the game, before anything else:**
+
+1. **The GPU must be otherwise idle** during any timing-relevant run. A
+   cohabiting job (another training run, even RViz + the MuJoCo viewer on
+   the same card) shows up directly as planner deadline misses.
+2. `pytest` through the pixi/uv wrappers needs
+   `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` — the ROS-installed pytest plugins
+   otherwise break collection *silently* (a suite that reports "1 skipped"
+   while running zero tests).
+3. Config yamls under `sbmpc_bringup/config/` are read from the **install
+   space**: after editing one, `colcon build --packages-select sbmpc_bringup`.
+   Python files are symlinked (live). The hydrax tuning yaml
+   (`hydrax/hydrax/configs/pregrasp.yaml`) is read live, no rebuild needed.
+4. The first solve after a config change JIT-compiles (~1 min for the gain
+   graph; later runs hit the cache in `/workspace/hydrax/.jax_cache`).
+
+### Step 1 — Tier A: the controller alone (no ROS)
+
+Runs entirely inside the hydrax repo, in its uv env. The multi-rate example
+(1 kHz plant / 25 Hz planner, the LFC law) is a faithful model of the
+deployed loop — Tier A↔B parity was measured exact.
+
+```bash
+cd /workspace/hydrax
+
+# Feedforward reach (V-A1). Expect: VERDICT PASS, terminal_ee_error ~0.002 m.
+uv run python examples/panda_pregrasp.py
+
+# Feedback reach (V-A4 nominal). Expect: terminal_ee_error ~0.007 m PASS,
+# health_ess ~87 PASS, solve mean/p95 ~30/31 ms PASS. Two gates FAIL by
+# design and are accepted (documented in the port plan):
+#   tracking_vs_feedforward (pure feedback tracks 2-6x behind the stiff
+#   impedance during motion) and health_k_smoothness (K wiggles relative
+#   to its small norm; the applied-torque effect is ~0.01 Nm).
+uv run python examples/panda_pregrasp.py --mode feedback
+
+# Robustness scenarios (all must stay stable, margins PASS):
+uv run python examples/panda_pregrasp.py --mode feedback --disturb
+uv run python examples/panda_pregrasp.py --mode feedback --mass_scale 0.9
+uv run python examples/panda_pregrasp.py --mode feedback --latency 0.04
+
+# Watch a recorded run in the MuJoCo viewer (needs a display; the reference
+# plan renders as a transparent ghost robot):
+uv run python examples/panda_pregrasp.py --replay --show_reference
+```
+
+Reports land in `hydrax/validation/reports/` (fixed name per check+mode,
+overwritten each run; `history.jsonl` keeps one line per run).
+
+Gain correctness (V-A2): finite-difference proof of K = du*/dx0 plus the
+25 Hz cycle-time gate. Expect `4 passed` in ~3 min, relative FD errors
+below 0.2 %, cycle mean/p95 ~30/32 ms:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest tests/test_feedback_gains.py -v -s
+```
+
+### Step 2 — Tier B contract and regression tests (no launch)
+
+```bash
+# V-B1: the adapter honors the bridge contract (10 tests; includes the
+# exact_feedback ones: K = the solver's gains, LFC round-trip K_lfc = -K,
+# anchor = the measured solve state). Runs in the hydrax uv env + ROS:
+ROS_DOMAIN_ID=29 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  /workspace/sbmpc_containers/scripts/uv_ros_run.sh \
+  python -m pytest /workspace/sbmpc_ros/sbmpc_ros_bridge/test/test_hydrax_planner_adapter.py -v
+
+# Full regression net (124 tests, pixi env; hydrax-only tests auto-skip):
+ROS_DOMAIN_ID=29 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  /workspace/sbmpc_containers/scripts/pixi_ros_run.sh \
+  python -m pytest /workspace/sbmpc_ros/sbmpc_ros_bridge/test /workspace/sbmpc_ros/sbmpc_bringup/test -q
+```
+
+### Step 3 — the simulation bringup
+
+```bash
+cd /workspace/ros2_ws && colcon build --symlink-install \
+  --packages-select sbmpc_ros_bridge sbmpc_bringup && source install/setup.bash
+
+# Everything on defaults: MuJoCo viewer, RViz, hydrax planner, the mode
+# from hydrax_bridge.yaml (exact_feedback), auto-arm after warmup.
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py publish_rollout_markers:=true
+```
+
+What to watch in the launch log:
+
+- `Planner configuration from ROS parameters: {'mode': 'exact_feedback', ...}`
+  — the mode that will run. If this says `feedforward`, the preset yaml (or
+  its install-space copy) is not what you think it is.
+- `Planner warmup/JIT compilation complete.` then `armed: nonzero control
+  enabled.` — the robot starts moving only after this.
+- Per-solve lines: `wall 30.7/40.0ms ... |gain|=15.3 ... deadline_miss=N`.
+  In exact_feedback `|gain|` is the F-MPPI K norm and varies (~9–27); in
+  feedforward it is the constant impedance norm (~2000). `deadline_miss`
+  must stay rare (< 1 % of solves) — if it climbs, something else is on
+  the GPU.
+
+Quantitative verdict while the sim runs (second shell):
+
+```bash
+ros2 run sbmpc_bringup validate_sbmpc_sim
+```
+
+Expected at the frozen config, exact_feedback: `planning_ms` mean ~31 /
+p95 ~32, `deadline_misses` < 1 % of solves, `planner_outputs` accepted with
+0 rejected, task error dipping to a few mm. Known and accepted: during the
+hold the pure feedback law has no position anchor, so the pose wanders
+slowly within ~1–2 cm (`tail_joint_spans_rad` ~0.02–0.04); the feedforward
+mode holds sub-mm.
+
+To compare against the feedforward mode: set `planner_mode: feedforward` in
+`sbmpc_bringup/config/hydrax_bridge.yaml`, rebuild `sbmpc_bringup`
+(rule 3), relaunch.
+
+### Step 4 — the real robot
+
+Staged protocol (details: port plan §V-B4): keep
+`max_velocity_fraction: 0.10` in `hydrax/hydrax/configs/pregrasp.yaml` for
+the first sessions (0.20 is the sim-validated value), start disarmed,
+verify the PD-hold, then arm:
+
+```bash
+ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py \
+  backend:=real robot_ip:=172.17.1.2 enable_nonzero_control:=false
+# ... verify LFC only holds, watch one full warmup, then:
+ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"
+```
+
+The instant flip-back if anything looks wrong: disarm (service above with
+`data: false`), set `planner_mode: feedforward` in `hydrax_bridge.yaml`,
+rebuild `sbmpc_bringup`, relaunch. Record every session
+(`record_replay:=/tmp/run.json`, see **Record and replay**).
 
 ## Tests
 
