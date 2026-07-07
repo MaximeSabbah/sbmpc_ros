@@ -143,14 +143,11 @@ def test_hydrax_bridge_config_is_transport_only() -> None:
     assert params["diagnostics_topic"] == BRIDGE_DIAGNOSTICS_TOPIC
     assert tuple(params["joint_names"]) == FER_ARM_JOINT_NAMES
     assert params["publish_rate_hz"] == 25.0
-    assert params["planner_impl"] == "hydrax"
     # exact_feedback is the deployed hydrax mode (port plan Phase 4,
     # 2026-07-06); this preset yaml is THE mode switch (user decision:
     # no launch-argument override).
     assert params["planner_mode"] == "exact_feedback"
     assert params["planner_warmup_iterations"] == 3
-    assert params["feedforward_position_gain"] == 0.0
-    assert params["feedforward_velocity_damping_gain"] == 0.0
 
 
 def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> None:

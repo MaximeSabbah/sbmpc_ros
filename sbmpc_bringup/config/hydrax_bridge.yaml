@@ -6,7 +6,6 @@ sbmpc_lfc_bridge_node:
     # Keep the publish rate aligned with the hydrax control period
     # (task dt = 0.04 s -> 25 Hz).
     publish_rate_hz: 25.0
-    planner_impl: hydrax
     # THE mode switch of the hydrax controller (user decision 2026-07-06:
     # set here, not by a launch argument): exact_feedback publishes the
     # solve's F-MPPI gains anchored at x0 (tau = tau_ff + K (x - x0));
@@ -20,12 +19,6 @@ sbmpc_lfc_bridge_node:
     # tuning surface: hydrax/configs/pregrasp.yaml — the same file the
     # Tier A gates certify. Nothing here can override it.
     #
-    # Optional feedforward-mode-only diagonal LFC helper on top of the
-    # planner's published gains. Keep disabled: the hydrax feedforward mode
-    # already publishes the constant joint impedance (per-joint kp/kd from
-    # the task options) through K.
-    feedforward_position_gain: 0.0
-    feedforward_velocity_damping_gain: 0.0
     # Rollout markers are toggled by the launch arg publish_rollout_markers:=true
     # (RViz MPPI debug); the keys below only style them when enabled. hydrax
     # already traces the gripper path of every rollout, so capture is free.
