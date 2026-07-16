@@ -44,6 +44,29 @@ Conventions (audited against the bridge, 2026-07-03):
 - ``phase``/``next_phase`` are the constant ``"PREGRASP"``, exactly like
   sbmpc's pregrasp controller; a real phase machine is a planner-side
   concept for later task modes.
+
+Pick-and-place (P3, ``ocp="pick_place"``; see hydrax
+doc/pick_place_plan.md). Same solver, same bridge contract; three things
+change, all mirroring the Tier A example (examples/panda_pick_place.py):
+
+- the plan clock is hydrax's ``PickPlacePhaseMachine``, stepped with the
+  measured state before each solve (``state.time = pm.plan_time``); the
+  clock refuses to cross segment boundaries until the arm converges, so
+  phase/next_phase and ``gripper_command`` ("open"/"close") come from the
+  machine and change at runtime.
+- the deployed law flips PER CYCLE through the existing gain_mode anchor
+  semantics: motion cycles publish the solve's F-MPPI K anchored at x₀
+  (``exact_feedback``), precision-hold cycles (the CLOSE/OPEN dwells and
+  the waits at their entry) publish the constant impedance with
+  ``gain_mode="feedforward"`` and ``reference_q/v`` = the dwell goal — the
+  bridge's reference substitution then anchors LFC on the stationary
+  reference, which is exactly the P-A2-certified settle-then-actuate law.
+  No bridge change is involved.
+- while the bridge reports a gripper action in flight
+  (``set_gripper_wait(True)``) the clock is not stepped: mid-dwell the
+  reference is constant, so the pause is indistinguishable from a longer
+  dwell (the plan's action-latency liveness fix, user-approved
+  2026-07-10).
 """
 
 from __future__ import annotations
@@ -64,6 +87,9 @@ DEFAULT_HYDRAX_JAX_CACHE_DIR = "/workspace/hydrax/.jax_cache"
 
 GAIN_MODE_FEEDFORWARD = "feedforward"
 GAIN_MODE_EXACT_FEEDBACK = "exact_feedback"
+
+OCP_PREGRASP = "pregrasp"
+OCP_PICK_PLACE = "pick_place"
 
 
 @dataclass(frozen=True)
@@ -108,6 +134,7 @@ class HydraxPlannerAdapter:
         self,
         *,
         mode: str | None = None,
+        ocp: str | None = None,
         config_path: str | None = None,
         jax_cache_dir: str | None = DEFAULT_HYDRAX_JAX_CACHE_DIR,
     ) -> None:
@@ -118,6 +145,12 @@ class HydraxPlannerAdapter:
                 f"'{GAIN_MODE_EXACT_FEEDBACK}', got {self._mode!r}."
             )
         self._exact_feedback = self._mode == GAIN_MODE_EXACT_FEEDBACK
+        self._ocp = (ocp or OCP_PREGRASP).strip().lower()
+        if self._ocp not in (OCP_PREGRASP, OCP_PICK_PLACE):
+            raise ValueError(
+                f"planner_ocp must be '{OCP_PREGRASP}' or "
+                f"'{OCP_PICK_PLACE}', got {self._ocp!r}."
+            )
         self.jax_cache_dir = configure_jax_compilation_cache(jax_cache_dir)
 
         try:
@@ -136,10 +169,29 @@ class HydraxPlannerAdapter:
         self._mujoco = mujoco
         self._jax = jax
 
-        # OCP tuning from the single tuning surface (same file as Tier A)
-        options, config = load_pregrasp_config(config_path)
+        # OCP tuning from the single tuning surface (same file as Tier A):
+        # pregrasp.yaml or pick_place.yaml, selected by planner_ocp. The
+        # pick-and-place additionally owns the event-gated plan clock (see
+        # the module docstring); the pregrasp keeps the step-counter clock.
+        if self._ocp == OCP_PICK_PLACE:
+            from hydrax.configs import load_pick_place_config
+            from hydrax.tasks.panda_pick_place import (
+                PandaPickPlace,
+                Phase,
+                PickPlacePhaseMachine,
+            )
+
+            options, config = load_pick_place_config(config_path)
+            self._task = PandaPickPlace(options=options)
+            self._phase_enum = Phase
+            self._phase_machine_cls = PickPlacePhaseMachine
+            self._phase_machine = PickPlacePhaseMachine(self._task)
+        else:
+            options, config = load_pregrasp_config(config_path)
+            self._task = PandaPregrasp(options=options)
+            self._phase_machine = None
         self.config = config
-        self._task = PandaPregrasp(options=options)
+        self._gripper_wait = False
         opts = self._task.options
         tau_max = np.asarray(opts.tau_max, dtype=np.float64)
 
@@ -166,10 +218,15 @@ class HydraxPlannerAdapter:
         kd = np.asarray(opts.kd_fixed, dtype=np.float64)
         self._gain_dudx = -np.hstack([np.diag(kp), np.diag(kd)])
 
-        # Reference plan on the numpy side
+        # Reference plan on the numpy side. The diagnostics goal is the
+        # task's terminal EE target: the pregrasp goal pose, or the
+        # pick-and-place placement target.
         self._plan_q = np.asarray(self._task.reference_qpos, dtype=np.float64)
         self._plan_v = np.asarray(self._task.reference_qvel, dtype=np.float64)
-        self._goal_pos = np.asarray(opts.goal_pos, dtype=np.float64)
+        self._goal_pos = np.asarray(
+            opts.target_pos if self._ocp == OCP_PICK_PLACE else opts.goal_pos,
+            dtype=np.float64,
+        )
         self._control_period = float(self._task.dt)
 
         # Warm-startable optimizer state, seeded from the torque plan
@@ -235,9 +292,22 @@ class HydraxPlannerAdapter:
             initial_knots=self._initial_knots
         )
         self._step_index = 0
+        if self._phase_machine is not None:
+            self._phase_machine = self._phase_machine_cls(self._task)
+        self._gripper_wait = False
         self._last_trace_sites = None
         self._last_costs = None
         self._started = False
+
+    def set_gripper_wait(self, wait: bool) -> None:
+        """Freeze the plan clock while a gripper action is in flight (P3).
+
+        Called by the bridge around its gripper action client. Mid-dwell
+        the reference is constant, so not stepping the phase machine is
+        indistinguishable from a longer dwell — the certified task layer
+        needs no result-gating of its own. No-op for the pregrasp.
+        """
+        self._gripper_wait = bool(wait)
 
     # --- control hot path ----------------------------------------------
 
@@ -258,8 +328,22 @@ class HydraxPlannerAdapter:
         advance_clock: bool,
     ) -> HydraxPlannerOutput:
         prepare_start = time.perf_counter()
-        t = self._step_index * self._control_period
-        i_ref = min(self._step_index, self._plan_q.shape[0] - 1)
+        if self._phase_machine is None:
+            t = self._step_index * self._control_period
+            i_ref = min(self._step_index, self._plan_q.shape[0] - 1)
+        else:
+            # Event-gated plan clock (Tier A ordering: update with the
+            # measured state, then solve at pm.plan_time). The clock is
+            # frozen while the bridge waits on a gripper action result.
+            if advance_clock and not self._gripper_wait:
+                self._phase_machine.update(
+                    np.asarray(q, dtype=np.float64),
+                    np.asarray(v, dtype=np.float64),
+                )
+            t = self._phase_machine.plan_time
+            i_ref = min(
+                int(t * self._task.reference_fps), self._plan_q.shape[0] - 1
+            )
         state = self._mjx_data.replace(
             qpos=np.asarray(q, dtype=np.float64),
             qvel=np.asarray(v, dtype=np.float64),
@@ -286,14 +370,38 @@ class HydraxPlannerAdapter:
         # The published K: the solve's F-MPPI gains (du/dx, anchored at
         # this solve's state) in exact_feedback, the constant impedance in
         # feedforward. See the module docstring for the anchor semantics.
+        # Pick-and-place precision-hold cycles publish the impedance under
+        # gain_mode="feedforward" so the bridge anchors LFC on the
+        # (stationary) dwell reference — the P-A2-certified dwell law.
+        hold = (
+            self._phase_machine is not None
+            and self._phase_machine.precision_hold
+        )
         if self._exact_feedback:
-            gain_dudx = np.asarray(self._params.gains, dtype=np.float64)
             gain_ess = float(self._params.gain_ess)
             gain_nominal_weight = float(self._params.gain_nominal_weight)
         else:
-            gain_dudx = self._gain_dudx.copy()
             gain_ess = None
             gain_nominal_weight = None
+        if self._exact_feedback and not hold:
+            gain_dudx = np.asarray(self._params.gains, dtype=np.float64)
+            gain_mode = GAIN_MODE_EXACT_FEEDBACK
+        else:
+            gain_dudx = self._gain_dudx.copy()
+            gain_mode = GAIN_MODE_FEEDFORWARD
+
+        if self._phase_machine is None:
+            phase_name = next_phase_name = "PREGRASP"
+            gripper_command = None
+        else:
+            phase = self._phase_machine.phase
+            phase_name = phase.name
+            next_phase_name = self._phase_enum(
+                min(phase + 1, self._phase_enum.DONE)
+            ).name
+            gripper_command = (
+                "close" if self._phase_machine.gripper_closed else "open"
+            )
 
         ee = self.ee_position(q)
         position_error = float(np.linalg.norm(ee - self._goal_pos))
@@ -303,12 +411,15 @@ class HydraxPlannerAdapter:
             K=gain_dudx,
             reference_q=self._plan_q[i_ref].copy(),
             reference_v=self._plan_v[i_ref].copy(),
+            phase=phase_name,
+            next_phase=next_phase_name,
+            gripper_command=gripper_command,
             diagnostics=HydraxPlannerDiagnostics(
                 planning_time_ms=prepare_ms + command_ms,
                 gain_norm=float(np.linalg.norm(gain_dudx)),
                 torque_norm=float(np.linalg.norm(tau_ff)),
                 goal_position=self._goal_pos.copy(),
-                gain_mode=self._mode,
+                gain_mode=gain_mode,
                 position_error=position_error,
                 planner_prepare_time_ms=prepare_ms,
                 planner_command_time_ms=command_ms,

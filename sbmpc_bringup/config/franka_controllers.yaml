@@ -30,13 +30,33 @@ gripper_action_controller:
   ros__parameters:
     action_monitor_rate: 20.0
     joint: fer_finger_joint1
+    # Servo-equivalent PID (user decision 2026-07-16): with a constant
+    # goal, effort = p*(target - q) - d*qdot is algebraically the Tier A
+    # actuator8 servo law (hydrax panda.xml: gainprm 350, biasprm 0 -350
+    # -10) whose grasp physics P-A2/P-A3 certified — ~7 N squeeze where
+    # the fingers stall on the cube. The inherited agimus-demos gains
+    # (p=20, written for their own setup; on the real robot the grasp
+    # goes through agimus_franka_gripper, never this controller) squeeze
+    # 0.4 N there — measured in P-B2: the 0.49 N cube slipped out 3 mm
+    # into LIFT.
     gains.fer_finger_joint1:
       d: 10.0
-      i: 0.1
-      iclamp: 0.5
-      p: 20.0
-    goal_tolerance: 0.001
+      i: 0.0
+      iclamp: 0.0
+      p: 350.0
+    # Two commanded states exist: 0.00 (close) and 0.04 (open) — 5 mm is
+    # unambiguous. At 1 mm the open stalled 3.8 mm short against finger
+    # friction and reported stalled instead of reached_goal, failing the
+    # bridge's release verification.
+    goal_tolerance: 0.005
     max_effort: 40.0
+    # Closing on the cube succeeds via STALL (the goal overdrives to 0 so
+    # the effort PID squeezes). The finger's measured grip noise while the
+    # arm dwells under the 25 Hz MPPI is ~0.001 m/s — at a threshold of
+    # 0.001 the stall timer keeps resetting and the action needs ~11 s to
+    # terminate (P-B2 diagnosis 2026-07-16, tripped the bridge's 10 s
+    # backstop). 0.005 is still unambiguously "stopped" for a gripper and
+    # reports the grasp ~1 s after contact.
     allow_stalling: true
-    stall_velocity_threshold: 0.001
+    stall_velocity_threshold: 0.005
     stall_timeout: 1.0

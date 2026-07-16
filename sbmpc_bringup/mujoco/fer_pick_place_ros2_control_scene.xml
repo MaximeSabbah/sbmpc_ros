@@ -44,8 +44,11 @@
        solref="0.01 1" solimp="0.99 0.995 0.01"/>
     </body>
 
-    <!-- Target placement position (mocap, user-draggable) -->
-    <body mocap="true" name="target" pos="0.5 0.3 0.15">
+    <!-- Target placement position (mocap, visual marker). Matches the
+         certified pick-and-place config (hydrax configs/pick_place.yaml
+         geometry.target_pos): the planner's target is the config value,
+         this body only visualizes it. -->
+    <body mocap="true" name="target" pos="0.65 0.0 0.025">
       <geom type="box" size="0.02 0.02 0.025" rgba="1 0.2 0.2 0.3"
        contype="0" conaffinity="0"/>
     </body>

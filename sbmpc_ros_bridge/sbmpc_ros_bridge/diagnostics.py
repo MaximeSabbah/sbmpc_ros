@@ -43,6 +43,12 @@ class BridgeDiagnostics:
     last_control_gain_norm: float | None
     last_error: str
     planner_mode: str | None = None
+    # Gripper action round-trip (pick-and-place, P3): the last planner
+    # gripper command seen by the bridge and the client's state snapshot
+    # (goal_count / last_result / failure). None when no gripper is wired
+    # or the task never commands one (pregrasp).
+    last_gripper_command: str | None = None
+    gripper: dict | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)

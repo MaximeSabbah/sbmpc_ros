@@ -147,7 +147,15 @@ def test_hydrax_bridge_config_is_transport_only() -> None:
     # 2026-07-06); this preset yaml is THE mode switch (user decision:
     # no launch-argument override).
     assert params["planner_mode"] == "exact_feedback"
+    # planner_ocp SELECTS which hydrax tuning surface/task the adapter
+    # loads (P3 design, user-approved 2026-07-10) — same yaml-key pattern
+    # as planner_mode. Selection, not tuning: the values still live only
+    # in the hydrax yaml (guard below).
+    assert params["planner_ocp"] in ("pregrasp", "pick_place")
     assert params["planner_warmup_iterations"] == 3
+    # The gripper action NAME is backend-dependent and injected by the
+    # launch; the preset must not pin it.
+    assert "gripper_action_name" not in params
 
 
 def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> None:
@@ -159,10 +167,11 @@ def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> 
 
 
 def test_hydrax_bridge_config_does_not_duplicate_the_hydrax_tuning_surface() -> None:
-    # The hydrax OCP tuning lives exclusively in hydrax/configs/pregrasp.yaml;
-    # the bridge preset is transport wiring only.
+    # The hydrax OCP tuning lives exclusively in the hydrax configs yaml
+    # (pregrasp.yaml / pick_place.yaml, selected by planner_ocp); the
+    # bridge preset is transport wiring only.
     params = load_yaml("hydrax_bridge.yaml")["sbmpc_lfc_bridge_node"]["ros__parameters"]
-    for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML + ("planner_cost_weights", "planner_ocp"):
+    for knob in MPPI_KNOBS_OWNED_BY_OCP_YAML + ("planner_cost_weights",):
         assert knob not in params, (
-            f"{knob} duplicates hydrax/configs/pregrasp.yaml; tune it there instead."
+            f"{knob} duplicates the hydrax tuning surface; tune it there instead."
         )

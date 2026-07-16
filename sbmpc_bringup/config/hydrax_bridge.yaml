@@ -13,6 +13,23 @@ sbmpc_lfc_bridge_node:
     # plan reference. Remember: launch reads this file from the ros2_ws
     # INSTALL space — rebuild sbmpc_bringup after editing.
     planner_mode: exact_feedback
+    # Which hydrax task/tuning surface the adapter loads (set here like
+    # planner_mode, not by a launch argument; rebuild after editing):
+    #   pregrasp   -> hydrax/configs/pregrasp.yaml   (V-B4-certified reach)
+    #   pick_place -> hydrax/configs/pick_place.yaml (P2-certified sequence;
+    #                 the planner phase machine also drives the gripper
+    #                 through the bridge's GripperCommand action client)
+    planner_ocp: pick_place
+    # Gripper action goal values (actuator/deployment wiring, like the
+    # controller yaml's max_effort — NOT task tuning). The action NAME is
+    # backend-dependent and injected by the launch. Defaults shown are the
+    # bridge defaults, certified in sim (P-A2/P-A3): close overdrives to 0
+    # so the effort controller squeezes (it succeeds by stalling on the
+    # cube); the real close width is set during the P-B4 staging.
+    gripper_close_position: 0.0
+    gripper_open_position: 0.04
+    gripper_max_effort: 40.0
+    gripper_action_timeout_sec: 10.0
     planner_warmup_iterations: 3
     # Transport and deployment wiring ONLY. The OCP tuning (cost weights,
     # solver knobs, plan timing) lives exclusively in hydrax's single

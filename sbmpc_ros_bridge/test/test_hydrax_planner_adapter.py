@@ -257,3 +257,150 @@ def test_exact_feedback_lfc_anchor_is_the_solve_state(fb_adapter):
 def test_unknown_mode_is_rejected():
     with pytest.raises(ValueError):
         HydraxPlannerAdapter(mode="bogus")
+
+
+def test_unknown_ocp_is_rejected():
+    with pytest.raises(ValueError):
+        HydraxPlannerAdapter(ocp="bogus")
+
+
+# --- pick-and-place (P-B1, P3) ------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def pp_adapter() -> HydraxPlannerAdapter:
+    # The deployment pairing: exact_feedback + the pick_place task. Warmed
+    # once like the bridge does; each test resets the runtime state.
+    adapter = HydraxPlannerAdapter(mode="exact_feedback", ocp="pick_place")
+    adapter.warmup()
+    adapter.reset_runtime_state_after_warmup()
+    return adapter
+
+
+def _converged_input(adapter: HydraxPlannerAdapter) -> PlannerInput:
+    """Planner input sitting exactly on the current phase goal, at rest."""
+    from hydrax.tasks.panda_pick_place import Phase
+
+    pm = adapter._phase_machine
+    q = np.asarray(
+        adapter._task.phase_goal_q[min(pm.phase, Phase.RETREAT)],
+        dtype=np.float64,
+    )
+    v = np.zeros_like(q)
+    sensor = lfc_msgs.Sensor()
+    sensor.joint_state.name = [f"fer_joint{i}" for i in range(1, 8)]
+    sensor.joint_state.position = q.tolist()
+    sensor.joint_state.velocity = v.tolist()
+    return PlannerInput(sensor=sensor, q=q, v=v)
+
+
+def test_pick_place_config_matches_the_tuning_surface(pp_adapter):
+    from hydrax.configs import load_pick_place_config
+
+    options, config = load_pick_place_config()
+    ctrl = pp_adapter._ctrl
+    assert ctrl.compute_gains is True
+    assert ctrl.num_samples == config.num_samples
+    assert ctrl.temperature == config.temperature
+    assert ctrl.plan_horizon == config.plan_horizon
+    assert ctrl.num_knots == config.num_knots
+    assert ctrl.spline_type == config.spline_type
+    assert ctrl.iterations == config.iterations
+    assert ctrl.num_gain_samples == config.num_gain_samples
+    np.testing.assert_allclose(
+        np.asarray(ctrl.noise_std),
+        config.noise_scale * np.asarray(options.tau_max),
+        rtol=1e-6,
+    )
+    # The diagnostics goal is the placement target, not a pregrasp pose
+    np.testing.assert_allclose(pp_adapter._goal_pos, options.target_pos)
+
+
+def test_pick_place_walks_the_sequence_and_flips_the_law(pp_adapter):
+    """The full sequence through the adapter contract, converged inputs.
+
+    Per cycle the published K/anchor must match the P-A2-certified law:
+    exact_feedback (solver K) through motion phases, the constant
+    impedance under gain_mode="feedforward" with the dwell goal as the
+    reference through the CLOSE/OPEN precision holds — the bridge's
+    existing substitution then anchors LFC on the stationary reference.
+    """
+    from hydrax.tasks.panda_pick_place import Phase, _DWELL_PHASES
+
+    pp_adapter.reset_runtime_state_after_warmup()
+    task = pp_adapter._task
+    opts = task.options
+    impedance = -np.hstack([np.diag(opts.kp_fixed), np.diag(opts.kd_fixed)])
+    pm = pp_adapter._phase_machine
+
+    phases_seen: list[str] = []
+    grip_flips: list[tuple[str, str, float]] = []  # (command, phase, t_in)
+    last_command = None
+    max_steps = int(task.duration / task.dt) + 50
+    for _ in range(max_steps):
+        out = pp_adapter.step(_converged_input(pp_adapter))
+        phase = pm.phase
+        if not phases_seen or phases_seen[-1] != out.phase:
+            phases_seen.append(out.phase)
+        assert out.phase == phase.name
+        assert out.gripper_command in ("open", "close")
+        if out.gripper_command != last_command and last_command is not None:
+            start = float(task.segment_end_times[phase - 1])
+            grip_flips.append(
+                (out.gripper_command, out.phase, pm.plan_time - start)
+            )
+        last_command = out.gripper_command
+
+        if phase in _DWELL_PHASES:
+            # precision hold: impedance anchored on the dwell reference
+            assert out.diagnostics.gain_mode == "feedforward"
+            np.testing.assert_allclose(out.K, impedance)
+            np.testing.assert_allclose(
+                out.reference_q, task.phase_goal_q[phase], atol=1e-5
+            )
+            np.testing.assert_allclose(out.reference_v, np.zeros(7), atol=1e-5)
+        elif phase != Phase.DONE:
+            assert out.diagnostics.gain_mode == "exact_feedback"
+            assert not np.allclose(out.K, impedance)
+            assert out.diagnostics.gain_ess >= 1.0
+        if phase == Phase.DONE:
+            break
+
+    # the full sequence, in order, no skips
+    assert phases_seen == [p.name for p in Phase]
+    # exactly two gripper flips, each at its dwell's settle instant
+    assert [(c, p) for c, p, _ in grip_flips] == [
+        ("close", "CLOSE"),
+        ("open", "OPEN"),
+    ]
+    for _, _, t_in in grip_flips:
+        assert t_in == pytest.approx(opts.dwell_settle_sec, abs=task.dt)
+    # the plan clock stayed a python float (traced-dtype recompile guard)
+    assert type(pm.plan_time) is float
+
+
+def test_pick_place_gripper_wait_freezes_the_clock(pp_adapter):
+    pp_adapter.reset_runtime_state_after_warmup()
+    pm = pp_adapter._phase_machine
+    planner_input = _converged_input(pp_adapter)
+
+    out = pp_adapter.step(planner_input)
+    t_after_first = pm.plan_time
+    assert t_after_first > 0.0
+
+    pp_adapter.set_gripper_wait(True)
+    frozen_first = pp_adapter.step(planner_input)
+    frozen_second = pp_adapter.step(planner_input)
+    assert pm.plan_time == t_after_first  # the clock did not move
+    assert frozen_first.phase == frozen_second.phase == out.phase
+    # frozen cycles still publish a full, valid control
+    validate_planner_output(frozen_second.tau_ff, frozen_second.K)
+
+    pp_adapter.set_gripper_wait(False)
+    pp_adapter.step(planner_input)
+    assert pm.plan_time > t_after_first
+
+    # reset rebuilds a fresh machine and clears the wait flag
+    pp_adapter.reset_runtime_state_after_warmup()
+    assert pp_adapter._phase_machine.plan_time == 0.0
+    assert pp_adapter._gripper_wait is False

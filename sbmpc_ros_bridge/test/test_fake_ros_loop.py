@@ -44,6 +44,7 @@ class FakePlannerOutput:
     diagnostics: object | None = None
     reference_q: np.ndarray | None = None
     reference_v: np.ndarray | None = None
+    gripper_command: object | None = None
 
 
 @dataclass(frozen=True)

@@ -156,6 +156,21 @@ class SbMpcLfcBridgeNode(Node):
         self.declare_parameter("planner_num_gain_samples", 0)
         self.declare_parameter("planner_compute_task_diagnostics", False)
         self.declare_parameter("planner_ocp", "pregrasp")
+        # Gripper action wiring (pick-and-place, P3). The bridge stays
+        # transport: it executes the planner's gripper_command via ONE
+        # control_msgs/GripperCommand client; the action name is the only
+        # per-backend difference and is injected by the launch (sim
+        # gripper_action_controller vs real agimus_franka_gripper). Empty
+        # name = no gripper wired. The positions/effort are actuator
+        # goal values (deployment wiring, like the controller yaml's
+        # max_effort), NOT task tuning.
+        self.declare_parameter("gripper_action_name", "")
+        self.declare_parameter("gripper_close_position", 0.0)
+        self.declare_parameter("gripper_open_position", 0.04)
+        self.declare_parameter("gripper_max_effort", 40.0)
+        # Liveness backstop while the plan clock is frozen on an in-flight
+        # gripper action; 0 disables.
+        self.declare_parameter("gripper_action_timeout_sec", 10.0)
         self.declare_parameter("publish_rollout_markers", False)
         self.declare_parameter("rollout_marker_topic", "/sbmpc/trajectory_markers")
         self.declare_parameter("rollout_marker_frame_id", "base")
@@ -284,6 +299,20 @@ class SbMpcLfcBridgeNode(Node):
             )
             if callable(enable_rollout_capture):
                 enable_rollout_capture(True)
+        gripper_action_name = (
+            self.get_parameter("gripper_action_name")
+            .get_parameter_value()
+            .string_value
+        ).strip()
+        self._gripper_client = (
+            self._build_gripper_client(gripper_action_name)
+            if gripper_action_name
+            else None
+        )
+        # Baseline for change detection: the first planner output seeds it,
+        # so only actual command flips (CLOSE/OPEN settle instants) send
+        # goals — never the initial state.
+        self._last_gripper_command: str | None = None
         self._deadline_monitor = PlanningDeadlineMonitor(
             max_planning_duration_sec=planner_deadline_sec,
             fail_closed=False,
@@ -527,6 +556,12 @@ class SbMpcLfcBridgeNode(Node):
             last_control_gain_norm=self._last_control_gain_norm,
             last_error=self._last_error,
             planner_mode=self._planner_mode,
+            last_gripper_command=self._last_gripper_command,
+            gripper=(
+                self._gripper_client.snapshot()
+                if self._gripper_client is not None
+                else None
+            ),
         )
 
     def _on_timer(self) -> None:
@@ -659,13 +694,86 @@ class SbMpcLfcBridgeNode(Node):
                 HydraxPlannerAdapter,
             )
 
-            return HydraxPlannerAdapter(mode=planner_config.mode)
+            # planner_ocp selects which hydrax tuning surface/task the
+            # adapter loads (pregrasp | pick_place); the OCP values still
+            # come exclusively from the hydrax yaml.
+            return HydraxPlannerAdapter(
+                mode=planner_config.mode,
+                ocp=planner_config.ocp,
+            )
         if planner_impl != "sbmpc":
             raise ValueError(
                 f"Unsupported planner_impl '{planner_impl}'. "
                 "Choose 'sbmpc' or 'hydrax'."
             )
         return SbMpcPlannerAdapter(config_overrides=planner_config)
+
+    def _build_gripper_client(self, action_name: str):
+        from sbmpc_ros_bridge.gripper_client import GripperCommandClient
+
+        return GripperCommandClient(
+            self,
+            action_name=action_name,
+            close_position=self._nonnegative_double_parameter(
+                "gripper_close_position"
+            ),
+            open_position=self._nonnegative_double_parameter(
+                "gripper_open_position"
+            ),
+            max_effort=self._nonnegative_double_parameter(
+                "gripper_max_effort"
+            ),
+        )
+
+    def _sync_gripper_before_step(self) -> bool:
+        """Escalate gripper failures and mirror in-flight state.
+
+        Returns False when the planner must not step (a gripper fault has
+        been latched). While a goal is in flight the adapter's plan clock
+        is frozen (``set_gripper_wait``), so the phase machine waits on the
+        action result — the plan's action-latency liveness fix.
+        """
+        client = self._gripper_client
+        if client is None:
+            return True
+        failure = client.failure
+        if failure is not None:
+            self._latch_fatal_error(f"Gripper action failed: {failure}")
+            return False
+        timeout_sec = self._nonnegative_double_parameter(
+            "gripper_action_timeout_sec"
+        )
+        busy_sec = client.busy_duration_sec()
+        if timeout_sec > 0.0 and busy_sec is not None and busy_sec > timeout_sec:
+            self._latch_fatal_error(
+                f"Gripper action timed out after {busy_sec:.1f}s "
+                f"(gripper_action_timeout_sec={timeout_sec:.1f})."
+            )
+            return False
+        set_wait = getattr(self._planner, "set_gripper_wait", None)
+        if callable(set_wait):
+            set_wait(client.busy)
+        return True
+
+    def _dispatch_gripper_command(self, planner_output: object) -> None:
+        command = getattr(planner_output, "gripper_command", None)
+        if command is None:
+            return
+        command = str(command)
+        if self._last_gripper_command is None:
+            self._last_gripper_command = command
+            return
+        if command == self._last_gripper_command:
+            return
+        self._last_gripper_command = command
+        if self._gripper_client is None:
+            self.get_logger().warn(
+                f"planner commanded gripper '{command}' but no gripper "
+                "action is wired (gripper_action_name is empty)."
+            )
+            return
+        self.get_logger().info(f"gripper command: {command}")
+        self._gripper_client.execute(command)
 
     def _run_planner_worker(self) -> None:
         while not self._closing.is_set():
@@ -685,6 +793,8 @@ class SbMpcLfcBridgeNode(Node):
             if planner_input is None:
                 continue
             planner_input = self._predict_delayed_planner_input(planner_input)
+            if not self._sync_gripper_before_step():
+                continue
 
             try:
                 step_start = perf_counter()
@@ -702,6 +812,7 @@ class SbMpcLfcBridgeNode(Node):
                 self._accepted_planner_output_count += 1
                 self._last_error = ""
                 self._state = "running"
+                self._dispatch_gripper_command(planner_output)
                 self._observe_planning_deadline(step_wall_sec)
                 self._log_solve(step_wall_sec, planner_input, planner_output)
                 self._publish_rollout_markers(planner_input, planner_output)

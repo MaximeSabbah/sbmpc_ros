@@ -228,6 +228,18 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    # The planner's gripper_command executes through ONE GripperCommand
+    # action client in the bridge; only the action name differs per backend
+    # (the launch owns backend knowledge). Empty = no gripper wired.
+    if _is_true(context, "use_gripper"):
+        gripper_action_name = (
+            "/gripper_action_controller/gripper_cmd"
+            if is_mujoco
+            else "/fer_gripper/gripper_action"
+        )
+    else:
+        gripper_action_name = ""
+
     bridge = Node(
         executable="python",
         arguments=["-m", "sbmpc_ros_bridge.lfc_bridge_node"],
@@ -240,6 +252,7 @@ def launch_setup(context, *args, **kwargs):
                 # the preset yaml repeats it, but the launch owns the choice
                 # (a missing/stale preset must not silently flip the planner).
                 "planner_impl": planner,
+                "gripper_action_name": gripper_action_name,
                 # Always start disarmed; the warmup step arms after JIT/warmup.
                 "enable_nonzero_control": False,
                 "publish_rollout_markers": ParameterValue(
