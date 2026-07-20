@@ -153,9 +153,10 @@ def test_hydrax_bridge_config_is_transport_only() -> None:
     # in the hydrax yaml (guard below).
     assert params["planner_ocp"] in ("pregrasp", "pick_place")
     assert params["planner_warmup_iterations"] == 3
-    # The gripper action NAME is backend-dependent and injected by the
-    # launch; the preset must not pin it.
+    # The gripper action NAME and CLOSE position are backend-dependent and
+    # injected by the launch; the preset must not pin them.
     assert "gripper_action_name" not in params
+    assert "gripper_close_position" not in params
 
 
 def test_bridge_config_does_not_duplicate_mppi_knobs_owned_by_the_ocp_yaml() -> None:

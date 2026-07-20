@@ -21,12 +21,11 @@ sbmpc_lfc_bridge_node:
     #                 through the bridge's GripperCommand action client)
     planner_ocp: pick_place
     # Gripper action goal values (actuator/deployment wiring, like the
-    # controller yaml's max_effort — NOT task tuning). The action NAME is
-    # backend-dependent and injected by the launch. Defaults shown are the
-    # bridge defaults, certified in sim (P-A2/P-A3): close overdrives to 0
-    # so the effort controller squeezes (it succeeds by stalling on the
-    # cube); the real close width is set during the P-B4 staging.
-    gripper_close_position: 0.0
+    # controller yaml's max_effort — NOT task tuning). The action NAME and
+    # the CLOSE position are backend-dependent and injected by the launch
+    # (sim: overdrive to 0 so the effort controller squeezes; real: half
+    # the cube width so the franka grasp verifies). The values below are
+    # backend-invariant.
     gripper_open_position: 0.04
     gripper_max_effort: 40.0
     gripper_action_timeout_sec: 10.0

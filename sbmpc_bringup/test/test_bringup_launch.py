@@ -201,6 +201,55 @@ def test_real_lfc_spawner_activates_up_front_without_the_sim_overlay() -> None:
     assert arguments.count("--param-file") == 2
 
 
+# --- gripper wiring ----------------------------------------------------------
+
+
+def bridge_param_dict(actions) -> dict:
+    """The inline parameter dict of the bridge node, flattened.
+
+    launch_ros normalizes parameter dicts: keys become substitution tuples
+    and string VALUES become substitution tuples of their yaml dump (with
+    the trailing document-end marker); flatten both back to plain python.
+    """
+    import yaml
+
+    def text(parts) -> str:
+        return "".join(getattr(part, "text", str(part)) for part in parts)
+
+    node = next(n for n in nodes_of(actions) if n.node_executable == "python")
+    for entry in getattr(node, "_Node__parameters"):
+        if isinstance(entry, dict):
+            return {
+                text(key): (
+                    yaml.safe_load(text(value))
+                    if isinstance(value, (list, tuple))
+                    else value
+                )
+                for key, value in entry.items()
+            }
+    raise AssertionError("bridge node has no inline parameter dict")
+
+
+def test_gripper_wiring_is_injected_per_backend() -> None:
+    sim = bridge_param_dict(setup_actions("mujoco"))
+    assert sim["gripper_action_name"] == "/gripper_action_controller/gripper_cmd"
+    # sim overdrives to 0: the effort controller's squeeze force IS the
+    # residual position error times its PID p (P-B2 fix, 2026-07-16)
+    assert sim["gripper_close_position"] == 0.0
+
+    real = bridge_param_dict(setup_actions("real"))
+    assert real["gripper_action_name"] == "/fer_gripper/gripper_action"
+    # real maps position -> franka grasp width (2x, epsilon +-5 mm): half
+    # the 0.04 m cube, or the grasp reports failure while physically
+    # holding it and trips the bridge's fail-closed path
+    assert real["gripper_close_position"] == 0.02
+
+
+def test_use_gripper_false_unwires_the_gripper_client() -> None:
+    params = bridge_param_dict(setup_actions("mujoco", use_gripper="false"))
+    assert params["gripper_action_name"] == ""
+
+
 # --- recorder ---------------------------------------------------------------
 
 

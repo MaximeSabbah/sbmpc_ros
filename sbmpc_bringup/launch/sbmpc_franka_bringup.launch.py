@@ -229,8 +229,14 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # The planner's gripper_command executes through ONE GripperCommand
-    # action client in the bridge; only the action name differs per backend
-    # (the launch owns backend knowledge). Empty = no gripper wired.
+    # action client in the bridge; the action name and the close position
+    # differ per backend (the launch owns backend knowledge). Empty name =
+    # no gripper wired. Close position: the sim's effort controller needs
+    # the overdrive to 0 — its squeeze force IS the residual position
+    # error times the PID p — while the real agimus node maps position to
+    # a franka grasp width (2x, epsilon +-5 mm): it must be half the cube
+    # width (0.04 m cube), or the grasp "fails" while physically holding
+    # the cube and trips the bridge's fail-closed path.
     if _is_true(context, "use_gripper"):
         gripper_action_name = (
             "/gripper_action_controller/gripper_cmd"
@@ -239,6 +245,7 @@ def launch_setup(context, *args, **kwargs):
         )
     else:
         gripper_action_name = ""
+    gripper_close_position = 0.0 if is_mujoco else 0.02
 
     bridge = Node(
         executable="python",
@@ -253,6 +260,7 @@ def launch_setup(context, *args, **kwargs):
                 # (a missing/stale preset must not silently flip the planner).
                 "planner_impl": planner,
                 "gripper_action_name": gripper_action_name,
+                "gripper_close_position": gripper_close_position,
                 # Always start disarmed; the warmup step arms after JIT/warmup.
                 "enable_nonzero_control": False,
                 "publish_rollout_markers": ParameterValue(
