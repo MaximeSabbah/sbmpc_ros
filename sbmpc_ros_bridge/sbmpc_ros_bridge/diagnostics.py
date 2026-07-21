@@ -41,6 +41,11 @@ class BridgeDiagnostics:
     last_reference_v: list[float] | None
     last_control_max_abs_feedforward: float | None
     last_control_gain_norm: float | None
+    # Compact summary of the final feedback matrix actually published to LFC.
+    # The complete 7x14 matrix remains available in the Control/replay stream.
+    last_control_position_gain_diagonal: list[float] | None
+    last_control_velocity_gain_diagonal: list[float] | None
+    last_control_gain_max_abs_off_diagonal: float | None
     last_error: str
     planner_mode: str | None = None
     # Gripper action round-trip (pick-and-place, P3): the last planner
@@ -49,6 +54,9 @@ class BridgeDiagnostics:
     # or the task never commands one (pregrasp).
     last_gripper_command: str | None = None
     gripper: dict | None = None
+    # Pick-and-place event-gate snapshot. None for planners without a phase
+    # machine (including the pregrasp OCP).
+    phase_machine: dict | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True)

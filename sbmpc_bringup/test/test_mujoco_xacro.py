@@ -3,6 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES, FER_GRIPPER_JOINT_NAME
@@ -146,8 +147,18 @@ def test_ros2_control_scene_declares_pick_place_task_contract() -> None:
     assert option is not None
     assert option.attrib["timestep"] == "0.001"
 
-    assert root.find("./worldbody/body[@name='object']") is not None
-    assert root.find("./worldbody/body[@name='target']") is not None
+    object_body = root.find("./worldbody/body[@name='object']")
+    target_body = root.find("./worldbody/body[@name='target']")
+    assert object_body is not None
+    assert target_body is not None
+    assert object_body.attrib["pos"].split() == ["0.5", "0.0", "0.105"]
+    assert object_body.attrib["gravcomp"] == "1"
+    assert target_body.attrib["pos"].split() == ["0.65", "0.0", "0.105"]
+
+    home = root.find("./keyframe/key[@name='home']")
+    assert home is not None
+    home_qpos = np.asarray([float(value) for value in home.attrib["qpos"].split()])
+    assert home_qpos[9:12] == pytest.approx([0.5, 0.0, 0.105])
 
     sensors = {(sensor.tag, sensor.attrib["name"]) for sensor in root.findall("./sensor/*")}
     assert sensors >= {
@@ -183,3 +194,13 @@ def test_ros2_control_scene_loads_with_mujoco_when_python_bindings_are_available
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home") >= 0
     for joint_name in (*FER_ARM_JOINT_NAMES, "fer_finger_joint1", "fer_finger_joint2"):
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name) >= 0
+
+    object_body_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "object"
+    )
+    assert model.body_gravcomp[object_body_id] == pytest.approx(1.0)
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, model.key("home").id)
+    for _ in range(1000):
+        mujoco.mj_step(model, data)
+    assert data.qpos[9:12] == pytest.approx([0.5, 0.0, 0.105], abs=1e-6)

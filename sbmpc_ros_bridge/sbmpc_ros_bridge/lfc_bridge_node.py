@@ -53,6 +53,7 @@ from sbmpc_ros_bridge.safety import (
 CONTROL_QOS_DEPTH = 10
 SENSOR_QOS_DEPTH = 1
 CONTROLLER_MANAGER_CPU_COUNT = 2
+PHASE_GATE_LOG_PERIOD_SEC = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +336,12 @@ class SbMpcLfcBridgeNode(Node):
         self._last_control_publish_time_ms: float | None = None
         self._last_phase: str | None = None
         self._last_next_phase: str | None = None
+        self._last_phase_machine: dict[str, object] | None = None
+        self._last_logged_phase: str | None = None
+        self._phase_gate_waiting = False
+        self._phase_gate_waiting_phase: str | None = None
+        self._last_phase_gate_log_wall_sec: float | None = None
+        self._last_phase_gate_log_signature: tuple[object, ...] | None = None
         self._last_running_cost: float | None = None
         self._last_gain_norm: float | None = None
         self._last_torque_norm: float | None = None
@@ -347,6 +354,9 @@ class SbMpcLfcBridgeNode(Node):
         self._last_rollout_marker_publish_wall_sec: float | None = None
         self._last_control_max_abs_feedforward: float | None = None
         self._last_control_gain_norm: float | None = None
+        self._last_control_position_gain_diagonal: list[float] | None = None
+        self._last_control_velocity_gain_diagonal: list[float] | None = None
+        self._last_control_gain_max_abs_off_diagonal: float | None = None
         self._planner_mode: str | None = planner_config.mode
         self._last_error = ""
         self._warmup_complete = False
@@ -554,6 +564,15 @@ class SbMpcLfcBridgeNode(Node):
             last_reference_v=self._last_reference_v,
             last_control_max_abs_feedforward=self._last_control_max_abs_feedforward,
             last_control_gain_norm=self._last_control_gain_norm,
+            last_control_position_gain_diagonal=(
+                self._last_control_position_gain_diagonal
+            ),
+            last_control_velocity_gain_diagonal=(
+                self._last_control_velocity_gain_diagonal
+            ),
+            last_control_gain_max_abs_off_diagonal=(
+                self._last_control_gain_max_abs_off_diagonal
+            ),
             last_error=self._last_error,
             planner_mode=self._planner_mode,
             last_gripper_command=self._last_gripper_command,
@@ -562,6 +581,7 @@ class SbMpcLfcBridgeNode(Node):
                 if self._gripper_client is not None
                 else None
             ),
+            phase_machine=self._last_phase_machine,
         )
 
     def _on_timer(self) -> None:
@@ -667,6 +687,9 @@ class SbMpcLfcBridgeNode(Node):
         self._last_control_publish_time_ms = 1000.0 * (
             perf_counter() - publish_start
         )
+        # Log only after the corresponding, fully regularized Control has
+        # been published and its final gain summary has been recorded.
+        self._log_phase_machine(planner_output)
         return True
 
     def _clear_latest_planner_output(self) -> None:
@@ -969,6 +992,122 @@ class SbMpcLfcBridgeNode(Node):
         except Exception:
             return None
 
+    def _log_phase_machine(self, planner_output: object) -> None:
+        """Log phase changes and rate-limit reports for a blocked gate."""
+        diagnostics = getattr(planner_output, "diagnostics", None)
+        snapshot = getattr(diagnostics, "phase_machine", None)
+        if not isinstance(snapshot, dict):
+            return
+
+        phase = str(snapshot.get("phase", "unknown"))
+        next_phase = snapshot.get("next_phase")
+        status = str(snapshot.get("transition_status", "unknown"))
+        hold = bool(snapshot.get("precision_hold", False))
+        gain_mode = getattr(diagnostics, "gain_mode", None)
+        gripper_command = snapshot.get("gripper_command")
+        paused = bool(snapshot.get("clock_paused", False))
+        gate_type = snapshot.get("gate_type")
+
+        def fmt(value: object, digits: int = 3) -> str:
+            try:
+                return f"{float(value):.{digits}f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        def joint_label(value: object) -> str:
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                return "joint[unknown]"
+            if 0 <= index < len(self._joint_names):
+                return self._joint_names[index]
+            return f"joint[{index}]"
+
+        def fmt_vector(value: list[float] | None) -> str:
+            if value is None:
+                return "n/a"
+            return "[" + ",".join(fmt(item, 1) for item in value) + "]"
+
+        def gain_summary() -> str:
+            return (
+                "last_lfc_qdiag="
+                f"{fmt_vector(self._last_control_position_gain_diagonal)} "
+                "last_lfc_vdiag="
+                f"{fmt_vector(self._last_control_velocity_gain_diagonal)} "
+                "last_lfc_offdiag="
+                f"{fmt(self._last_control_gain_max_abs_off_diagonal)}"
+            )
+
+        if phase != self._last_logged_phase:
+            self.get_logger().info(
+                "[pick_place phase] "
+                f"phase={phase} next={next_phase} "
+                f"t={fmt(snapshot.get('plan_time_sec'))}s "
+                f"elapsed={fmt(snapshot.get('phase_elapsed_sec'))}s "
+                f"gate={gate_type}:{status} "
+                f"q={fmt(snapshot.get('q_error_max_rad'))}/"
+                f"{fmt(snapshot.get('q_tolerance_rad'))}rad "
+                f"v={fmt(snapshot.get('velocity_abs_max_rad_s'))}/"
+                f"{fmt(snapshot.get('velocity_tolerance_rad_s'))}rad/s "
+                f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}m "
+                f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}rad "
+                f"hold={hold} law={gain_mode} gripper={gripper_command} "
+                f"paused={paused} {gain_summary()}"
+            )
+            self._last_logged_phase = phase
+
+        blocked = bool(snapshot.get("transition_blocked", False))
+        signature = (phase, status, hold, gain_mode, paused)
+        now = perf_counter()
+        log_due = (
+            not self._phase_gate_waiting
+            or signature != self._last_phase_gate_log_signature
+            or self._last_phase_gate_log_wall_sec is None
+            or now - self._last_phase_gate_log_wall_sec
+            >= PHASE_GATE_LOG_PERIOD_SEC
+        )
+        if blocked and log_due:
+            gripper_state = (
+                self._gripper_client.snapshot()
+                if self._gripper_client is not None
+                else None
+            )
+            if gripper_state is None:
+                gripper_action = "unwired"
+            else:
+                gripper_action = (
+                    f"busy={gripper_state.get('busy')} "
+                    f"goals={gripper_state.get('goal_count')} "
+                    f"failure={gripper_state.get('failure')!r}"
+                )
+            self.get_logger().warn(
+                "[pick_place gate] BLOCKED "
+                f"{phase}->{next_phase} reason={status} "
+                f"t={fmt(snapshot.get('plan_time_sec'))}/"
+                f"{fmt(snapshot.get('boundary_time_sec'))}s "
+                f"q_max={fmt(snapshot.get('q_error_max_rad'))}/"
+                f"{fmt(snapshot.get('q_tolerance_rad'))}rad@"
+                f"{joint_label(snapshot.get('q_error_joint_index'))} "
+                f"v_max={fmt(snapshot.get('velocity_abs_max_rad_s'))}/"
+                f"{fmt(snapshot.get('velocity_tolerance_rad_s'))}rad/s@"
+                f"{joint_label(snapshot.get('velocity_joint_index'))} "
+                f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}m "
+                f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}rad "
+                f"hold={hold} law={gain_mode} gripper={gripper_command} "
+                f"action=({gripper_action}) paused={paused} {gain_summary()}"
+            )
+            self._last_phase_gate_log_wall_sec = now
+            self._last_phase_gate_log_signature = signature
+        elif not blocked and self._phase_gate_waiting:
+            self.get_logger().info(
+                "[pick_place gate] RELEASED "
+                f"phase={self._phase_gate_waiting_phase} now={phase} "
+                f"t={fmt(snapshot.get('plan_time_sec'))}s"
+            )
+
+        self._phase_gate_waiting = blocked
+        self._phase_gate_waiting_phase = phase if blocked else None
+
     def _publish_emergency_hold(
         self,
         planner_input: PlannerInput,
@@ -1206,8 +1345,13 @@ class SbMpcLfcBridgeNode(Node):
         )
 
         diagnostics = getattr(planner_output, "diagnostics", None)
+        self._last_phase_machine = None
         if diagnostics is None:
             return
+
+        phase_machine = getattr(diagnostics, "phase_machine", None)
+        if isinstance(phase_machine, dict):
+            self._last_phase_machine = deepcopy(phase_machine)
 
         self._last_planning_time_ms = self._maybe_float(
             getattr(diagnostics, "planning_time_ms", None)
@@ -1377,6 +1521,26 @@ class SbMpcLfcBridgeNode(Node):
         self._last_control_gain_norm = (
             float(np.linalg.norm(gain_data)) if gain_data.size else 0.0
         )
+        self._last_control_position_gain_diagonal = None
+        self._last_control_velocity_gain_diagonal = None
+        self._last_control_gain_max_abs_off_diagonal = None
+        joint_count = len(self._joint_names)
+        expected_gain_size = 2 * joint_count * joint_count
+        if gain_data.size == expected_gain_size:
+            gain = gain_data.reshape(joint_count, 2 * joint_count)
+            rows = np.arange(joint_count)
+            self._last_control_position_gain_diagonal = gain[
+                rows, rows
+            ].tolist()
+            self._last_control_velocity_gain_diagonal = gain[
+                rows, joint_count + rows
+            ].tolist()
+            off_diagonal = gain.copy()
+            off_diagonal[rows, rows] = 0.0
+            off_diagonal[rows, joint_count + rows] = 0.0
+            self._last_control_gain_max_abs_off_diagonal = float(
+                np.max(np.abs(off_diagonal))
+            )
         if (
             self._last_control_max_abs_feedforward > 1e-12
             or self._last_control_gain_norm > 1e-12

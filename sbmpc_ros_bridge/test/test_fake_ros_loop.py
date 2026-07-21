@@ -60,6 +60,7 @@ class FakePlannerDiagnostics:
     gain_mode: str = "exact_feedback"
     planner_prepare_time_ms: float = 0.4
     planner_command_time_ms: float = 9.5
+    phase_machine: dict[str, object] | None = None
 
 
 class FakePlanner:
@@ -301,6 +302,76 @@ def test_bridge_destroy_closes_planner() -> None:
     assert planner.close_calls == 1
 
 
+def test_bridge_diagnostics_preserve_phase_machine_json() -> None:
+    """The nested gate report survives planner -> bridge -> JSON unchanged."""
+    gate: dict[str, object] = {
+        "phase": "PREGRASP",
+        "next_phase": "DESCEND",
+        "gate_type": "state",
+        "plan_time_sec": 2.4,
+        "phase_elapsed_sec": 2.4,
+        "boundary_time_sec": 2.4,
+        "time_to_boundary_sec": 0.0,
+        "at_boundary": True,
+        "transition_status": "blocked_q",
+        "transition_blocked": True,
+        "q_error_signed_by_joint_rad": [
+            0.0,
+            0.0,
+            0.0,
+            0.061,
+            0.0,
+            0.0,
+            0.0,
+        ],
+        "q_error_max_rad": 0.061,
+        "q_error_joint_index": 3,
+        "q_tolerance_rad": 0.05,
+        "q_ok": False,
+        "velocity_by_joint_rad_s": [0.0] * 7,
+        "velocity_abs_max_rad_s": 0.0,
+        "velocity_joint_index": 0,
+        "velocity_tolerance_rad_s": 0.15,
+        "velocity_ok": True,
+        "precision_hold": False,
+        "gripper_command": "open",
+        "clock_paused": False,
+        "clock_pause_reason": None,
+        "ee_source": "planning_model_fk",
+        "ee_position_m": [0.5, 0.0, 0.11],
+        "ee_goal_position_m": [0.5, 0.0, 0.1],
+        "ee_position_error_signed_m": [0.0, 0.0, 0.01],
+        "ee_position_error_norm_m": 0.01,
+        "ee_orientation_error_rad": 0.002,
+    }
+    planner = FakePlanner()
+    bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
+    output = FakePlannerOutput(
+        tau_ff=np.zeros(7, dtype=np.float64),
+        K=np.zeros((7, 14), dtype=np.float64),
+        diagnostics=FakePlannerDiagnostics(phase_machine=gate),
+    )
+
+    try:
+        bridge._record_planner_diagnostics(output)
+        # Recording makes an owned copy; later planner mutations cannot alter
+        # the bridge's current diagnostic sample.
+        gate["transition_status"] = "ready"
+        snapshot = bridge.diagnostics_snapshot()
+        assert snapshot.phase_machine is not None
+        assert snapshot.phase_machine["transition_status"] == "blocked_q"
+        assert snapshot.phase_machine["q_error_joint_index"] == 3
+        assert snapshot.phase_machine[
+            "ee_position_error_norm_m"
+        ] == pytest.approx(0.01)
+
+        payload = json.loads(snapshot.to_json())
+        assert payload["phase_machine"] == snapshot.phase_machine
+        assert payload["phase_machine"]["transition_blocked"] is True
+    finally:
+        bridge.destroy_node()
+
+
 def test_fake_ros_loop_publishes_controls_near_target_rate_and_diagnostics() -> None:
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
@@ -496,6 +567,7 @@ def test_feedforward_diagonal_helper_ignores_exact_feedback_mode() -> None:
 
 def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
     planner = FakePlanner()
+    planner.feedback_gain[0, 1] = 0.25
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
     sensor_publisher = FakeSensorPublisher(enabled=True)
     collector = ControlCollector()
@@ -530,6 +602,24 @@ def test_fake_ros_loop_stays_zero_until_nonzero_control_is_enabled() -> None:
         assert snapshot.last_control_max_abs_feedforward == pytest.approx(0.5)
         assert snapshot.last_control_gain_norm is not None
         assert snapshot.last_control_gain_norm > 0.0
+        published_gain = float64_multi_array_to_numpy(
+            collector.controls[-1].feedback_gain
+        )
+        np.testing.assert_allclose(
+            snapshot.last_control_position_gain_diagonal,
+            np.diag(published_gain[:, :7]),
+        )
+        np.testing.assert_allclose(
+            snapshot.last_control_velocity_gain_diagonal,
+            np.diag(published_gain[:, 7:]),
+        )
+        off_diagonal = published_gain.copy()
+        rows = np.arange(7)
+        off_diagonal[rows, rows] = 0.0
+        off_diagonal[rows, 7 + rows] = 0.0
+        assert snapshot.last_control_gain_max_abs_off_diagonal == pytest.approx(
+            np.max(np.abs(off_diagonal))
+        )
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

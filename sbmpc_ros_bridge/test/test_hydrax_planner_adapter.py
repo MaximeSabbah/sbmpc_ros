@@ -7,6 +7,8 @@ e.g. in the pixi-env regression suite.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -122,6 +124,7 @@ def test_mode_and_diagnostics(adapter):
     assert out.next_phase == "PREGRASP"
     assert out.diagnostics.gain_mode == "feedforward"
     assert out.diagnostics.planning_time_ms > 0.0
+    assert out.diagnostics.phase_machine is None
     assert adapter.mpc_dt == pytest.approx(0.04)
 
 
@@ -286,7 +289,11 @@ def _converged_input(adapter: HydraxPlannerAdapter) -> PlannerInput:
         adapter._task.phase_goal_q[min(pm.phase, Phase.RETREAT)],
         dtype=np.float64,
     )
-    v = np.zeros_like(q)
+    return _state_input(q, np.zeros_like(q))
+
+
+def _state_input(q: np.ndarray, v: np.ndarray) -> PlannerInput:
+    """Build the measured-state contract used by the adapter."""
     sensor = lfc_msgs.Sensor()
     sensor.joint_state.name = [f"fer_joint{i}" for i in range(1, 8)]
     sensor.joint_state.position = q.tolist()
@@ -314,6 +321,58 @@ def test_pick_place_config_matches_the_tuning_surface(pp_adapter):
     )
     # The diagnostics goal is the placement target, not a pregrasp pose
     np.testing.assert_allclose(pp_adapter._goal_pos, options.target_pos)
+
+
+def test_pick_place_diagnostics_expose_a_blocked_pregrasp_gate(pp_adapter):
+    """The deployed payload explains why PREGRASP cannot advance."""
+    from hydrax.tasks.panda_pick_place import Phase
+
+    pp_adapter.reset_runtime_state_after_warmup()
+    task = pp_adapter._task
+    pm = pp_adapter._phase_machine
+    pm.plan_time = float(task.segment_end_times[Phase.PREGRASP])
+
+    q = np.asarray(task.phase_goal_q[Phase.PREGRASP], dtype=np.float64).copy()
+    q[3] += 0.06
+    v = np.zeros(7, dtype=np.float64)
+    out = pp_adapter.step(_state_input(q, v))
+
+    gate = out.diagnostics.phase_machine
+    assert gate is not None
+    assert out.phase == gate["phase"] == "PREGRASP"
+    assert out.next_phase == gate["next_phase"] == "DESCEND"
+    assert gate["gate_type"] == "state"
+    assert gate["at_boundary"] is True
+    assert gate["transition_status"] == "blocked_q"
+    assert gate["transition_blocked"] is True
+    assert gate["q_ok"] is False
+    assert gate["velocity_ok"] is True
+    assert gate["q_error_joint_index"] == 3
+    assert gate["q_error_max_rad"] == pytest.approx(0.06)
+    assert gate["q_error_signed_by_joint_rad"][3] == pytest.approx(0.06)
+    assert gate["q_tolerance_rad"] == pytest.approx(
+        task.options.transition_q_tolerance
+    )
+    assert gate["velocity_abs_max_rad_s"] == pytest.approx(0.0)
+    assert gate["velocity_tolerance_rad_s"] == pytest.approx(
+        task.options.transition_v_tolerance
+    )
+    assert gate["precision_hold"] is False
+    assert gate["clock_paused"] is False
+    assert gate["clock_pause_reason"] is None
+    assert gate["gripper_command"] == out.gripper_command == "open"
+    assert gate["ee_source"] == "planning_model_fk"
+    ee = np.asarray(gate["ee_position_m"])
+    ee_goal = np.asarray(gate["ee_goal_position_m"])
+    ee_error = np.asarray(gate["ee_position_error_signed_m"])
+    assert ee.shape == ee_goal.shape == ee_error.shape == (3,)
+    np.testing.assert_allclose(ee_error, ee - ee_goal)
+    assert gate["ee_position_error_norm_m"] == pytest.approx(
+        np.linalg.norm(ee_error)
+    )
+    assert gate["ee_orientation_error_rad"] >= 0.0
+    # This exact object is forwarded to BridgeDiagnostics.to_json().
+    json.dumps(gate, allow_nan=False)
 
 
 def test_pick_place_walks_the_sequence_and_flips_the_law(pp_adapter):
@@ -393,12 +452,21 @@ def test_pick_place_gripper_wait_freezes_the_clock(pp_adapter):
     frozen_second = pp_adapter.step(planner_input)
     assert pm.plan_time == t_after_first  # the clock did not move
     assert frozen_first.phase == frozen_second.phase == out.phase
+    frozen_gate = frozen_second.diagnostics.phase_machine
+    assert frozen_gate is not None
+    assert frozen_gate["clock_paused"] is True
+    assert frozen_gate["clock_pause_reason"] == "gripper_action"
+    assert frozen_gate["plan_time_sec"] == pytest.approx(t_after_first)
     # frozen cycles still publish a full, valid control
     validate_planner_output(frozen_second.tau_ff, frozen_second.K)
 
     pp_adapter.set_gripper_wait(False)
-    pp_adapter.step(planner_input)
+    resumed = pp_adapter.step(planner_input)
     assert pm.plan_time > t_after_first
+    resumed_gate = resumed.diagnostics.phase_machine
+    assert resumed_gate is not None
+    assert resumed_gate["clock_paused"] is False
+    assert resumed_gate["clock_pause_reason"] is None
 
     # reset rebuilds a fresh machine and clears the wait flag
     pp_adapter.reset_runtime_state_after_warmup()

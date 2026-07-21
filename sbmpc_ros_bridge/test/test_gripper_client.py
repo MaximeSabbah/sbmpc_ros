@@ -9,6 +9,7 @@ flight, fatal escalation on gripper failure).
 
 from __future__ import annotations
 
+import json
 import time
 
 import numpy as np
@@ -30,7 +31,13 @@ from test_fake_ros_loop import (  # noqa: E402
     teardown_executor,
 )
 
-from sbmpc_ros_bridge.gripper_client import GripperCommandClient  # noqa: E402
+from sbmpc_ros_bridge.gripper_client import (  # noqa: E402
+    GripperCommandClient,
+    STAGE_FAILED,
+    STAGE_SUCCEEDED,
+    STAGE_WAITING_FOR_GOAL_RESPONSE,
+    STAGE_WAITING_FOR_RESULT,
+)
 from sbmpc_ros_bridge.lfc_bridge_node import SbMpcLfcBridgeNode  # noqa: E402
 
 ACTION_NAME = "/fake_gripper/gripper_cmd"
@@ -138,8 +145,22 @@ def test_close_goal_carries_the_configured_position_and_effort() -> None:
     # Closing on the cube stalls the sim's effort controller: verified.
     assert client.failure is None
     assert not client.busy
-    assert client.snapshot()["goal_count"] == 1
-    assert client.snapshot()["last_result"]["stalled"] is True
+    snapshot = client.snapshot()
+    assert snapshot["stage"] == STAGE_SUCCEEDED
+    assert snapshot["goal_count"] == 1
+    assert snapshot["active_command"] is None
+    assert snapshot["busy_duration_sec"] is None
+    assert snapshot["submitted_position"] == pytest.approx(0.005)
+    assert snapshot["submitted_max_effort"] == pytest.approx(25.0)
+    assert snapshot["goal_response_latency_sec"] >= 0.0
+    assert snapshot["result_latency_sec"] >= 0.0
+    assert snapshot["total_duration_sec"] >= snapshot[
+        "goal_response_latency_sec"
+    ]
+    assert snapshot["last_result"]["command"] == "close"
+    assert snapshot["last_result"]["stalled"] is True
+    assert snapshot["last_result"]["verified"] is True
+    json.dumps(snapshot, allow_nan=False)
 
 
 def test_open_verifies_on_reached_goal() -> None:
@@ -177,6 +198,12 @@ def test_rejected_goal_is_a_failure() -> None:
     client = run_command("close", server)
     assert client.failure is not None
     assert "rejected" in client.failure
+    snapshot = client.snapshot()
+    assert snapshot["stage"] == STAGE_FAILED
+    assert snapshot["goal_response_latency_sec"] >= 0.0
+    assert snapshot["total_duration_sec"] >= snapshot[
+        "goal_response_latency_sec"
+    ]
 
 
 def test_missing_server_is_a_failure() -> None:
@@ -186,8 +213,57 @@ def test_missing_server_is_a_failure() -> None:
         client.execute("close")
         assert client.failure is not None
         assert "not available" in client.failure
+        snapshot = client.snapshot()
+        assert snapshot["stage"] == STAGE_FAILED
+        assert snapshot["active_command"] == "close"
+        assert snapshot["submitted_position"] == pytest.approx(0.0)
+        assert snapshot["submitted_max_effort"] == pytest.approx(40.0)
+        assert snapshot["goal_response_latency_sec"] is None
+        assert snapshot["total_duration_sec"] >= 0.0
     finally:
         host.destroy_node()
+
+
+def test_lifecycle_exposes_goal_response_and_result_waits() -> None:
+    server = FakeGripperServer(delay_sec=0.3)
+    host = ClientHost()
+    client = GripperCommandClient(host, action_name=ACTION_NAME)
+    from rclpy.executors import MultiThreadedExecutor
+
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(host)
+    executor.add_node(server)
+    try:
+        spin_for(executor, 0.2)
+        client.execute("close")
+        submitted = client.snapshot()
+        assert submitted["stage"] == STAGE_WAITING_FOR_GOAL_RESPONSE
+        assert submitted["active_command"] == "close"
+        assert submitted["busy_duration_sec"] >= 0.0
+
+        deadline = time.monotonic() + 1.0
+        waiting = submitted
+        while (
+            waiting["stage"] == STAGE_WAITING_FOR_GOAL_RESPONSE
+            and time.monotonic() < deadline
+        ):
+            executor.spin_once(timeout_sec=0.02)
+            waiting = client.snapshot()
+        assert waiting["stage"] == STAGE_WAITING_FOR_RESULT
+        assert waiting["goal_response_latency_sec"] >= 0.0
+        assert waiting["result_latency_sec"] is None
+
+        deadline = time.monotonic() + 1.0
+        while client.busy and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        completed = client.snapshot()
+        assert completed["stage"] == STAGE_SUCCEEDED
+        assert completed["result_latency_sec"] >= 0.0
+        assert completed["total_duration_sec"] >= completed[
+            "goal_response_latency_sec"
+        ]
+    finally:
+        teardown_executor(executor, host, server)
 
 
 def test_overlapping_commands_fail_closed() -> None:
@@ -203,6 +279,11 @@ def test_overlapping_commands_fail_closed() -> None:
         client.execute("open")
         assert client.failure is not None
         assert "in flight" in client.failure
+        snapshot = client.snapshot()
+        assert snapshot["stage"] == STAGE_FAILED
+        assert snapshot["active_command"] == "close"
+        assert snapshot["last_command"] == "close"
+        assert snapshot["total_duration_sec"] >= 0.0
     finally:
         teardown_executor(executor, host, server)
 

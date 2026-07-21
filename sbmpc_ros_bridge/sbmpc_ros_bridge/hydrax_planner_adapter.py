@@ -73,7 +73,7 @@ from __future__ import annotations
 
 import time
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
@@ -111,6 +111,9 @@ class HydraxPlannerDiagnostics:
     # size of the gain-batch softmax and the zero-noise nominal's weight
     gain_ess: float | None = None
     gain_nominal_weight: float | None = None
+    # Pick-and-place only: exact event-gate inputs and the resulting decision.
+    # Values are Python-native for direct JSON diagnostics publication.
+    phase_machine: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -264,6 +267,20 @@ class HydraxPlannerAdapter:
         self._site_id = mujoco.mj_name2id(
             self._cpu_model, mujoco.mjtObj.mjOBJ_SITE, "gripper"
         )
+        self._phase_goal_ee_positions = None
+        self._phase_goal_ee_rotations = None
+        if self._phase_machine is not None:
+            # Phase goals are constant. Cache their FK once so diagnostics do
+            # not add another mj_forward call to the 25 Hz control path.
+            phase_goal_poses = [
+                self._ee_pose(q) for q in self._task.phase_goal_q
+            ]
+            self._phase_goal_ee_positions = np.stack(
+                [pose[0] for pose in phase_goal_poses]
+            )
+            self._phase_goal_ee_rotations = np.stack(
+                [pose[1] for pose in phase_goal_poses]
+            )
         self._started = False
 
     # --- lifecycle -----------------------------------------------------
@@ -328,6 +345,9 @@ class HydraxPlannerAdapter:
         advance_clock: bool,
     ) -> HydraxPlannerOutput:
         prepare_start = time.perf_counter()
+        q_host = np.asarray(q, dtype=np.float64).reshape(-1)
+        v_host = np.asarray(v, dtype=np.float64).reshape(-1)
+        phase_machine_diagnostics = None
         if self._phase_machine is None:
             t = self._step_index * self._control_period
             i_ref = min(self._step_index, self._plan_q.shape[0] - 1)
@@ -336,17 +356,23 @@ class HydraxPlannerAdapter:
             # measured state, then solve at pm.plan_time). The clock is
             # frozen while the bridge waits on a gripper action result.
             if advance_clock and not self._gripper_wait:
-                self._phase_machine.update(
-                    np.asarray(q, dtype=np.float64),
-                    np.asarray(v, dtype=np.float64),
-                )
+                self._phase_machine.update(q_host, v_host)
             t = self._phase_machine.plan_time
             i_ref = min(
                 int(t * self._task.reference_fps), self._plan_q.shape[0] - 1
             )
+            phase_machine_diagnostics = asdict(
+                self._phase_machine.diagnostics_snapshot(q_host, v_host)
+            )
+            phase_machine_diagnostics.update(
+                clock_paused=bool(self._gripper_wait),
+                clock_pause_reason=(
+                    "gripper_action" if self._gripper_wait else None
+                ),
+            )
         state = self._mjx_data.replace(
-            qpos=np.asarray(q, dtype=np.float64),
-            qvel=np.asarray(v, dtype=np.float64),
+            qpos=q_host,
+            qvel=v_host,
             time=t,
         )
         prepare_ms = 1000.0 * (time.perf_counter() - prepare_start)
@@ -403,8 +429,27 @@ class HydraxPlannerAdapter:
                 "close" if self._phase_machine.gripper_closed else "open"
             )
 
-        ee = self.ee_position(q)
+        # This reuses the single CPU FK that was already performed here for
+        # terminal-target diagnostics; reading site_xmat adds no FK call.
+        ee, ee_rotation = self._ee_pose(q_host)
         position_error = float(np.linalg.norm(ee - self._goal_pos))
+        if phase_machine_diagnostics is not None:
+            phase = self._phase_machine.phase
+            goal_phase = min(phase, self._phase_enum.RETREAT)
+            phase_goal_ee = self._phase_goal_ee_positions[goal_phase]
+            phase_goal_rotation = self._phase_goal_ee_rotations[goal_phase]
+            ee_error = ee - phase_goal_ee
+            orientation_error = self._rotation_error_angle(
+                ee_rotation, phase_goal_rotation
+            )
+            phase_machine_diagnostics.update(
+                ee_source="planning_model_fk",
+                ee_position_m=ee.tolist(),
+                ee_goal_position_m=phase_goal_ee.tolist(),
+                ee_position_error_signed_m=ee_error.tolist(),
+                ee_position_error_norm_m=float(np.linalg.norm(ee_error)),
+                ee_orientation_error_rad=orientation_error,
+            )
 
         return HydraxPlannerOutput(
             tau_ff=tau_ff,
@@ -425,6 +470,7 @@ class HydraxPlannerAdapter:
                 planner_command_time_ms=command_ms,
                 gain_ess=gain_ess,
                 gain_nominal_weight=gain_nominal_weight,
+                phase_machine=phase_machine_diagnostics,
             ),
         )
 
@@ -448,13 +494,29 @@ class HydraxPlannerAdapter:
             mujoco.mj_step(self._cpu_model, data)
         return data.qpos.copy(), data.qvel.copy()
 
-    def ee_position(self, q: np.ndarray) -> np.ndarray | None:
+    def _ee_pose(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return gripper position and rotation from one CPU FK call."""
         mujoco = self._mujoco
         data = self._cpu_data
         data.qpos[:] = np.asarray(q, dtype=np.float64).reshape(-1)
         data.qvel[:] = 0.0
         mujoco.mj_forward(self._cpu_model, data)
-        return data.site_xpos[self._site_id].copy()
+        return (
+            data.site_xpos[self._site_id].copy(),
+            data.site_xmat[self._site_id].reshape(3, 3).copy(),
+        )
+
+    @staticmethod
+    def _rotation_error_angle(
+        rotation: np.ndarray, goal_rotation: np.ndarray
+    ) -> float:
+        """Shortest orientation error angle between two rotation matrices."""
+        relative = goal_rotation.T @ rotation
+        cosine = np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0)
+        return float(np.arccos(cosine))
+
+    def ee_position(self, q: np.ndarray) -> np.ndarray | None:
+        return self._ee_pose(q)[0]
 
     def gravity_torques(self, q: np.ndarray) -> np.ndarray | None:
         mujoco = self._mujoco
