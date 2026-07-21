@@ -375,14 +375,13 @@ def test_pick_place_diagnostics_expose_a_blocked_pregrasp_gate(pp_adapter):
     json.dumps(gate, allow_nan=False)
 
 
-def test_pick_place_walks_the_sequence_and_flips_the_law(pp_adapter):
+def test_pick_place_walks_the_sequence_and_keeps_exact_feedback(pp_adapter):
     """The full sequence through the adapter contract, converged inputs.
 
-    Per cycle the published K/anchor must match the P-A2-certified law:
-    exact_feedback (solver K) through motion phases, the constant
-    impedance under gain_mode="feedforward" with the dwell goal as the
-    reference through the CLOSE/OPEN precision holds — the bridge's
-    existing substitution then anchors LFC on the stationary reference.
+    The selected law is invariant across phases: every cycle publishes
+    the solve's F-MPPI K in exact_feedback, including CLOSE/OPEN precision
+    windows. The stationary dwell reference remains available for
+    diagnostics but never changes the LFC anchor or gain mode.
     """
     from hydrax.tasks.panda_pick_place import Phase, _DWELL_PHASES
 
@@ -410,18 +409,24 @@ def test_pick_place_walks_the_sequence_and_flips_the_law(pp_adapter):
             )
         last_command = out.gripper_command
 
+        assert out.diagnostics.gain_mode == "exact_feedback"
+        np.testing.assert_allclose(
+            out.K,
+            np.asarray(pp_adapter._params.gains, dtype=np.float64),
+        )
+        assert not np.allclose(out.K, impedance)
+        assert out.diagnostics.gain_ess >= 1.0
+        assert 0.0 <= out.diagnostics.gain_nominal_weight <= 1.0
+        assert out.diagnostics.gain_norm == pytest.approx(np.linalg.norm(out.K))
+
         if phase in _DWELL_PHASES:
-            # precision hold: impedance anchored on the dwell reference
-            assert out.diagnostics.gain_mode == "feedforward"
-            np.testing.assert_allclose(out.K, impedance)
+            # The precision window and stationary reference remain visible,
+            # but neither selects a different feedback law.
+            assert out.diagnostics.phase_machine["precision_hold"] is True
             np.testing.assert_allclose(
                 out.reference_q, task.phase_goal_q[phase], atol=1e-5
             )
             np.testing.assert_allclose(out.reference_v, np.zeros(7), atol=1e-5)
-        elif phase != Phase.DONE:
-            assert out.diagnostics.gain_mode == "exact_feedback"
-            assert not np.allclose(out.K, impedance)
-            assert out.diagnostics.gain_ess >= 1.0
         if phase == Phase.DONE:
             break
 
@@ -436,6 +441,44 @@ def test_pick_place_walks_the_sequence_and_flips_the_law(pp_adapter):
         assert t_in == pytest.approx(opts.dwell_settle_sec, abs=task.dt)
     # the plan clock stayed a python float (traced-dtype recompile guard)
     assert type(pm.plan_time) is float
+
+
+def test_pick_place_blocked_dwell_entry_keeps_exact_feedback(pp_adapter):
+    """The real-run precision wait must not request fixed impedance."""
+    from hydrax.tasks.panda_pick_place import Phase
+
+    pp_adapter.reset_runtime_state_after_warmup()
+    task = pp_adapter._task
+    pm = pp_adapter._phase_machine
+    pm.plan_time = float(task.segment_end_times[Phase.DESCEND])
+
+    q = np.asarray(task.phase_goal_q[Phase.DESCEND], dtype=np.float64).copy()
+    q[6] += 0.03  # inside 0.05 ordinary tolerance, outside 0.02 precision gate
+    v = np.zeros(7, dtype=np.float64)
+    planner_input = _state_input(q, v)
+    out = pp_adapter.step(planner_input)
+
+    gate = out.diagnostics.phase_machine
+    assert out.phase == gate["phase"] == "DESCEND"
+    assert gate["at_boundary"] is True
+    assert gate["transition_status"] == "blocked_q"
+    assert gate["precision_hold"] is True
+    assert out.diagnostics.gain_mode == "exact_feedback"
+
+    opts = task.options
+    impedance = -np.hstack([np.diag(opts.kp_fixed), np.diag(opts.kd_fixed)])
+    np.testing.assert_allclose(
+        out.K,
+        np.asarray(pp_adapter._params.gains, dtype=np.float64),
+    )
+    assert not np.allclose(out.K, impedance)
+
+    # Exact feedback remains anchored at the measured solve state, not the
+    # stationary dwell reference, while the precision gate is blocked.
+    control = planner_output_to_control(out, planner_input)
+    np.testing.assert_allclose(control.initial_state.joint_state.position, q)
+    np.testing.assert_allclose(control.initial_state.joint_state.velocity, v)
+    assert not np.allclose(out.reference_q, q)
 
 
 def test_pick_place_gripper_wait_freezes_the_clock(pp_adapter):

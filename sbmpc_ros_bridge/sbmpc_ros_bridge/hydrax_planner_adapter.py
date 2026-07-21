@@ -54,14 +54,12 @@ change, all mirroring the Tier A example (examples/panda_pick_place.py):
   clock refuses to cross segment boundaries until the arm converges, so
   phase/next_phase and ``gripper_command`` ("open"/"close") come from the
   machine and change at runtime.
-- the deployed law flips PER CYCLE through the existing gain_mode anchor
-  semantics: motion cycles publish the solve's F-MPPI K anchored at x₀
-  (``exact_feedback``), precision-hold cycles (the CLOSE/OPEN dwells and
-  the waits at their entry) publish the constant impedance with
-  ``gain_mode="feedforward"`` and ``reference_q/v`` = the dwell goal — the
-  bridge's reference substitution then anchors LFC on the stationary
-  reference, which is exactly the P-A2-certified settle-then-actuate law.
-  No bridge change is involved.
+- ``planner_mode`` selects one deployed law for the whole sequence. In
+  ``exact_feedback`` every cycle, including CLOSE/OPEN precision windows,
+  publishes the solve's F-MPPI K anchored at x₀. In ``feedforward`` every
+  cycle publishes the constant impedance anchored at the plan reference.
+  ``precision_hold`` remains an observability marker; it does not switch
+  the selected law.
 - while the bridge reports a gripper action in flight
   (``set_gripper_wait(True)``) the clock is not stepped: mid-dwell the
   reference is constant, so the pause is indistinguishable from a longer
@@ -393,23 +391,18 @@ class HydraxPlannerAdapter:
         if advance_clock:
             self._step_index += 1
 
-        # The published K: the solve's F-MPPI gains (du/dx, anchored at
-        # this solve's state) in exact_feedback, the constant impedance in
-        # feedforward. See the module docstring for the anchor semantics.
-        # Pick-and-place precision-hold cycles publish the impedance under
-        # gain_mode="feedforward" so the bridge anchors LFC on the
-        # (stationary) dwell reference — the P-A2-certified dwell law.
-        hold = (
-            self._phase_machine is not None
-            and self._phase_machine.precision_hold
-        )
+        # The selected law is invariant across phases: the solve's F-MPPI
+        # gains (du/dx, anchored at this solve's state) in exact_feedback,
+        # the constant impedance in feedforward. See the module docstring
+        # for the anchor semantics. The phase machine's precision_hold is
+        # diagnostic only and never overrides planner_mode.
         if self._exact_feedback:
             gain_ess = float(self._params.gain_ess)
             gain_nominal_weight = float(self._params.gain_nominal_weight)
         else:
             gain_ess = None
             gain_nominal_weight = None
-        if self._exact_feedback and not hold:
+        if self._exact_feedback:
             gain_dudx = np.asarray(self._params.gains, dtype=np.float64)
             gain_mode = GAIN_MODE_EXACT_FEEDBACK
         else:

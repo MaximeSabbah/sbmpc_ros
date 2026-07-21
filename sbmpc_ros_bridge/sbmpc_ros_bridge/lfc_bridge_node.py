@@ -1002,7 +1002,7 @@ class SbMpcLfcBridgeNode(Node):
         phase = str(snapshot.get("phase", "unknown"))
         next_phase = snapshot.get("next_phase")
         status = str(snapshot.get("transition_status", "unknown"))
-        hold = bool(snapshot.get("precision_hold", False))
+        precision_window = bool(snapshot.get("precision_hold", False))
         gain_mode = getattr(diagnostics, "gain_mode", None)
         gripper_command = snapshot.get("gripper_command")
         paused = bool(snapshot.get("clock_paused", False))
@@ -1051,13 +1051,14 @@ class SbMpcLfcBridgeNode(Node):
                 f"{fmt(snapshot.get('velocity_tolerance_rad_s'))}rad/s "
                 f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}m "
                 f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}rad "
-                f"hold={hold} law={gain_mode} gripper={gripper_command} "
+                f"precision_window={precision_window} law={gain_mode} "
+                f"gripper={gripper_command} "
                 f"paused={paused} {gain_summary()}"
             )
             self._last_logged_phase = phase
 
         blocked = bool(snapshot.get("transition_blocked", False))
-        signature = (phase, status, hold, gain_mode, paused)
+        signature = (phase, status, precision_window, gain_mode, paused)
         now = perf_counter()
         log_due = (
             not self._phase_gate_waiting
@@ -1093,7 +1094,8 @@ class SbMpcLfcBridgeNode(Node):
                 f"{joint_label(snapshot.get('velocity_joint_index'))} "
                 f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}m "
                 f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}rad "
-                f"hold={hold} law={gain_mode} gripper={gripper_command} "
+                f"precision_window={precision_window} law={gain_mode} "
+                f"gripper={gripper_command} "
                 f"action=({gripper_action}) paused={paused} {gain_summary()}"
             )
             self._last_phase_gate_log_wall_sec = now
