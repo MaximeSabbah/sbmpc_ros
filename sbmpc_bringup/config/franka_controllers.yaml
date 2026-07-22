@@ -25,6 +25,10 @@ controller_manager:
 franka_robot_state_broadcaster:
   ros__parameters:
     arm_id: fer
+    # Full Agimus/FCI telemetry only.  Running this large broadcaster at the
+    # 1 kHz torque-loop rate can exhaust its realtime publisher and deactivate
+    # it; 100 Hz preserves diagnostic transients without burdening control.
+    update_rate: 100
 
 gripper_action_controller:
   ros__parameters:

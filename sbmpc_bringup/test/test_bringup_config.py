@@ -86,7 +86,7 @@ def test_franka_controllers_yaml_declares_expected_controller_types() -> None:
     assert gripper["allow_stalling"] is True
 
     state_broadcaster = config["franka_robot_state_broadcaster"]["ros__parameters"]
-    assert state_broadcaster == {"arm_id": "fer"}
+    assert state_broadcaster == {"arm_id": "fer", "update_rate": 100}
 
 
 def test_franka_lfc_params_match_the_expected_fer_interface_layout() -> None:
