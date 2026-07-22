@@ -319,30 +319,6 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
-    # --- optional replay recorder (D14): one path arg, full debug set ---
-    record_replay_path = LaunchConfiguration("record_replay").perform(context).strip()
-    recorder_nodes = []
-    if record_replay_path:
-        recorder_arguments = [
-            "--output",
-            record_replay_path,
-            "--duration-sec",
-            "0",  # record until shutdown
-            "--record-lfc-output",  # always capture commanded torque (D14)
-            "--include-warmup",  # record immediately; do not depend on /control timing
-        ]
-        if is_mujoco:
-            # tau_J only exists on real hardware; the sim has no measured-torque topic.
-            recorder_arguments += ["--measured-torque-topic", ""]
-        recorder_nodes = [
-            Node(
-                package="sbmpc_bringup",
-                executable="record_sbmpc_replay",
-                arguments=recorder_arguments,
-                output="screen",
-            )
-        ]
-
     # --- warmup + arm (D7/D8/D20): wait on diagnostics, reset (sim), arm if asked ---
     warmup_arguments = [
         "--diagnostics-topic",
@@ -490,8 +466,7 @@ def launch_setup(context, *args, **kwargs):
         f"initial_q={initial_q} | "
         f"rviz={_is_true(context, 'use_rviz')} | gripper={_is_true(context, 'use_gripper')} | "
         f"arm_after_warmup={_is_true(context, 'enable_nonzero_control')} | "
-        f"rollout_markers={_is_true(context, 'publish_rollout_markers')} | "
-        f"record_replay={record_replay_path or '(off)'}"
+        f"rollout_markers={_is_true(context, 'publish_rollout_markers')}"
     )
 
     telemetry_hint = (
@@ -509,7 +484,6 @@ def launch_setup(context, *args, **kwargs):
         control_node,
         rviz,
         bridge,
-        *recorder_nodes,
         joint_state_broadcaster_spawner,
         *backend_actions,
         lfc_stack_spawner,
@@ -582,11 +556,6 @@ def generate_launch_description() -> LaunchDescription:
                     "Publish MPPI rollout markers for RViz (off the control hot "
                     "path). Off by default to protect controller timing."
                 ),
-            ),
-            DeclareLaunchArgument(
-                "record_replay",
-                default_value="",
-                description="Path to write a replay JSON; empty disables recording.",
             ),
             DeclareLaunchArgument(
                 "use_gripper",

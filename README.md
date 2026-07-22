@@ -91,7 +91,6 @@ Launch arguments (defaults in parentheses):
 | `initial_q` | `home` | Arm start pose (mujoco only). `random` draws a fresh pose within ±0.2 rad/joint of home (the V-A5-certified placement envelope, logged at launch) — the reference plan still starts at home, so you watch the controller absorb the gap, as with a hand-placed real robot. |
 | `robot_ip` | `172.17.1.2` | Franka FCI IP (real only). |
 | `publish_rollout_markers` | `false` | Publish MPPI rollout markers for RViz. |
-| `record_replay` | `""` | Path to write a replay JSON; empty disables recording. |
 | `use_gripper` | `true` | Actuate the gripper (sim: `gripper_action_controller`; real: `agimus_franka_gripper`). |
 
 ```bash
@@ -131,44 +130,99 @@ ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBoo
 # Disarm (always allowed)
 ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: false}"
 ```
-## Record and replay
+
+## Record, diagnose, and replay a run
+
+`record_sbmpc_run` is the one recording procedure for both MuJoCo and the real
+robot. It starts the MCAP recorder first, starts the normal unified bringup,
+captures the complete run, stops bringup before finalizing the bag, and only
+then generates the report and replay data. Do not start a separate bringup for
+the same experiment. A process lock rejects a second recorder/controller
+supervisor while a run is active.
+
+The controller-manager process must inherit realtime limits from the recorder
+terminal. The compose configuration supplies them for newly created
+containers. If an already-running container predates those settings, repair
+only the current terminal (no reinstall or container recreation) and verify it
+before recording:
 
 ```bash
-# Record until shutdown (commanded LFC output is always captured; schema matches sim/real)
-ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py \
-  record_replay:=/tmp/sbmpc_replay.json
-
-# Summarize or visualize a recording
-replay_sbmpc_trajectory /tmp/sbmpc_replay.json --dry-run
-replay_sbmpc_trajectory /tmp/sbmpc_replay.json
+sudo prlimit --pid $$ --rtprio=99 --memlock=unlimited
+chrt -f 1 true && echo "SCHED_FIFO available"
 ```
 
-### Report a recorded real run
-
-Generate the same offline diagnostic package after every hardware experiment:
+The recorder stores this probe and the inherited limits in
+`provenance/realtime.json` and prints a warning when FIFO is unavailable.
 
 ```bash
-RUN_DIR="$(< /tmp/sbmpc_real_run_path)"
+# MuJoCo (backend defaults to mujoco; the label is descriptive only).
+ros2 run sbmpc_bringup record_sbmpc_run --label pregrasp_sim -- \
+  publish_rollout_markers:=false
+
+# Real robot: the recorder injects enable_nonzero_control:=false unless you
+# explicitly override it. Inspect the PD hold, then arm from another shell.
+ros2 run sbmpc_bringup record_sbmpc_run --label pregrasp_real -- \
+  backend:=real robot_ip:=172.17.1.2
+```
+
+Everything after `--` is passed to
+`sbmpc_franka_bringup.launch.py` as `name:=value`. Press Ctrl-C once in the
+recorder terminal after the experiment. A second Ctrl-C accelerates bringup
+shutdown if graceful teardown is stuck; MCAP still gets its own finalization
+window. For a bounded unattended simulation, add `--duration-sec <seconds>`
+before `--`.
+
+Each run is stored under `/workspace/sbmpc_runs/<label>_<UTC timestamp>`, and
+the latest path is written to `/tmp/sbmpc_run_path`. The run directory contains:
+
+- `rosbag/` — the raw MCAP and source of truth;
+- `manifest.json` and `provenance/` — launch arguments, environment, GPU
+  information, and Git state/diffs for the planner, ROS overlay, container,
+  Agimus, and low-level feedback-controller sources;
+- `launch-console.log`, `rosbag-console.log`, `ros_logs/`, and
+  `rosbag-info.txt`;
+- `diagnostic_report/` — `index.html`, `summary.json`, CSV tables, and PNG plots;
+- `replay.json` — automatically derived from the same MCAP.
+
+The shared topic contract captures the 1 kHz LFC sensor/input/output path,
+planner diagnostics, joint state, `ros2_control` diagnostics and lifecycle,
+ROS logs, and gripper action/state observability. On hardware it additionally
+decodes the canonical Agimus/FCI robot state; in MuJoCo it captures clock,
+object-pose, actuator, and simulated-gripper signals. Missing backend-specific
+topics are reported as unavailable rather than changing the procedure.
+
+All decoding, plots, CSVs, summaries, and replay export run after bringup and
+recording have stopped, so those operations cannot consume planner or 1 kHz
+controller-loop time. The report covers reference and Riccati-anchor tracking,
+terminal stability, controller output and timing, state-stream consistency,
+phase transitions, and gripper behavior. When Agimus state is available, it
+also covers the causal pre-/post-limiter torque path, FCI joint/motor and
+Cartesian state, wrench/contact/collision signals, robot mode, command success,
+and current versus historical error flags.
+
+Open or replay the latest run with:
+
+```bash
+RUN_DIR="$(< /tmp/sbmpc_run_path)"
+
+# Browser-open diagnostic_report/index.html using your usual host/container workflow.
+/workspace/sbmpc_containers/scripts/uv_ros_run.sh \
+  ros2 run sbmpc_bringup replay_sbmpc_trajectory "$RUN_DIR/replay.json" --dry-run
+/workspace/sbmpc_containers/scripts/uv_ros_run.sh \
+  ros2 run sbmpc_bringup replay_sbmpc_trajectory "$RUN_DIR/replay.json"
+```
+
+If automatic post-processing reports an error, the MCAP is retained. After
+fixing the analysis environment, regenerate the report with:
+
+```bash
 ros2 run sbmpc_bringup report_sbmpc_bag "$RUN_DIR"
 ```
 
-The command accepts either the run directory or its `rosbag/` directory and
-writes `diagnostic_report/index.html`, `summary.json`, `controller_steps.csv`,
-and PNG panels for reference tracking, terminal stability, controller output,
-timing, the real torque path, state-stream consistency, and—when present—the
-pick/place phase gate and gripper timeline. It runs only after recording has
-stopped and therefore adds no work to the planner or 1 kHz control loops.
-
-The controller panel separates task-reference error from the local Riccati
-anchor error. The torque panel audits genuine 0.5–1.5 ms output intervals
-against the Agimus per-cycle component limit. When the Agimus robot-state
-broadcaster is populated, the report also plots post-limit `tau_J_d`, robot
-mode, command success, collision indicators, and FCI error/reflex flags.
-
-`/output_joint_effort` is labelled as the gravity-free LFC request before the
-Agimus hardware torque-rate limiter. The report does not equate it with the
-measured total `tau_J`, and explicitly reports when the Agimus robot-state
-broadcaster did not populate the post-limit `tau_J_d` and FCI state topics.
+On hardware, `/output_joint_effort` is labelled as the gravity-free LFC request
+before the Agimus torque-rate limiter and is never equated with measured total
+`tau_J`. In MuJoCo, it is labelled as the simulator effort request; no Agimus
+limit is applied and simulator actuator effort is never called FCI torque.
 
 ## Validate a live simulation
 
@@ -375,8 +429,8 @@ ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBoo
 
 The instant flip-back if anything looks wrong: disarm (service above with
 `data: false`), set `planner_mode: feedforward` in `hydrax_bridge.yaml`,
-rebuild `sbmpc_bringup`, relaunch. Record every session
-(`record_replay:=/tmp/run.json`, see **Record and replay**).
+rebuild `sbmpc_bringup`, and start the next session with `record_sbmpc_run`
+(see **Record, diagnose, and replay a run**).
 
 ## Tests
 

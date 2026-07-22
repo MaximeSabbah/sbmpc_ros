@@ -26,7 +26,6 @@ EXPECTED_ARGUMENTS = {
     "initial_q",
     "robot_ip",
     "publish_rollout_markers",
-    "record_replay",
     "use_gripper",
 }
 
@@ -108,7 +107,7 @@ def includes(actions) -> list[IncludeLaunchDescription]:
 # --- argument surface -------------------------------------------------------
 
 
-def test_declares_exactly_the_ten_arguments_with_expected_defaults() -> None:
+def test_declares_exactly_the_nine_arguments_with_expected_defaults() -> None:
     defaults = declared_argument_defaults(MODULE.generate_launch_description())
 
     assert set(defaults) == EXPECTED_ARGUMENTS
@@ -120,7 +119,6 @@ def test_declares_exactly_the_ten_arguments_with_expected_defaults() -> None:
     assert defaults["initial_q"] == "home"
     assert defaults["robot_ip"] == "172.17.1.2"
     assert defaults["publish_rollout_markers"] == "false"
-    assert defaults["record_replay"] == ""
     assert defaults["use_gripper"] == "true"
 
 
@@ -248,26 +246,3 @@ def test_gripper_wiring_is_injected_per_backend() -> None:
 def test_use_gripper_false_unwires_the_gripper_client() -> None:
     params = bridge_param_dict(setup_actions("mujoco", use_gripper="false"))
     assert params["gripper_action_name"] == ""
-
-
-# --- recorder ---------------------------------------------------------------
-
-
-def test_record_replay_empty_disables_the_recorder() -> None:
-    actions = setup_actions("mujoco")  # record_replay defaults to ""
-    assert all(n.node_executable != "record_sbmpc_replay" for n in nodes_of(actions))
-
-
-def test_record_replay_path_records_the_full_debug_set() -> None:
-    actions = setup_actions("mujoco", record_replay="/tmp/sbmpc_test_replay.json")
-    recorders = [n for n in nodes_of(actions) if n.node_executable == "record_sbmpc_replay"]
-
-    assert len(recorders) == 1
-    arguments = node_arguments(recorders[0])
-    assert "--record-lfc-output" in arguments
-    assert "--include-warmup" in arguments
-    assert "--output" in arguments
-    assert "/tmp/sbmpc_test_replay.json" in arguments
-    # tau_J only exists on hardware, so the sim empties the measured-torque topic.
-    measured_index = arguments.index("--measured-torque-topic")
-    assert arguments[measured_index + 1] == ""

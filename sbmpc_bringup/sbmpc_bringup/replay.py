@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, field
 import json
 import os
-from pathlib import Path
-import signal
 import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -16,11 +15,9 @@ from sbmpc_bringup.constants import (
     BRIDGE_DIAGNOSTICS_TOPIC,
     BRIDGE_SENSOR_TOPIC,
     FER_ARM_JOINT_NAMES,
-    SBMPC_JOINT_STATES_TOPIC,
     LFC_OUTPUT_JOINT_EFFORT_TOPIC,
+    SBMPC_JOINT_STATES_TOPIC,
 )
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,150 +29,14 @@ class ReplayJointEffortCommand:
     effort: list[float]
 
 
-def _record_lfc_output_from_joint_state(
-    message,
-    *,
-    receive_wall_sec: float | None = None,
-) -> ReplayJointEffortCommand | None:
-    indices = _joint_indices(tuple(message.name))
-    if indices is None:
-        return None
-    position = (
-        _vector_from_indices(message.position, indices)
-        if len(message.position) >= len(message.name)
-        else [0.0] * len(indices)
-    )
-    velocity = (
-        _vector_from_indices(message.velocity, indices)
-        if len(message.velocity) >= len(message.name)
-        else [0.0] * len(indices)
-    )
-    effort = (
-        _vector_from_indices(message.effort, indices)
-        if len(message.effort) >= len(message.name)
-        else [0.0] * len(indices)
-    )
-    return ReplayJointEffortCommand(
-        stamp_sec=_stamp_sec(message.header.stamp),
-        receive_wall_sec=receive_wall_sec,
-        position=position,
-        velocity=velocity,
-        effort=effort,
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class ReplayState:
     stamp_sec: float
     receive_wall_sec: float | None
     position: list[float]
     velocity: list[float]
-    # Measured joint effort (the FR3 link-side torque sensors) when present on the
-    # source message; enables offline inverse-dynamics / model-residual checks.
+    # Joint effort with source/backend semantics carried by the replay payload.
     effort: list[float] = field(default_factory=list)
-
-
-def _stamp_sec(stamp) -> float:
-    return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
-
-
-def _joint_indices(names: list[str] | tuple[str, ...]) -> tuple[int, ...] | None:
-    index_by_name = {name: index for index, name in enumerate(names)}
-    if not all(name in index_by_name for name in FER_ARM_JOINT_NAMES):
-        return None
-    return tuple(index_by_name[name] for name in FER_ARM_JOINT_NAMES)
-
-
-def _vector_from_indices(values, indices: tuple[int, ...]) -> list[float]:
-    return [float(values[index]) for index in indices]
-
-
-def _record_joint_torque_from_joint_state(
-    message,
-    *,
-    receive_wall_sec: float | None = None,
-) -> dict[str, object] | None:
-    """Record only the measured joint torque (tau_J). q/dq already live in
-    ``sensor_states``, so we deliberately do not duplicate the joint state here."""
-    indices = _joint_indices(tuple(message.name))
-    if indices is None or len(message.effort) < len(message.name):
-        return None
-    return {
-        "stamp_sec": _stamp_sec(message.header.stamp),
-        "receive_wall_sec": receive_wall_sec,
-        "effort": _vector_from_indices(message.effort, indices),
-    }
-
-
-def _record_state_from_joint_state(
-    message,
-    *,
-    receive_wall_sec: float | None = None,
-) -> ReplayState | None:
-    indices = _joint_indices(tuple(message.name))
-    if indices is None:
-        return None
-    position = _vector_from_indices(message.position, indices)
-    if len(message.velocity) >= len(message.name):
-        velocity = _vector_from_indices(message.velocity, indices)
-    else:
-        velocity = [0.0] * len(indices)
-    if len(message.effort) >= len(message.name):
-        effort = _vector_from_indices(message.effort, indices)
-    else:
-        effort = []
-    return ReplayState(
-        stamp_sec=_stamp_sec(message.header.stamp),
-        receive_wall_sec=receive_wall_sec,
-        position=position,
-        velocity=velocity,
-        effort=effort,
-    )
-
-
-def _multi_array_shape(message) -> list[int]:
-    dims = getattr(getattr(message, "layout", None), "dim", [])
-    shape = [int(getattr(dim, "size")) for dim in dims]
-    return shape if shape else [len(getattr(message, "data", []))]
-
-
-def _multi_array_flattened(message) -> list[float]:
-    return [float(value) for value in getattr(message, "data", [])]
-
-
-def _control_record_from_message(
-    message,
-    *,
-    receive_wall_sec: float | None = None,
-) -> dict[str, object]:
-    feedforward = np.asarray(message.feedforward.data, dtype=np.float64)
-    gain = np.asarray(message.feedback_gain.data, dtype=np.float64)
-    initial_state = _record_state_from_joint_state(message.initial_state.joint_state)
-    initial_velocity = (
-        np.asarray(initial_state.velocity, dtype=np.float64)
-        if initial_state is not None
-        else np.zeros(0, dtype=np.float64)
-    )
-    return {
-        "stamp_sec": _stamp_sec(message.header.stamp),
-        "receive_wall_sec": receive_wall_sec,
-        "feedforward": _multi_array_flattened(message.feedforward),
-        "feedforward_shape": _multi_array_shape(message.feedforward),
-        "feedforward_max_abs": (
-            float(np.max(np.abs(feedforward), initial=0.0))
-            if feedforward.size
-            else 0.0
-        ),
-        "feedback_gain": _multi_array_flattened(message.feedback_gain),
-        "feedback_gain_shape": _multi_array_shape(message.feedback_gain),
-        "gain_norm": float(np.linalg.norm(gain)) if gain.size else 0.0,
-        "initial_state": asdict(initial_state) if initial_state is not None else None,
-        "initial_state_velocity_abs_max": (
-            float(np.max(np.abs(initial_velocity), initial=0.0))
-            if initial_velocity.size
-            else None
-        ),
-    }
 
 
 def _finite_float(value: object) -> float | None:
@@ -183,6 +44,207 @@ def _finite_float(value: object) -> float | None:
         return None
     result = float(value)
     return result if np.isfinite(result) else None
+
+
+def _series_replay_states(series: Any | None) -> list[ReplayState]:
+    """Convert a decoded run-report joint series into replay states."""
+    if series is None:
+        return []
+    count = len(series.receive)
+    if not all(
+        len(values) == count
+        for values in (series.stamp, series.q, series.v, series.effort)
+    ):
+        raise ValueError("decoded joint series fields have inconsistent lengths")
+    return [
+        ReplayState(
+            stamp_sec=float(series.stamp[index]),
+            receive_wall_sec=float(series.receive[index]),
+            position=np.asarray(series.q[index], dtype=np.float64).tolist(),
+            velocity=np.asarray(series.v[index], dtype=np.float64).tolist(),
+            effort=np.asarray(series.effort[index], dtype=np.float64).tolist(),
+        )
+        for index in range(count)
+    ]
+
+
+def _series_lfc_output(series: Any) -> list[ReplayJointEffortCommand]:
+    count = len(series.receive)
+    if not all(
+        len(values) == count
+        for values in (series.stamp, series.q, series.v, series.effort)
+    ):
+        raise ValueError("decoded LFC output fields have inconsistent lengths")
+    return [
+        ReplayJointEffortCommand(
+            stamp_sec=float(series.stamp[index]),
+            receive_wall_sec=float(series.receive[index]),
+            position=np.asarray(series.q[index], dtype=np.float64).tolist(),
+            velocity=np.asarray(series.v[index], dtype=np.float64).tolist(),
+            effort=np.asarray(series.effort[index], dtype=np.float64).tolist(),
+        )
+        for index in range(count)
+    ]
+
+
+def _control_records_from_series(control: Any) -> list[dict[str, object]]:
+    count = len(control.receive)
+    if not all(
+        len(values) == count
+        for values in (
+            control.stamp,
+            control.anchor_stamp,
+            control.feedforward,
+            control.gain,
+            control.anchor_q,
+            control.anchor_v,
+        )
+    ):
+        raise ValueError("decoded control series fields have inconsistent lengths")
+
+    records = []
+    for index in range(count):
+        feedforward = np.asarray(control.feedforward[index], dtype=np.float64)
+        gain = np.asarray(control.gain[index], dtype=np.float64)
+        anchor_q = np.asarray(control.anchor_q[index], dtype=np.float64)
+        anchor_v = np.asarray(control.anchor_v[index], dtype=np.float64)
+        # The ROS adapter publishes a seven-element feedforward command as a
+        # (7, 1) Float64MultiArray. The decoded report intentionally stores the
+        # numerical vector only, so restore that wire shape during export.
+        feedforward_shape = [7, 1] if feedforward.size == 7 else list(feedforward.shape)
+        records.append(
+            {
+                "stamp_sec": float(control.stamp[index]),
+                "receive_wall_sec": float(control.receive[index]),
+                "feedforward": feedforward.reshape(-1).tolist(),
+                "feedforward_shape": feedforward_shape,
+                "feedforward_max_abs": (
+                    float(np.max(np.abs(feedforward), initial=0.0))
+                    if feedforward.size
+                    else 0.0
+                ),
+                "feedback_gain": gain.reshape(-1).tolist(),
+                "feedback_gain_shape": list(gain.shape),
+                "gain_norm": float(np.linalg.norm(gain)) if gain.size else 0.0,
+                "initial_state": asdict(
+                    ReplayState(
+                        stamp_sec=float(control.anchor_stamp[index]),
+                        receive_wall_sec=None,
+                        position=anchor_q.tolist(),
+                        velocity=anchor_v.tolist(),
+                    )
+                ),
+                "initial_state_velocity_abs_max": (
+                    float(np.max(np.abs(anchor_v), initial=0.0))
+                    if anchor_v.size
+                    else None
+                ),
+            }
+        )
+    return records
+
+
+def _effort_records(series: Any) -> list[dict[str, object]]:
+    return [
+        {
+            "stamp_sec": float(series.stamp[index]),
+            "receive_wall_sec": float(series.receive[index]),
+            "effort": np.asarray(series.effort[index], dtype=np.float64).tolist(),
+        }
+        for index in range(len(series.receive))
+    ]
+
+
+def _recorded_wall_time_sec(*streams: Any) -> float:
+    receive_times = [
+        float(value)
+        for stream in streams
+        for value in getattr(stream, "receive", [])
+        if np.isfinite(float(value))
+    ]
+    if len(receive_times) < 2:
+        return 0.0
+    return max(0.0, max(receive_times) - min(receive_times))
+
+
+def replay_payload_from_run_data(data: Any) -> dict[str, object]:
+    """Build an ``sbmpc_ros_replay_v2`` payload from decoded MCAP data.
+
+    ``data`` follows the structural interface of :class:`run_report.RunData`.
+    Keeping this converter independent of ``run_report`` avoids importing ROS
+    bag and plotting dependencies when the replay viewer starts.
+    """
+    joint_states = _series_replay_states(getattr(data, "merged", None))
+    sensor_states = _series_replay_states(data.sensor)
+    controls = _control_records_from_series(data.control)
+    diagnostics = list(data.diagnostics.rows)
+    lfc_output_efforts = _series_lfc_output(data.output)
+    observed_joint_effort = _effort_records(data.hardware)
+    effort_source = getattr(data, "hardware_source", "/franka/joint_states")
+    backend = getattr(
+        data,
+        "backend",
+        "real" if effort_source == "/franka/joint_states" else "mujoco",
+    )
+    effort_semantics = (
+        "Franka FCI measured total link-side joint torque tau_J"
+        if backend == "real"
+        else "MuJoCo ros2_control actuator effort; not Franka FCI measured torque"
+    )
+    recorded_wall_time_sec = _recorded_wall_time_sec(
+        getattr(data, "merged", None),
+        data.sensor,
+        data.control,
+        data.output,
+        data.hardware,
+        data.diagnostics,
+    )
+    return {
+        "schema": "sbmpc_ros_replay_v2",
+        "backend": backend,
+        "recorded_wall_time_sec": recorded_wall_time_sec,
+        "joint_names": list(FER_ARM_JOINT_NAMES),
+        "topics": {
+            "joint_states": (
+                SBMPC_JOINT_STATES_TOPIC
+                if getattr(data, "merged", None) is not None
+                else None
+            ),
+            "sensor": BRIDGE_SENSOR_TOPIC,
+            "control": BRIDGE_CONTROL_TOPIC,
+            "diagnostics": BRIDGE_DIAGNOSTICS_TOPIC,
+            "lfc_output_effort": LFC_OUTPUT_JOINT_EFFORT_TOPIC,
+            "observed_joint_effort": effort_source,
+        },
+        "joint_states": [asdict(state) for state in joint_states],
+        "sensor_states": [asdict(state) for state in sensor_states],
+        "controls": controls,
+        "diagnostics": diagnostics,
+        "lfc_output_efforts": [
+            asdict(command) for command in lfc_output_efforts
+        ],
+        "observed_joint_effort_semantics": effort_semantics,
+        "observed_joint_effort": observed_joint_effort,
+        "summary": summarize_payload(
+            joint_states,
+            sensor_states,
+            controls,
+            diagnostics,
+            lfc_output_efforts,
+        ),
+    }
+
+
+def export_replay_json(data: Any, output_path: Path) -> dict[str, object]:
+    """Atomically export decoded MCAP data in the existing replay format."""
+    payload = replay_payload_from_run_data(data)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+    os.replace(temp_path, output_path)
+    return payload
 
 
 def _resolve_default_model_xml() -> str:
@@ -204,275 +266,15 @@ def _import_mujoco():
     except Exception as exc:
         raise RuntimeError(
             "MuJoCo is not importable in this Python environment. Run replay "
-            "through /workspace/sbmpc_containers/scripts/pixi_ros_run.sh."
+            "through /workspace/sbmpc_containers/scripts/uv_ros_run.sh."
         ) from exc
     if not hasattr(mujoco, "MjModel"):
         raise RuntimeError(
             "The imported 'mujoco' module is not the official Python MuJoCo "
             "package used by the replay viewer. Run replay through "
-            "/workspace/sbmpc_containers/scripts/pixi_ros_run.sh."
+            "/workspace/sbmpc_containers/scripts/uv_ros_run.sh."
         )
     return mujoco
-
-
-class ReplayRecorder:
-    def __init__(
-        self,
-        *,
-        duration_sec: float,
-        output_path: Path,
-        joint_states_topic: str,
-        sensor_topic: str,
-        control_topic: str,
-        diagnostics_topic: str,
-        lfc_output_topic: str,
-        measured_torque_topic: str = "",
-        record_lfc_output: bool = False,
-        start_after_first_control: bool = True,
-        startup_timeout_sec: float = 120.0,
-        autosave_period_sec: float = 5.0,
-    ) -> None:
-        import rclpy
-        from rclpy.node import Node
-        from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-        from sensor_msgs.msg import JointState
-        from std_msgs.msg import String
-        from linear_feedback_controller_msgs.msg import Control, Sensor
-
-        class RecorderNode(Node):
-            def __init__(self, outer: ReplayRecorder) -> None:
-                super().__init__("sbmpc_replay_recorder")
-                qos = QoSProfile(
-                    history=HistoryPolicy.KEEP_LAST,
-                    depth=10,
-                    reliability=ReliabilityPolicy.BEST_EFFORT,
-                )
-                self.outer = outer
-                self.create_subscription(
-                    JointState,
-                    joint_states_topic,
-                    self._on_joint_state,
-                    10,
-                )
-                self.create_subscription(Sensor, sensor_topic, self._on_sensor, qos)
-                self.create_subscription(Control, control_topic, self._on_control, qos)
-                self.create_subscription(String, diagnostics_topic, self._on_diagnostics, 10)
-                if outer.record_lfc_output:
-                    self.create_subscription(
-                        JointState,
-                        lfc_output_topic,
-                        self._on_lfc_output,
-                        qos,
-                    )
-                if outer.measured_torque_topic:
-                    self.create_subscription(
-                        JointState,
-                        outer.measured_torque_topic,
-                        self._on_measured_torque,
-                        qos,
-                    )
-
-            def _on_joint_state(self, message) -> None:
-                state = _record_state_from_joint_state(
-                    message,
-                    receive_wall_sec=time.monotonic(),
-                )
-                if state is not None:
-                    self.outer.joint_states.append(state)
-
-            def _on_sensor(self, message) -> None:
-                state = _record_state_from_joint_state(
-                    message.joint_state,
-                    receive_wall_sec=time.monotonic(),
-                )
-                if state is not None:
-                    self.outer.sensor_states.append(state)
-
-            def _on_control(self, message) -> None:
-                self.outer.controls.append(
-                    _control_record_from_message(
-                        message,
-                        receive_wall_sec=time.monotonic(),
-                    )
-                )
-
-            def _on_lfc_output(self, message) -> None:
-                command = _record_lfc_output_from_joint_state(
-                    message,
-                    receive_wall_sec=time.monotonic(),
-                )
-                if command is not None:
-                    self.outer.lfc_output_efforts.append(command)
-
-            def _on_measured_torque(self, message) -> None:
-                record = _record_joint_torque_from_joint_state(
-                    message,
-                    receive_wall_sec=time.monotonic(),
-                )
-                if record is not None:
-                    self.outer.measured_joint_torque.append(record)
-
-            def _on_diagnostics(self, message) -> None:
-                try:
-                    self.outer.diagnostics.append(json.loads(message.data))
-                except json.JSONDecodeError:
-                    return
-
-        self._rclpy = rclpy
-        self._node_class = RecorderNode
-        self.duration_sec = float(duration_sec)
-        self.recorded_wall_time_sec = 0.0
-        self.output_path = output_path
-        self.measured_torque_topic = str(measured_torque_topic)
-        self.record_lfc_output = bool(record_lfc_output)
-        self.start_after_first_control = bool(start_after_first_control)
-        self.startup_timeout_sec = float(startup_timeout_sec)
-        self.autosave_period_sec = float(autosave_period_sec)
-        self._stop_requested = False
-        self._record_start_wall = 0.0
-        self._last_save_wall = 0.0
-        self.joint_states: list[ReplayState] = []
-        self.sensor_states: list[ReplayState] = []
-        self.controls: list[dict[str, object]] = []
-        self.diagnostics: list[dict[str, object]] = []
-        self.lfc_output_efforts: list[ReplayJointEffortCommand] = []
-        self.measured_joint_torque: list[dict[str, object]] = []
-        self.topics = {
-            "joint_states": joint_states_topic,
-            "sensor": sensor_topic,
-            "control": control_topic,
-            "diagnostics": diagnostics_topic,
-            "lfc_output_effort": lfc_output_topic if self.record_lfc_output else None,
-            "measured_joint_torque": self.measured_torque_topic or None,
-        }
-
-    def run(self) -> dict[str, object]:
-        self._rclpy.init()
-        node = self._node_class(self)
-        previous_handlers = self._install_signal_handlers()
-        record_start = time.monotonic()
-        try:
-            self._write_payload(self.payload())
-            if self.start_after_first_control:
-                print(
-                    "record_sbmpc_replay: waiting for first /control message "
-                    f"before recording -> {self.output_path}",
-                    flush=True,
-                )
-                startup_deadline = time.monotonic() + self.startup_timeout_sec
-                while (
-                    self._rclpy.ok()
-                    and not self._stop_requested
-                    and not self.controls
-                ):
-                    if time.monotonic() >= startup_deadline:
-                        raise TimeoutError(
-                            "timed out waiting for the first control message; "
-                            "use --include-warmup to record immediately."
-                        )
-                    self._rclpy.spin_once(node, timeout_sec=0.02)
-                self._clear_samples()
-                self._write_payload(self.payload())
-
-            record_start = time.monotonic()
-            print(
-                "record_sbmpc_replay: recording "
-                + (
-                    f"for {self.duration_sec:.3f}s"
-                    if self.duration_sec > 0.0
-                    else "until ROS shutdown"
-                )
-                + f" -> {self.output_path}",
-                flush=True,
-            )
-            deadline = (
-                record_start + self.duration_sec if self.duration_sec > 0.0 else None
-            )
-            self._record_start_wall = record_start
-            while (
-                self._rclpy.ok()
-                and not self._stop_requested
-                and (deadline is None or time.monotonic() < deadline)
-            ):
-                self._rclpy.spin_once(node, timeout_sec=0.02)
-                self._autosave_if_due()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.recorded_wall_time_sec = max(0.0, time.monotonic() - record_start)
-            self._restore_signal_handlers(previous_handlers)
-            node.destroy_node()
-            self._rclpy.shutdown()
-
-        payload = self.payload()
-        self._write_payload(payload)
-        return payload
-
-    def _install_signal_handlers(self):
-        previous_handlers = {}
-
-        def request_stop(signum, frame):  # noqa: ARG001
-            self._stop_requested = True
-
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous_handlers[signum] = signal.getsignal(signum)
-            signal.signal(signum, request_stop)
-        return previous_handlers
-
-    def _restore_signal_handlers(self, previous_handlers) -> None:
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
-
-    def _write_payload(self, payload: dict[str, object]) -> None:
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.output_path.with_name(
-            f".{self.output_path.name}.{os.getpid()}.tmp"
-        )
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2)
-        os.replace(temp_path, self.output_path)
-        self._last_save_wall = time.monotonic()
-
-    def _autosave_if_due(self) -> None:
-        if self.autosave_period_sec <= 0.0:
-            return
-        if (time.monotonic() - self._last_save_wall) < self.autosave_period_sec:
-            return
-        self.recorded_wall_time_sec = max(
-            self.recorded_wall_time_sec,
-            time.monotonic() - self._record_start_wall,
-        )
-        self._write_payload(self.payload())
-
-    def _clear_samples(self) -> None:
-        self.joint_states.clear()
-        self.sensor_states.clear()
-        self.controls.clear()
-        self.diagnostics.clear()
-        self.lfc_output_efforts.clear()
-
-    def payload(self) -> dict[str, object]:
-        return {
-            "schema": "sbmpc_ros_replay_v1",
-            "recorded_wall_time_sec": self.recorded_wall_time_sec,
-            "joint_names": list(FER_ARM_JOINT_NAMES),
-            "topics": self.topics,
-            "joint_states": [asdict(state) for state in self.joint_states],
-            "sensor_states": [asdict(state) for state in self.sensor_states],
-            "controls": self.controls,
-            "diagnostics": self.diagnostics,
-            "lfc_output_efforts": [
-                asdict(command) for command in self.lfc_output_efforts
-            ],
-            "measured_joint_torque": self.measured_joint_torque,
-            "summary": summarize_payload(
-                self.joint_states,
-                self.sensor_states,
-                self.controls,
-                self.diagnostics,
-                self.lfc_output_efforts,
-            ),
-        }
 
 
 def _relative_states(
@@ -804,114 +606,13 @@ def _counter_delta(rows: list[dict[str, object]], key: str) -> int | None:
     return max(0, last - first)
 
 
-def _print_record_summary(payload: dict[str, object], output_path: Path) -> None:
-    summary = payload["summary"]
-    print(f"wrote replay -> {output_path}")
-    print(
-        "samples: "
-        f"joint_states={summary['joint_state_count']} "
-        f"sensor_states={summary['sensor_state_count']} "
-        f"controls={summary['control_count']} "
-        f"diagnostics={summary['diagnostics_count']} "
-        f"active_diagnostics={summary['active_running_diagnostics_count']}"
-    )
-    print(
-        "controller: "
-        f"planning_max_ms={summary['planning_ms_max']} "
-        f"joint_velocity_abs_max={summary['joint_velocity_abs_max']} "
-        f"control_feedforward_abs_max={summary['control_feedforward_abs_max']} "
-        f"control_gain_norm_max={summary['control_gain_norm_max']} "
-        f"lfc_output_effort_abs_max={summary.get('lfc_output_effort_abs_max')} "
-        f"lfc_output_count={summary.get('lfc_output_effort_count')}"
-    )
-    timing = summary["timing_ms"]
-    cadence = summary["control_cadence_sec"]["receive_delta"]
-    print(
-        "timing: "
-        f"planner_wall_p99_ms={timing['planner_step_wall']['p99']} "
-        f"control_prepare_p99_ms={timing['control_prepare']['p99']} "
-        f"control_publish_p99_ms={timing['control_publish']['p99']} "
-        f"control_receive_p99_sec={cadence['p99']} "
-        f"deadline_misses={summary['deadline_miss_count']}"
-    )
-
-
-def record_main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Record a headless ROS/MuJoCo SB-MPC run for offline replay."
-    )
-    parser.add_argument(
-        "--duration-sec",
-        type=float,
-        default=8.0,
-        help="Recording duration. Use 0 to record until ROS shutdown.",
-    )
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--include-warmup",
-        action="store_true",
-        help="Record immediately instead of waiting for the first /control message.",
-    )
-    parser.add_argument(
-        "--startup-timeout-sec",
-        type=float,
-        default=120.0,
-        help="Maximum time to wait for the first /control message.",
-    )
-    parser.add_argument(
-        "--autosave-period-sec",
-        type=float,
-        default=5.0,
-        help="Periodically rewrite the replay file so launch shutdown cannot lose it.",
-    )
-    parser.add_argument("--joint-states-topic", default=SBMPC_JOINT_STATES_TOPIC)
-    parser.add_argument("--sensor-topic", default=BRIDGE_SENSOR_TOPIC)
-    parser.add_argument("--control-topic", default=BRIDGE_CONTROL_TOPIC)
-    parser.add_argument("--diagnostics-topic", default=BRIDGE_DIAGNOSTICS_TOPIC)
-    parser.add_argument("--lfc-output-topic", default=LFC_OUTPUT_JOINT_EFFORT_TOPIC)
-    parser.add_argument(
-        "--measured-torque-topic",
-        default="/franka_robot_state_broadcaster/measured_joint_states",
-        help=(
-            "JointState topic carrying the robot's measured joint torque (tau_J); "
-            "empty on the MuJoCo sim. Only tau_J is stored (q/dq stay in sensor_states)."
-        ),
-    )
-    parser.add_argument(
-        "--record-lfc-output",
-        action="store_true",
-        help="Record final LFC effort commands published by the controller.",
-    )
-    args, _ros_args = parser.parse_known_args(argv)
-    if args.duration_sec < 0.0:
-        raise ValueError("--duration-sec must be non-negative.")
-    if args.startup_timeout_sec <= 0.0:
-        raise ValueError("--startup-timeout-sec must be positive.")
-    if args.autosave_period_sec < 0.0:
-        raise ValueError("--autosave-period-sec must be non-negative.")
-
-    recorder = ReplayRecorder(
-        duration_sec=args.duration_sec,
-        output_path=args.output,
-        joint_states_topic=args.joint_states_topic,
-        sensor_topic=args.sensor_topic,
-        control_topic=args.control_topic,
-        diagnostics_topic=args.diagnostics_topic,
-        lfc_output_topic=args.lfc_output_topic,
-        measured_torque_topic=args.measured_torque_topic,
-        record_lfc_output=args.record_lfc_output,
-        start_after_first_control=not args.include_warmup,
-        startup_timeout_sec=args.startup_timeout_sec,
-        autosave_period_sec=args.autosave_period_sec,
-    )
-    payload = recorder.run()
-    _print_record_summary(payload, args.output)
-
-
 def _load_payload(path: Path) -> dict[str, object]:
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
-    if payload.get("schema") != "sbmpc_ros_replay_v1":
+    if payload.get("schema") not in {
+        "sbmpc_ros_replay_v1",
+        "sbmpc_ros_replay_v2",
+    }:
         raise ValueError(f"{path} is not an sbmpc ROS replay file.")
     return payload
 

@@ -13,11 +13,25 @@ from sbmpc_bringup.run_report import (
     JointSeries,
     RunData,
     _arm_indices,
+    _controller_activity_rows,
+    _diagnostic_statistics,
+    _gripper_joint_row,
     _joint_row,
+    _plot_agimus_ee_wrench,
+    _plot_agimus_joint_motor,
     _plot_agimus_robot_state,
     _plot_phase,
-    _robot_state_row,
+    _plot_mujoco_actuators,
+    _plot_simulation_ground_truth,
+    _reconstruct_agimus_limiter,
     _resolve_bag,
+    _robot_state_row,
+    _ros_diagnostic_rows,
+    _write_agimus_robot_state_csv,
+    _write_controller_activity_csv,
+    _write_controller_diagnostics_csv,
+    _write_simulation_csvs,
+    _windowed_clock_rtf,
     align_run,
     causal_indices,
     nearest_indices,
@@ -96,6 +110,11 @@ def synthetic_run(*, phase_machine: bool = False) -> RunData:
         robot_state=[],
         diagnostics=DiagnosticSeries(receive=times, rows=diagnostics),
         rosout=[],
+        ros_diagnostics=[],
+        controller_activity=[],
+        gripper_joint_states=[],
+        gripper_feedback=[],
+        gripper_status=[],
         topic_counts={
             "/control": 3,
             "/sensor": 3,
@@ -104,6 +123,144 @@ def synthetic_run(*, phase_machine: bool = False) -> RunData:
             "/franka_robot_state_broadcaster/robot_state": 0,
             "/franka_robot_state_broadcaster/desired_joint_states": 0,
         },
+    )
+
+
+class BooleanFields(SimpleNamespace):
+    def get_fields_and_field_types(self) -> dict[str, str]:
+        return {name: "boolean" for name in vars(self)}
+
+
+def stamp(seconds: float) -> SimpleNamespace:
+    whole = int(seconds)
+    return SimpleNamespace(sec=whole, nanosec=int(round((seconds - whole) * 1e9)))
+
+
+def header(seconds: float = 2.0, frame_id: str = "fer_link0") -> SimpleNamespace:
+    return SimpleNamespace(stamp=stamp(seconds), frame_id=frame_id)
+
+
+def vector(values: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> SimpleNamespace:
+    return SimpleNamespace(x=values[0], y=values[1], z=values[2])
+
+
+def pose_stamped(position=(0.5, 0.0, 0.2), quaternion=(0.0, 0.0, 0.0, 1.0)):
+    return SimpleNamespace(
+        header=header(),
+        pose=SimpleNamespace(
+            position=vector(position),
+            orientation=SimpleNamespace(
+                x=quaternion[0],
+                y=quaternion[1],
+                z=quaternion[2],
+                w=quaternion[3],
+            ),
+        ),
+    )
+
+
+def spatial_stamped(kind: str, first=(0.0, 0.0, 0.0), second=(0.0, 0.0, 0.0)):
+    spatial = SimpleNamespace()
+    if kind == "wrench":
+        spatial.force = vector(first)
+        spatial.torque = vector(second)
+    else:
+        spatial.linear = vector(first)
+        spatial.angular = vector(second)
+    return SimpleNamespace(header=header(), **{kind: spatial})
+
+
+def inertia_stamped(mass: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        header=header(),
+        inertia=SimpleNamespace(
+            m=mass,
+            com=vector((0.01, 0.02, 0.03)),
+            ixx=1.0,
+            ixy=0.1,
+            ixz=0.2,
+            iyy=2.0,
+            iyz=0.3,
+            izz=3.0,
+        ),
+    )
+
+
+def joint_state(
+    *,
+    names: list[str] | None = None,
+    position: list[float] | None = None,
+    velocity: list[float] | None = None,
+    effort: list[float] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        header=header(),
+        name=names or [f"fer_joint{i}" for i in range(1, 8)],
+        position=[0.0] * 7 if position is None else position,
+        velocity=[0.0] * 7 if velocity is None else velocity,
+        effort=[0.0] * 7 if effort is None else effort,
+    )
+
+
+def agimus_message(*, seconds: float = 2.0, tau_j_d: float = 0.1) -> SimpleNamespace:
+    zero = vector()
+    measured = joint_state(
+        position=[0.01 * index for index in range(7)],
+        velocity=[0.001 * index for index in range(7)],
+        effort=[0.2 * index for index in range(7)],
+    )
+    desired = joint_state(
+        position=[0.02 * index for index in range(7)],
+        velocity=[0.002 * index for index in range(7)],
+        effort=[tau_j_d] * 7,
+    )
+    motor = joint_state(
+        position=[0.011 * index for index in range(7)],
+        velocity=[0.0011 * index for index in range(7)],
+        effort=[],
+    )
+    external = joint_state(position=[], velocity=[], effort=[0.01] * 7)
+    return SimpleNamespace(
+        header=header(seconds),
+        collision_indicators=SimpleNamespace(
+            is_cartesian_linear_collision=zero,
+            is_cartesian_angular_collision=zero,
+            is_cartesian_linear_contact=vector((1.0, 0.0, 0.0)),
+            is_cartesian_angular_contact=zero,
+            is_joint_collision=[0.0] * 7,
+            is_joint_contact=[0.0] * 7,
+        ),
+        measured_joint_state=measured,
+        desired_joint_state=desired,
+        measured_joint_motor_state=motor,
+        ddq_d=[0.0] * 7,
+        dtau_j=[0.0] * 7,
+        tau_ext_hat_filtered=external,
+        elbow=SimpleNamespace(
+            position=[0.0, 1.0],
+            desired_position=[0.0, 1.0],
+            commanded_position=[0.0, 1.0],
+            commanded_velocity=[0.0, 0.0],
+            commanded_acceleration=[0.0, 0.0],
+        ),
+        k_f_ext_hat_k=spatial_stamped("wrench", (1.0, 2.0, 3.0)),
+        o_f_ext_hat_k=spatial_stamped("wrench", (4.0, 5.0, 6.0)),
+        inertia_ee=inertia_stamped(0.73),
+        inertia_load=inertia_stamped(0.2),
+        inertia_total=inertia_stamped(0.93),
+        o_t_ee=pose_stamped(),
+        o_t_ee_d=pose_stamped((0.5, 0.0, 0.21)),
+        o_t_ee_c=pose_stamped((0.5, 0.0, 0.22)),
+        f_t_ee=pose_stamped((0.0, 0.0, 0.1)),
+        ee_t_k=pose_stamped((0.0, 0.0, 0.0)),
+        o_dp_ee_d=spatial_stamped("twist"),
+        o_dp_ee_c=spatial_stamped("twist"),
+        o_ddp_ee_c=spatial_stamped("accel"),
+        time=seconds,
+        control_command_success_rate=0.99,
+        robot_mode=2,
+        current_errors=BooleanFields(joint_velocity_violation=False),
+        last_motion_errors=BooleanFields(controller_torque_discontinuity=True),
     )
 
 
@@ -147,35 +304,20 @@ def test_arm_mapping_rejects_partial_or_unknown_names() -> None:
 
 
 def test_agimus_robot_state_row_preserves_tau_j_d_mode_and_errors() -> None:
-    class BooleanFields(SimpleNamespace):
-        def get_fields_and_field_types(self) -> dict[str, str]:
-            return {name: "boolean" for name in vars(self)}
-
-    vector = SimpleNamespace(x=0.0, y=0.0, z=0.0)
-    joint = SimpleNamespace(
-        name=[f"fer_joint{i}" for i in range(1, 8)],
-        position=[0.0] * 7,
-        velocity=[0.0] * 7,
-        effort=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
-    )
-    message = SimpleNamespace(
-        header=SimpleNamespace(stamp=SimpleNamespace(sec=2, nanosec=0)),
-        measured_joint_state=joint,
-        desired_joint_state=joint,
-        control_command_success_rate=0.99,
-        robot_mode=4,
-        current_errors=BooleanFields(joint_velocity_violation=True, joint_reflex=False),
-        last_motion_errors=BooleanFields(controller_torque_discontinuity=True),
-        collision_indicators=SimpleNamespace(
-            is_cartesian_linear_collision=vector,
-            is_cartesian_angular_collision=vector,
-            is_joint_collision=[0.0] * 7,
-        ),
+    message = agimus_message(tau_j_d=1.5)
+    message.robot_mode = 4
+    message.current_errors = BooleanFields(
+        joint_velocity_violation=True, joint_reflex=False
     )
 
     row = _robot_state_row(message, 2.1)
 
-    assert row["desired_effort"] == joint.effort
+    assert row["desired_effort"] == [1.5] * 7
+    assert row["motor_position"][6] == pytest.approx(0.066)
+    assert row["external_wrench_base"][:3] == [4.0, 5.0, 6.0]
+    assert row["inertia_load"][0] == pytest.approx(0.2)
+    assert row["desired_ee_pose"][2] == pytest.approx(0.21)
+    assert row["contact_indicator_max"] == pytest.approx(1.0)
     assert row["robot_mode"] == 4
     assert row["current_errors"] == ["joint_velocity_violation"]
     assert row["last_motion_errors"] == ["controller_torque_discontinuity"]
@@ -184,22 +326,15 @@ def test_agimus_robot_state_row_preserves_tau_j_d_mode_and_errors() -> None:
 def test_agimus_state_is_summarized_and_plotted_when_available(
     tmp_path: Path,
 ) -> None:
-    robot_row = {
-        "receive": 10.04,
-        "stamp": 10.04,
-        "measured_effort": [0.0] * 7,
-        "desired_effort": [0.1] * 7,
-        "control_command_success_rate": 0.99,
-        "robot_mode": 2,
-        "current_errors": [],
-        "last_motion_errors": ["controller_torque_discontinuity"],
-        "collision_indicator_max": 0.0,
-    }
+    robot_row = _robot_state_row(agimus_message(seconds=10.04), 10.041)
     run = replace(synthetic_run(), robot_state=[robot_row])
     aligned = align_run(run)
 
     summary = summarize(aligned, terminal_sec=1.0)
     filename = _plot_agimus_robot_state(aligned, tmp_path)
+    joint_filename = _plot_agimus_joint_motor(aligned, tmp_path)
+    ee_filename = _plot_agimus_ee_wrench(aligned, tmp_path)
+    _write_agimus_robot_state_csv(aligned, tmp_path)
 
     assert summary["agimus_robot_state"]["available"] is True
     assert summary["agimus_robot_state"]["robot_mode_counts"] == {"MOVE": 1}
@@ -208,6 +343,116 @@ def test_agimus_state_is_summarized_and_plotted_when_available(
     ]
     assert filename == "09_agimus_robot_state.png"
     assert (tmp_path / filename).is_file()
+    assert joint_filename == "10_agimus_joint_motor.png"
+    assert ee_filename == "11_agimus_ee_wrench.png"
+    csv_text = (tmp_path / "agimus_robot_state.csv").read_text()
+    assert "measured_position_j1" in csv_text
+    assert "inertia_load_mass" in csv_text
+
+
+def test_limiter_reconstruction_uses_header_causality_not_receive_time() -> None:
+    output_stamp = 1.0 + np.arange(11, dtype=float) * 0.001
+    state_q = np.asarray(
+        [[0.01 * index for index in range(7)]] * len(output_stamp)
+    )
+    output = JointSeries(
+        receive=np.arange(len(output_stamp), dtype=float)[::-1] + 100.0,
+        stamp=output_stamp,
+        q=state_q,
+        v=np.zeros_like(state_q),
+        effort=np.full_like(state_q, 2.0),
+    )
+    first = _robot_state_row(agimus_message(seconds=1.0, tau_j_d=0.0), 50.0)
+    second = _robot_state_row(agimus_message(seconds=1.01, tau_j_d=2.0), -50.0)
+    data = replace(synthetic_run(), output=output, robot_state=[first, second])
+
+    reconstruction = _reconstruct_agimus_limiter(data)
+
+    assert reconstruction is not None
+    assert reconstruction.valid_interval.tolist() == [False, True]
+    assert reconstruction.interval_output_count.tolist() == [0, 10]
+    assert reconstruction.predicted[1].tolist() == pytest.approx([2.0] * 7)
+    assert reconstruction.observed[1].tolist() == pytest.approx([2.0] * 7)
+
+
+def test_limiter_reconstruction_marks_missing_1khz_output_invalid() -> None:
+    output_stamp = np.asarray([1.0, 1.001, 1.002, 1.004, 1.005, 1.006, 1.007, 1.008, 1.009, 1.01])
+    q = np.asarray([[0.01 * index for index in range(7)]] * len(output_stamp))
+    output = JointSeries(
+        receive=output_stamp,
+        stamp=output_stamp,
+        q=q,
+        v=np.zeros_like(q),
+        effort=np.zeros_like(q),
+    )
+    states = [
+        _robot_state_row(agimus_message(seconds=1.0, tau_j_d=0.0), 1.0),
+        _robot_state_row(agimus_message(seconds=1.01, tau_j_d=0.0), 1.01),
+    ]
+
+    reconstruction = _reconstruct_agimus_limiter(
+        replace(synthetic_run(), output=output, robot_state=states)
+    )
+
+    assert reconstruction is not None
+    assert not reconstruction.valid_interval[1]
+    assert reconstruction.interval_max_gap_ms[1] == pytest.approx(2.0)
+
+
+def test_ros_diagnostics_and_activity_are_decoded_and_exported(tmp_path: Path) -> None:
+    range_value = "Avg: 16.34 [11.79 - 99.31] us, StdDev: 6.88"
+    status = SimpleNamespace(
+        level=b"\x02",
+        name="controller_manager: Hardware Components Activity",
+        message="High execution jitter",
+        hardware_id="fer",
+        values=[
+            SimpleNamespace(
+                key="AgimusFrankaHardwareInterface.read_cycle.execution_time",
+                value=range_value,
+            )
+        ],
+    )
+    diagnostic_message = SimpleNamespace(header=header(10.0), status=[status])
+    diagnostic_rows = _ros_diagnostic_rows(diagnostic_message, 10.1)
+    activity_message = SimpleNamespace(
+        header=header(10.0),
+        controllers=[
+            SimpleNamespace(
+                name="linear_feedback_controller",
+                state=SimpleNamespace(id=3, label="active"),
+            )
+        ],
+        hardware_components=[
+            SimpleNamespace(
+                name="AgimusFrankaHardwareInterface",
+                state=SimpleNamespace(id=3, label="active"),
+            )
+        ],
+    )
+    activity_rows = _controller_activity_rows(activity_message, 10.1)
+    run = replace(
+        synthetic_run(),
+        ros_diagnostics=diagnostic_rows,
+        controller_activity=activity_rows,
+    )
+    aligned = align_run(run)
+
+    parsed = _diagnostic_statistics(range_value)
+    _write_controller_diagnostics_csv(aligned, tmp_path)
+    _write_controller_activity_csv(aligned, tmp_path)
+
+    assert parsed is not None
+    assert parsed["average"] == pytest.approx(16.34)
+    assert parsed["maximum"] == pytest.approx(99.31)
+    assert diagnostic_rows[0]["level"] == 2
+    assert {row["kind"] for row in activity_rows} == {"controller", "hardware"}
+    assert "read_cycle.execution_time" in (
+        tmp_path / "controller_diagnostics.csv"
+    ).read_text()
+    assert "linear_feedback_controller" in (
+        tmp_path / "controller_activity.csv"
+    ).read_text()
 
 
 def test_resolve_bag_accepts_run_or_direct_bag(tmp_path: Path) -> None:
@@ -262,3 +507,89 @@ def test_phase_plot_is_automatic_only_when_phase_machine_is_recorded(
     filename = _plot_phase(align_run(synthetic_run(phase_machine=True)), tmp_path)
     assert filename == "07_phase_and_gripper.png"
     assert (tmp_path / filename).is_file()
+
+
+def test_simulation_summary_and_artifacts_use_simulator_semantics(
+    tmp_path: Path,
+) -> None:
+    base = synthetic_run()
+    object_rows = [
+        {
+            "receive": 10.0 + 0.5 * index,
+            "stamp": 1.0 + 0.5 * index,
+            "frame_id": "odom",
+            "child_frame_id": "object",
+            "pose": [0.5 + 0.01 * index, 0.0, 0.105 + 0.02 * index, 0, 0, 0, 1],
+            "twist": [0.01, 0.0, 0.02, 0.0, 0.0, 0.0],
+        }
+        for index in range(3)
+    ]
+    actuator_rows = [
+        {
+            "receive": 10.0 + 0.5 * index,
+            "stamp": 1.0 + 0.5 * index,
+            "names": ["fer_joint1", "fer_finger_joint1"],
+            "position": [0.1 * index, 0.04],
+            "velocity": [0.0, 0.0],
+            "effort": [1.0, 0.0],
+        }
+        for index in range(3)
+    ]
+    run = replace(
+        base,
+        backend="mujoco",
+        backend_source="manifest",
+        hardware_source="/joint_states",
+        merged=base.hardware,
+        sim_object_pose=object_rows,
+        sim_actuator_states=actuator_rows,
+        sim_clock=[
+            {"receive": 10.0, "sim_time": 0.0},
+            {"receive": 10.5, "sim_time": 0.25},
+            {"receive": 11.0, "sim_time": 0.50},
+        ],
+    )
+    aligned = align_run(run)
+
+    summary = summarize(aligned, terminal_sec=1.0)
+    simulation_plot = _plot_simulation_ground_truth(aligned, tmp_path)
+    actuator_plot = _plot_mujoco_actuators(aligned, tmp_path)
+    _write_simulation_csvs(aligned, tmp_path)
+
+    assert summary["backend"] == "mujoco"
+    assert summary["torque_rate_audit"]["component_step_audit_threshold_nm"] is None
+    assert "MuJoCo" in summary["agimus_robot_state"]["note"]
+    assert summary["simulation"]["clock"]["aggregate_real_time_factor"] == pytest.approx(0.5)
+    assert "final_xy_error_to_recorded_task_goal_m" not in summary["simulation"]["object"]
+    missing = summary["observability"]["unpopulated_expected_topics"]
+    assert "/gripper_action_controller/gripper_cmd/_action/feedback" not in missing
+    assert "/gripper_action_controller/gripper_cmd/_action/status" not in missing
+    assert simulation_plot == "14_simulation_ground_truth.png"
+    assert actuator_plot == "15_mujoco_actuators.png"
+    assert (tmp_path / "simulation_object_pose.csv").is_file()
+    assert (tmp_path / "mujoco_actuator_states.csv").is_file()
+    assert (tmp_path / "simulation_clock.csv").is_file()
+
+
+def test_gripper_width_handles_single_coupled_sim_finger() -> None:
+    message = joint_state(
+        names=[f"fer_joint{i}" for i in range(1, 8)] + ["fer_finger_joint1"],
+        position=[0.0] * 7 + [0.04],
+        velocity=[0.0] * 8,
+        effort=[0.0] * 8,
+    )
+
+    row = _gripper_joint_row(message, 2.1)
+
+    assert row is not None
+    assert row["names"] == ["fer_finger_joint1"]
+    assert row["width"] == pytest.approx(0.08)
+
+
+def test_windowed_rtf_does_not_cross_clock_resets() -> None:
+    receive = np.asarray([0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5])
+    simulation = np.asarray([0.0, 0.125, 0.25, 0.0, 0.125, 0.25, 0.375])
+
+    _, rtf = _windowed_clock_rtf(receive, simulation, window_sec=0.5)
+
+    assert rtf.tolist() == pytest.approx([0.5, 0.5])

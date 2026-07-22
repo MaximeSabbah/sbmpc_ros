@@ -39,7 +39,7 @@ setup(
     entry_points={
         "console_scripts": [
             "sbmpc_pixi_supervisor = sbmpc_bringup.pixi_supervisor:main",
-            "record_sbmpc_replay = sbmpc_bringup.replay:record_main",
+            "record_sbmpc_run = sbmpc_bringup.record_run:main",
             "replay_sbmpc_trajectory = sbmpc_bringup.replay:replay_main",
             "report_sbmpc_bag = sbmpc_bringup.run_report:main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",

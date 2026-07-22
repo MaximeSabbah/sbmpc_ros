@@ -61,7 +61,6 @@ STALE_SIM_PROCESS_PATTERNS: tuple[str, ...] = (
     "/controller_manager/spawner",
     "python -m sbmpc_ros_bridge.lfc_bridge_node",
     "wait_for_bridge_warmup",
-    "record_sbmpc_replay",
 )
 
 

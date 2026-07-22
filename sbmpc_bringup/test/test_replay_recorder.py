@@ -3,81 +3,141 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
-from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES, SBMPC_JOINT_STATES_TOPIC
+from sbmpc_bringup.constants import FER_ARM_JOINT_NAMES
 from sbmpc_bringup.replay import (
-    _control_record_from_message,
-    _print_record_summary,
-    summarize_payload,
+    _load_payload,
+    export_replay_json,
+    replay_payload_from_run_data,
+    states_from_payload,
 )
 
 
-def test_recorder_default_joint_states_topic_matches_sim_broadcaster() -> None:
-    assert SBMPC_JOINT_STATES_TOPIC == "/joint_states"
-
-
-def stamp(sec: int = 1, nanosec: int = 2) -> SimpleNamespace:
-    return SimpleNamespace(sec=sec, nanosec=nanosec)
-
-
-def multi_array(data: list[float], shape: list[int]) -> SimpleNamespace:
+def decoded_joint_series(
+    times: list[float],
+    *,
+    position_offset: float = 0.0,
+    effort_offset: float = 0.0,
+) -> SimpleNamespace:
+    count = len(times)
     return SimpleNamespace(
-        data=data,
-        layout=SimpleNamespace(
-            dim=[SimpleNamespace(size=size) for size in shape],
+        receive=np.asarray(times, dtype=float),
+        stamp=np.asarray(times, dtype=float) - 0.001,
+        q=np.asarray(
+            [
+                [position_offset + index + 0.1 * joint for joint in range(7)]
+                for index in range(count)
+            ],
+            dtype=float,
+        ),
+        v=np.full((count, 7), 0.25, dtype=float),
+        effort=np.asarray(
+            [
+                [effort_offset + index + joint for joint in range(7)]
+                for index in range(count)
+            ],
+            dtype=float,
         ),
     )
 
 
-def control_message() -> SimpleNamespace:
+def decoded_run_data(*, merged: bool = True) -> SimpleNamespace:
+    times = [10.0, 10.04]
     return SimpleNamespace(
-        header=SimpleNamespace(stamp=stamp()),
-        feedforward=multi_array([1.0, -2.0], [2, 1]),
-        feedback_gain=multi_array([3.0, 4.0, 0.0, 0.0], [2, 2]),
-        initial_state=SimpleNamespace(
-            joint_state=SimpleNamespace(
-                header=SimpleNamespace(stamp=stamp(1, 20)),
-                name=list(FER_ARM_JOINT_NAMES),
-                position=[0.1 * index for index in range(7)],
-                velocity=[-0.2 * index for index in range(7)],
-                effort=[],
-            )
+        merged=(
+            decoded_joint_series(times, position_offset=1.0)
+            if merged
+            else None
+        ),
+        sensor=decoded_joint_series(times, position_offset=2.0),
+        output=decoded_joint_series(times, effort_offset=3.0),
+        hardware=decoded_joint_series(times, effort_offset=4.0),
+        control=SimpleNamespace(
+            receive=np.asarray(times),
+            stamp=np.asarray(times) - 0.002,
+            anchor_stamp=np.asarray(times) - 0.004,
+            feedforward=np.asarray(
+                [[1.0] * 7, [2.0] * 7],
+                dtype=float,
+            ),
+            gain=np.asarray(
+                [np.eye(7, 14), 2.0 * np.eye(7, 14)],
+                dtype=float,
+            ),
+            anchor_q=np.asarray([[0.1] * 7, [0.2] * 7]),
+            anchor_v=np.asarray([[0.3] * 7, [0.4] * 7]),
+        ),
+        diagnostics=SimpleNamespace(
+            receive=np.asarray(times),
+            rows=[
+                {
+                    "state": "running",
+                    "planner_step_count": 1,
+                    "published_control_count": 1,
+                    "last_planning_time_ms": 4.0,
+                },
+                {
+                    "state": "running",
+                    "planner_step_count": 2,
+                    "published_control_count": 2,
+                    "last_planning_time_ms": 5.0,
+                },
+            ],
         ),
     )
 
 
-def test_control_record_keeps_full_control_and_initial_state() -> None:
-    record = _control_record_from_message(
-        control_message(),
-        receive_wall_sec=12.0,
-    )
+def test_run_data_export_preserves_replay_fields_with_explicit_effort_semantics() -> None:
+    payload = replay_payload_from_run_data(decoded_run_data())
 
-    assert record["receive_wall_sec"] == 12.0
-    assert record["feedforward"] == [1.0, -2.0]
-    assert record["feedforward_shape"] == [2, 1]
-    assert record["feedforward_max_abs"] == 2.0
-    assert record["feedback_gain"] == [3.0, 4.0, 0.0, 0.0]
-    assert record["feedback_gain_shape"] == [2, 2]
-    assert record["gain_norm"] == 5.0
-    assert record["initial_state_velocity_abs_max"] == pytest.approx(1.2)
-    initial_state = record["initial_state"]
-    assert isinstance(initial_state, dict)
-    assert initial_state["position"][-1] == pytest.approx(0.6)
+    assert payload["schema"] == "sbmpc_ros_replay_v2"
+    assert payload["backend"] == "real"
+    assert payload["recorded_wall_time_sec"] == pytest.approx(0.04)
+    assert payload["joint_names"] == list(FER_ARM_JOINT_NAMES)
+    assert payload["topics"]["joint_states"] == "/joint_states"
+    assert payload["joint_states"][0]["position"][0] == pytest.approx(1.0)
+    assert payload["sensor_states"][0]["position"][0] == pytest.approx(2.0)
+
+    control = payload["controls"][1]
+    assert control["feedforward"] == [2.0] * 7
+    assert control["feedforward_shape"] == [7, 1]
+    assert control["feedback_gain_shape"] == [7, 14]
+    assert control["initial_state"]["stamp_sec"] == pytest.approx(10.036)
+    assert control["initial_state"]["position"] == [0.2] * 7
+    assert control["initial_state_velocity_abs_max"] == pytest.approx(0.4)
+
+    assert payload["lfc_output_efforts"][0]["effort"][0] == pytest.approx(3.0)
+    assert payload["observed_joint_effort"][0]["effort"][0] == pytest.approx(4.0)
+    assert "FCI measured" in payload["observed_joint_effort_semantics"]
+    assert payload["diagnostics"][1]["planner_step_count"] == 2
+    assert payload["summary"]["joint_state_count"] == 2
+    assert payload["summary"]["sensor_state_count"] == 2
+    assert payload["summary"]["control_count"] == 2
+    assert payload["summary"]["lfc_output_effort_count"] == 2
 
 
-def test_recorder_summary_reports_control_extrema(capsys) -> None:
-    controls = [_control_record_from_message(control_message(), receive_wall_sec=12.0)]
-    summary = summarize_payload([], [], controls, [])
+def test_sim_export_does_not_label_actuator_effort_as_fci_torque() -> None:
+    data = decoded_run_data()
+    data.backend = "mujoco"
+    data.hardware_source = "/joint_states"
 
-    assert summary["control_feedforward_abs_max"] == 2.0
-    assert summary["control_gain_norm_max"] == 5.0
-    assert summary["control_initial_state_velocity_abs_max"] == pytest.approx(1.2)
-    _print_record_summary(
-        {
-            "summary": summary,
-        },
-        Path("/tmp/example_replay.json"),
-    )
-    captured = capsys.readouterr()
-    assert "control_feedforward_abs_max=2.0" in captured.out
+    payload = replay_payload_from_run_data(data)
+
+    assert payload["topics"]["observed_joint_effort"] == "/joint_states"
+    assert "not Franka FCI" in payload["observed_joint_effort_semantics"]
+    assert "measured_joint_torque" not in payload
+
+
+def test_exported_run_data_loads_through_existing_replay_api(tmp_path: Path) -> None:
+    output_path = tmp_path / "replay.json"
+    written = export_replay_json(decoded_run_data(merged=False), output_path)
+
+    loaded = _load_payload(output_path)
+    assert loaded == written
+    assert loaded["joint_states"] == []
+    assert loaded["topics"]["joint_states"] is None
+    states = states_from_payload(loaded, source="auto", time_source="receive")
+    assert [state["position"][0] for state in states] == [2.0, 3.0]
+    assert [state["t"] for state in states] == pytest.approx([0.0, 0.04])

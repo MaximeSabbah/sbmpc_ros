@@ -23,8 +23,10 @@ where physics forces them to.
 - **No software "safety" theater.** Joint torque/velocity/effort limits are enforced by the robot
   hardware. The bridge does not re-implement them. (Finite/NaN/shape validation and the gain-
   convention math are *correctness*, not safety, and stay.)
-- **Rich, symmetric logging.** Recording captures the full controller-debug signal set and is byte-
-  for-byte schema-identical in sim and real so the two can be compared directly.
+- **Rich, symmetric diagnostics.** One `record_sbmpc_run` procedure captures the shared
+  controller-debug signal set in sim and real as MCAP. Plots, CSVs, summaries, and replay data are
+  derived offline after the bag closes, keeping report work out of the controller process and
+  preserving the raw data as ground truth.
 
 ---
 
@@ -34,7 +36,7 @@ where physics forces them to.
 |---|----------|-----------|
 | D1 | Single launch file `sbmpc_franka_bringup.launch.py`, switch `backend:=mujoco\|real`. | One code path; impossible to drift. |
 | D2 | Delete `sbmpc_franka_lfc_mujoco_sim.launch.py`, `sbmpc_franka_lfc_real.launch.py`, `sbmpc_pregrasp_demo.launch.py`. | Replaced by D1. |
-| D3 | Final arg set (8): `backend`, `enable_nonzero_control`, `use_rviz`, `headless`, `robot_ip`, `publish_rollout_markers`, `record_replay`, `use_gripper`. | Down from 27/35/15. |
+| D3 | Final arg set (9): `backend`, `planner`, `enable_nonzero_control`, `use_rviz`, `headless`, `initial_q`, `robot_ip`, `publish_rollout_markers`, `use_gripper`. Recording is intentionally external to the launch. | Keep operational choices in the launch interface; keep data capture lifecycle independent. |
 | D4 | Remove the realtime preflight + `require_realtime` entirely. | Counterproductive; not wanted. |
 | D5 | Remove `use_fake_hardware`/`fake_sensor_commands` + the mock-hardware xacro branch. | Undocumented, unused; MuJoCo is *the* sim. |
 | D6 | Remove the in-launch validator (`validate_sbmpc_sim` stays as a standalone `ros2 run` tool). | Belongs outside the operational launch. |
@@ -45,7 +47,7 @@ where physics forces them to.
 | D11 | **Drop** the sim latency model (`control_output_delay_sec`) and the `max_sensor_age_sec`/`max_planner_output_age_sec` launch overrides. | The real controller will be sized for no transport delay; sim runs on the same config values (0.12 s guards from `sbmpc_bridge.yaml`). |
 | D12 | `planner_mode` stays a **config-file setting** in `sbmpc_bridge.yaml` (default `exact_feedback`, the reference using feedback gains). No launch arg — edit the yaml to check `feedforward`-only. | Keep the ability to test feedforward without growing the launch interface. |
 | D13 | Rollout markers stay behind a flag, default **off** (`publish_rollout_markers:=false`). | Avoid polluting controller timing unless explicitly debugging. |
-| D14 | Recording: single `record_replay:=<path>` (empty=off); when on, LFC-output (commanded torque) capture is **always enabled**, schema identical in sim/real. | Full controller-debug set; cross-backend comparison. |
+| D14 | `record_sbmpc_run` is the single recording procedure for both backends. It supervises the normal bringup and an external MCAP recorder, finalizes both, then automatically derives plots, CSVs, summaries, and replay data. The bringup itself launches no recorder and exposes no recording argument. | One comprehensive source of truth for cross-backend diagnosis, with analysis kept out of the live controller launch. |
 | D15 | Arming `enable_nonzero_control` moves from a ROS **parameter** to a **`std_srvs/SetBool` service** on the bridge, with precondition checks. Param remains only as the initial state. | Params are config, not commands; a service gives request/response + precondition enforcement. |
 | D16 | Remove the dead torque/gain **limit** code from `safety.py` and the bridge (the limiter is already inert under the single config). Keep gain-convention math, finite/shape validation, staleness checks, deadline diagnostics, and the disarm emergency-PD-hold. | Software limits are not wanted; the rest is correctness/control, not safety. |
 | D17 | Remove the launch-level `taskset` CPU pinning. | `franka_controllers.yaml` already sets `cpu_affinity`; the launch pinning is redundant complexity. |
@@ -71,7 +73,6 @@ where physics forces them to.
 | `headless` | `true` | mujoco | Open the MuJoCo viewer when false. Ignored for `real`. |
 | `robot_ip` | `172.17.1.2` | real | Franka FCI IP. Ignored for `mujoco`. |
 | `publish_rollout_markers` | `false` | both | Publish MPPI rollout markers for RViz (off the control hot path). |
-| `record_replay` | `""` | both | Path to write a replay JSON; empty disables recording. |
 | `use_gripper` | `true` | both | Actuate the gripper. mujoco: spawn `gripper_action_controller`; real: include `agimus_franka_gripper`. The hand is always in the URDF regardless (kinematic parity). |
 
 `planner_mode` is intentionally **not** a launch arg — it lives in `sbmpc_bridge.yaml`
@@ -110,7 +111,7 @@ warmup + arm             wait_for_bridge_warmup (diagnostics topic, --timeout-se
                           mujoco → reset world to `home`, then       both → arm (param now; SetBool
                           arm if requested                                  service in Phase 2) if requested
 rviz                     if use_rviz (started up front)
-recorder                 if record_replay != "" (--include-warmup + --record-lfc-output, identical schema)
+recording                `record_sbmpc_run` supervises bringup + MCAP; report/replay generated afterward
 shutdown handlers        Shutdown() on any required-spawner / bridge / control-host / warmup failure
 ```
 
@@ -139,14 +140,13 @@ preflight is **shared** by both backends (D22 — no longer a divergence).
   unchanged; `test_launch_preflight.py` still green (10/10).
 - [x] **1.3 New launch file** `launch/sbmpc_franka_bringup.launch.py` using a single
   `OpaqueFunction(launch_setup)` that reads `backend` via `.perform(context)` and builds the
-  backend-appropriate nodes per §4. Implements D3–D8, D11–D13, D17–D22. Verified: 8-arg surface +
+  backend-appropriate nodes per §4. Implements D3–D8, D11–D13, D17–D22. Verified: 9-arg surface +
   defaults + `backend` choices introspected; `launch_setup` runs for both backends (mujoco 7 nodes,
   real 8 nodes + gripper include, 4 event handlers each) with the preflight mocked.
-- [x] **1.4 Recorder wiring (D14).** When `record_replay` is non-empty, add the
-  `record_sbmpc_replay` node with `--record-lfc-output` + `--include-warmup` always passed,
-  `--output <path>` and `--duration-sec 0` (record until shutdown). mujoco passes
-  `--measured-torque-topic ""`; real uses the recorder's default real topic (τ lives in `joint_states`
-  on sim). Wired inside the 1.3 launch.
+- [x] **1.4 Recorder separation (D14).** Removed recording from the launch interface and graph.
+  `record_sbmpc_run` is the one supervisor for sim and real: it starts MCAP before the normal
+  bringup, captures the raw topics, stops and finalizes both processes, then automatically derives
+  the diagnostic report and replay artifact.
 - [x] **1.5 xacro (D5).** Removed the `use_fake_hardware`/`fake_sensor_commands` args and the
   `mock_components/GenericSystem` branch from `urdf/franka_arm_with_sbmpc_real.urdf.xacro`; only the
   `AgimusFrankaHardwareInterface` hardware block remains. Verified: renders to 429 lines, no
@@ -156,8 +156,8 @@ preflight is **shared** by both backends (D22 — no longer a divergence).
   `sbmpc_franka_bringup.launch.py` remains. Remaining refs are tests (1.7) + docs (Phase 4).
 - [x] **1.7 Tests — rewritten (suite was red, referenced deleted files).**
   - Replaced `test_launch_imports.py` + `test_mujoco_launch_imports.py` with one
-    `test_bringup_launch.py`: asserts the 8-arg set, defaults, `backend` choices, and the
-    backend-conditional node graph (mujoco vs real spawners, jsb remap, sim overlay, recorder).
+    `test_bringup_launch.py`: asserts the 9-arg set, defaults, `backend` choices, and the
+    backend-conditional node graph (mujoco vs real spawners, jsb remap, sim overlay).
   - `test_bringup_config.py`: expected config set = the 4 real files; gripper type
     `effort_controllers/GripperActionController` (the old test wrongly expected position_controllers
     *and* a `type` under the gripper params); dropped the `*_feedforward`/`*_real_bringup` preset
@@ -170,9 +170,9 @@ preflight is **shared** by both backends (D22 — no longer a divergence).
 - [x] **1.8 Verify Phase 1.** Full `pytest` on the package green: **57 passed, 2 skipped** (the 2 skips
   are live hardware/sim smoke tests). Clean-rebuilt `sbmpc_bringup` (0.7 s) — install space now has only
   `sbmpc_franka_bringup.launch.py`. `ros2 launch sbmpc_bringup sbmpc_franka_bringup.launch.py --show-args`
-  lists all 8 args with `backend` choices. **Live smoke (sim/hardware) is the user's runtime step.**
+  lists all 9 args with `backend` choices. **Live smoke (sim/hardware) is the user's runtime step.**
 
-**Review checkpoint A:** new launch + tests green, old files gone, args = 8. ✅ Phase 1 done. ⟶ user review.
+**Review checkpoint A:** new launch + tests green, old files gone, args = 9. ✅ Phase 1 done. ⟶ user review.
 
 ---
 
@@ -280,10 +280,12 @@ emergency-PD-hold (`_publish_emergency_hold`, `hold_on_disarm_after_control`, `e
 ## 8. Phase 4 — Docs & housekeeping
 
 - [x] **4.1** Rewrote `sbmpc_ros/README.md` to the current codebase: the one
-  `sbmpc_franka_bringup.launch.py backend:=mujoco|real`, the 8-arg table, the service-arming workflow
+  `sbmpc_franka_bringup.launch.py backend:=mujoco|real`, the 9-arg table, the service-arming workflow
   (`ros2 service call /sbmpc_lfc_bridge_node/set_nonzero_control std_srvs/srv/SetBool "{data: true}"`,
-  rejected pre-warmup, identical sim/real), `record_replay:=<path>`, the standalone `validate_sbmpc_sim`
-  tool, and the current 4-file config set (no feedforward yaml). **Scope narrowed at user direction:**
+  rejected pre-warmup, identical sim/real), the unified `record_sbmpc_run` MCAP procedure with
+  automatic offline report/replay derivation, the standalone `validate_sbmpc_sim` tool, and the
+  current 4-file config set (no feedforward yaml).
+  **Scope narrowed at user direction:**
   the `sbmpc/docs/*.md` roadmaps were declared outdated and left untouched; `sbmpc_containers/README.md`
   still has stale launch commands (offered, pending user go-ahead).
 - [x] **4.2** Plan checkboxes updated; deviations recorded in the Phase 3 blockquote and here.
@@ -300,11 +302,18 @@ diff (single-source generation vs. a parity test). Not started here.
 
 ## 10. Recorded controller-debug signal set (reference)
 
-When `record_replay` is on, the replay JSON contains (timestamped, identical schema both backends):
-measured state q/dq/τ (`/joint_states`, `/sensor`); **LFC input** `/control` (MPC feedforward
-τ, feedback gain K, reference x₀); **LFC output / commanded torque** `/output_joint_effort`;
-diagnostics/timing (`/sbmpc/diagnostics`: planning ms, deadline misses, accept/reject counts);
-and, on real only, measured link-side τ_J (`franka_robot_state_broadcaster/measured_joint_states`).
+`record_sbmpc_run` starts the external MCAP recorder before the unified bringup for either backend,
+using one explicit topic contract. The raw set includes measured state (`/joint_states`, `/sensor`);
+**LFC input** `/control` (MPC
+feedforward τ, feedback gain K, reference x₀); **LFC output / commanded torque**
+`/output_joint_effort`; planner diagnostics/timing (`/sbmpc/diagnostics`); ros2_control diagnostics
+and controller lifecycle; ROS logs; gripper joint/action observability; and the canonical Agimus/FCI
+robot state when the real backend provides it. Backend-specific topics may be absent, but they do not
+change the recording procedure or common report schema.
+
+The MCAP is the source of truth. Automatic plots, CSV tables, the summary, and `replay.json` are
+generated only after bringup and recording stop, so analysis does not add work to the planner or
+the 1 kHz control path.
 
 ---
 
