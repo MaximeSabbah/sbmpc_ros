@@ -101,7 +101,11 @@ class HydraxPlannerDiagnostics:
     gain_mode: str
     running_cost: float | None = None
     position_error: float | None = None
+    position_error_signed: np.ndarray | None = None
     orientation_error: float | None = None
+    ee_position: np.ndarray | None = None
+    ee_rotation: np.ndarray | None = None
+    goal_rotation: np.ndarray | None = None
     object_error: float | None = None
     planner_prepare_time_ms: float | None = None
     planner_command_time_ms: float | None = None
@@ -228,6 +232,7 @@ class HydraxPlannerAdapter:
             opts.target_pos if self._ocp == OCP_PICK_PLACE else opts.goal_pos,
             dtype=np.float64,
         )
+        self._goal_rot = np.asarray(opts.goal_rot, dtype=np.float64).reshape(3, 3)
         self._control_period = float(self._task.dt)
 
         # Warm-startable optimizer state, seeded from the torque plan
@@ -436,7 +441,15 @@ class HydraxPlannerAdapter:
                 "close" if self._phase_machine.gripper_closed else "open"
             )
 
-        position_error = float(np.linalg.norm(ee - self._goal_pos))
+        position_error_signed = ee - self._goal_pos
+        position_error = float(np.linalg.norm(position_error_signed))
+        relative_rotation = self._goal_rot.T @ ee_rotation
+        orientation_cosine = np.clip(
+            (np.trace(relative_rotation) - 1.0) / 2.0,
+            -1.0,
+            1.0,
+        )
+        orientation_error = float(np.arccos(orientation_cosine))
         if phase_machine_diagnostics is not None:
             phase_machine_diagnostics.update(
                 ee_source="planning_model_fk",
@@ -457,6 +470,11 @@ class HydraxPlannerAdapter:
                 goal_position=self._goal_pos.copy(),
                 gain_mode=gain_mode,
                 position_error=position_error,
+                position_error_signed=position_error_signed.copy(),
+                orientation_error=orientation_error,
+                ee_position=ee.copy(),
+                ee_rotation=ee_rotation.copy(),
+                goal_rotation=self._goal_rot.copy(),
                 planner_prepare_time_ms=prepare_ms,
                 planner_command_time_ms=command_ms,
                 gain_ess=gain_ess,

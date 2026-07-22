@@ -344,9 +344,15 @@ class SbMpcLfcBridgeNode(Node):
         self._last_phase_gate_log_signature: tuple[object, ...] | None = None
         self._last_running_cost: float | None = None
         self._last_gain_norm: float | None = None
+        self._last_gain_ess: float | None = None
+        self._last_gain_nominal_weight: float | None = None
         self._last_torque_norm: float | None = None
         self._last_position_error: float | None = None
+        self._last_position_error_signed: list[float] | None = None
         self._last_orientation_error: float | None = None
+        self._last_ee_position: list[float] | None = None
+        self._last_ee_rotation: list[float] | None = None
+        self._last_goal_rotation: list[float] | None = None
         self._last_object_error: float | None = None
         self._last_goal_position: list[float] | None = None
         self._last_reference_q: list[float] | None = None
@@ -555,9 +561,15 @@ class SbMpcLfcBridgeNode(Node):
             last_next_phase=self._last_next_phase,
             last_running_cost=self._last_running_cost,
             last_gain_norm=self._last_gain_norm,
+            last_gain_ess=self._last_gain_ess,
+            last_gain_nominal_weight=self._last_gain_nominal_weight,
             last_torque_norm=self._last_torque_norm,
             last_position_error=self._last_position_error,
+            last_position_error_signed=self._last_position_error_signed,
             last_orientation_error=self._last_orientation_error,
+            last_ee_position=self._last_ee_position,
+            last_ee_rotation=self._last_ee_rotation,
+            last_goal_rotation=self._last_goal_rotation,
             last_object_error=self._last_object_error,
             last_goal_position=self._last_goal_position,
             last_reference_q=self._last_reference_q,
@@ -1401,14 +1413,36 @@ class SbMpcLfcBridgeNode(Node):
         self._last_gain_norm = self._maybe_float(
             getattr(diagnostics, "gain_norm", None)
         )
+        self._last_gain_ess = self._maybe_float(
+            getattr(diagnostics, "gain_ess", None)
+        )
+        self._last_gain_nominal_weight = self._maybe_float(
+            getattr(diagnostics, "gain_nominal_weight", None)
+        )
         self._last_torque_norm = self._maybe_float(
             getattr(diagnostics, "torque_norm", None)
         )
         self._last_position_error = self._maybe_float(
             getattr(diagnostics, "position_error", None)
         )
+        self._last_position_error_signed = self._maybe_float_vector(
+            getattr(diagnostics, "position_error_signed", None),
+            expected_size=3,
+        )
         self._last_orientation_error = self._maybe_float(
             getattr(diagnostics, "orientation_error", None)
+        )
+        self._last_ee_position = self._maybe_float_vector(
+            getattr(diagnostics, "ee_position", None),
+            expected_size=3,
+        )
+        self._last_ee_rotation = self._maybe_float_vector(
+            getattr(diagnostics, "ee_rotation", None),
+            expected_size=9,
+        )
+        self._last_goal_rotation = self._maybe_float_vector(
+            getattr(diagnostics, "goal_rotation", None),
+            expected_size=9,
         )
         self._last_object_error = self._maybe_float(
             getattr(diagnostics, "object_error", None)

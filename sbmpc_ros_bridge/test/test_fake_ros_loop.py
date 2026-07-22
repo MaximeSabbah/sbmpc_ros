@@ -52,9 +52,23 @@ class FakePlannerDiagnostics:
     planning_time_ms: float = 12.5
     running_cost: float = 1.25
     gain_norm: float = 2.65
+    gain_ess: float = 48.0
+    gain_nominal_weight: float = 0.125
     torque_norm: float = 1.32
     position_error: float = 0.25
+    position_error_signed: tuple[float, float, float] = (-0.25, 0.0, -0.02)
     orientation_error: float = 0.01
+    ee_position: tuple[float, float, float] = (0.30, 0.0, 0.38)
+    ee_rotation: tuple[tuple[float, float, float], ...] = (
+        (1.0, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, -1.0),
+    )
+    goal_rotation: tuple[tuple[float, float, float], ...] = (
+        (1.0, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, -1.0),
+    )
     object_error: float | None = None
     goal_position: tuple[float, float, float] = (0.55, 0.0, 0.40)
     gain_mode: str = "exact_feedback"
@@ -284,11 +298,28 @@ def test_fake_ros_loop_waits_for_sensor_then_warmup_then_nonzero_control() -> No
         assert snapshot.last_planning_time_ms == pytest.approx(12.5)
         assert snapshot.last_planner_step_wall_time_ms is not None
         assert snapshot.last_position_error == pytest.approx(0.25)
+        assert snapshot.last_position_error_signed == pytest.approx(
+            [-0.25, 0.0, -0.02]
+        )
+        assert snapshot.last_orientation_error == pytest.approx(0.01)
+        assert snapshot.last_ee_position == pytest.approx([0.30, 0.0, 0.38])
+        assert snapshot.last_ee_rotation == pytest.approx(
+            [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0]
+        )
+        assert snapshot.last_goal_rotation == pytest.approx(
+            [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0]
+        )
+        assert snapshot.last_gain_ess == pytest.approx(48.0)
+        assert snapshot.last_gain_nominal_weight == pytest.approx(0.125)
         assert snapshot.last_goal_position == [0.55, 0.0, 0.4]
         assert snapshot.last_reference_q == pytest.approx(reference_q.tolist())
         assert snapshot.last_reference_v == pytest.approx(reference_v.tolist())
         assert snapshot.planner_mode == "exact_feedback"
         assert snapshot.last_planner_command_time_ms == pytest.approx(9.5)
+        payload = json.loads(snapshot.to_json())
+        assert payload["last_position_error_signed"] == [-0.25, 0.0, -0.02]
+        assert payload["last_gain_ess"] == pytest.approx(48.0)
+        assert payload["last_gain_nominal_weight"] == pytest.approx(0.125)
     finally:
         teardown_executor(executor, bridge, sensor_publisher, collector)
 

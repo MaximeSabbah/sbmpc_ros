@@ -119,12 +119,35 @@ def test_constant_impedance_in_dudx_convention(adapter):
 
 def test_mode_and_diagnostics(adapter):
     adapter.reset_runtime_state_after_warmup()
-    out = adapter.step(_planner_input(adapter))
+    planner_input = _planner_input(adapter)
+    out = adapter.step(planner_input)
     assert out.phase == "PREGRASP"
     assert out.next_phase == "PREGRASP"
     assert out.diagnostics.gain_mode == "feedforward"
     assert out.diagnostics.planning_time_ms > 0.0
     assert out.diagnostics.phase_machine is None
+    expected_position, expected_rotation = adapter._ee_pose(planner_input.q)
+    expected_goal_position = np.asarray(adapter._task.options.goal_pos)
+    expected_goal_rotation = np.asarray(adapter._task.options.goal_rot)
+    expected_signed_error = expected_position - expected_goal_position
+    relative_rotation = expected_goal_rotation.T @ expected_rotation
+    expected_orientation_error = np.arccos(
+        np.clip((np.trace(relative_rotation) - 1.0) / 2.0, -1.0, 1.0)
+    )
+    np.testing.assert_allclose(out.diagnostics.ee_position, expected_position)
+    np.testing.assert_allclose(out.diagnostics.ee_rotation, expected_rotation)
+    np.testing.assert_allclose(
+        out.diagnostics.goal_rotation, expected_goal_rotation
+    )
+    np.testing.assert_allclose(
+        out.diagnostics.position_error_signed, expected_signed_error
+    )
+    assert out.diagnostics.position_error == pytest.approx(
+        np.linalg.norm(expected_signed_error)
+    )
+    assert out.diagnostics.orientation_error == pytest.approx(
+        expected_orientation_error
+    )
     assert adapter.mpc_dt == pytest.approx(0.04)
 
 

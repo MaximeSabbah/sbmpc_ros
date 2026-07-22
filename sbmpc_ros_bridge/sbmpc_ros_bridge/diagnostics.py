@@ -32,9 +32,17 @@ class BridgeDiagnostics:
     last_next_phase: str | None
     last_running_cost: float | None
     last_gain_norm: float | None
+    last_gain_ess: float | None
+    last_gain_nominal_weight: float | None
     last_torque_norm: float | None
     last_position_error: float | None
+    last_position_error_signed: list[float] | None
     last_orientation_error: float | None
+    last_ee_position: list[float] | None
+    # Row-major 3x3 matrices. Keeping matrices avoids quaternion sign
+    # ambiguity and Euler-angle singularities in the recorded data.
+    last_ee_rotation: list[float] | None
+    last_goal_rotation: list[float] | None
     last_object_error: float | None
     last_goal_position: list[float] | None
     last_reference_q: list[float] | None

@@ -1271,6 +1271,74 @@ def _recorded_position_error(row: dict[str, Any]) -> float | None:
     return float(value) if value is not None else None
 
 
+def _recorded_vector(
+    row: dict[str, Any],
+    *,
+    phase_key: str | None,
+    row_key: str,
+    size: int,
+) -> np.ndarray | None:
+    """Return one finite diagnostic vector, preferring the active phase gate."""
+    phase = row.get("phase_machine") or {}
+    value = phase.get(phase_key) if phase_key is not None else None
+    if value is None:
+        value = row.get(row_key)
+    if value is None:
+        return None
+    try:
+        array = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if array.shape != (size,) or not np.all(np.isfinite(array)):
+        return None
+    return array
+
+
+def _recorded_ee_position(row: dict[str, Any]) -> np.ndarray | None:
+    return _recorded_vector(
+        row,
+        phase_key="ee_position_m",
+        row_key="last_ee_position",
+        size=3,
+    )
+
+
+def _recorded_goal_position(row: dict[str, Any]) -> np.ndarray | None:
+    return _recorded_vector(
+        row,
+        phase_key="ee_goal_position_m",
+        row_key="last_goal_position",
+        size=3,
+    )
+
+
+def _recorded_position_error_signed(row: dict[str, Any]) -> np.ndarray | None:
+    return _recorded_vector(
+        row,
+        phase_key="ee_position_error_signed_m",
+        row_key="last_position_error_signed",
+        size=3,
+    )
+
+
+def _recorded_ee_rotation(row: dict[str, Any]) -> np.ndarray | None:
+    return _recorded_vector(
+        row,
+        phase_key=None,
+        row_key="last_ee_rotation",
+        size=9,
+    )
+
+
+def _recorded_goal_rotation(row: dict[str, Any]) -> np.ndarray | None:
+    return _recorded_vector(
+        row,
+        phase_key=None,
+        row_key="last_goal_rotation",
+        size=9,
+    )
+
+
 def _recorded_orientation_error(row: dict[str, Any]) -> float | None:
     phase = row.get("phase_machine") or {}
     value = phase.get("ee_orientation_error_rad", row.get("last_orientation_error"))
@@ -1591,12 +1659,43 @@ def summarize(run: AlignedRun, *, terminal_sec: float) -> dict[str, Any]:
             for row in run.diagnostics
         ]
     )
+    position_error_signed_mm = np.asarray(
+        [
+            np.full(3, np.nan) if value is None else 1e3 * value
+            for row in run.diagnostics
+            for value in [_recorded_position_error_signed(row)]
+        ]
+    )
+    gain_ess = np.asarray(
+        [
+            np.nan if row.get("last_gain_ess") is None else row["last_gain_ess"]
+            for row in run.diagnostics
+        ],
+        dtype=np.float64,
+    )
+    gain_nominal_weight = np.asarray(
+        [
+            (
+                np.nan
+                if row.get("last_gain_nominal_weight") is None
+                else row["last_gain_nominal_weight"]
+            )
+            for row in run.diagnostics
+        ],
+        dtype=np.float64,
+    )
     warning_rows = [row for row in data.rosout if row["level"] >= 30]
     final = run.diagnostics[-1]
     final_phase = final.get("phase_machine") or {}
     task_goal_position = final.get("last_goal_position")
     phase_goal_position = final_phase.get("ee_goal_position_m")
     goal_position = phase_goal_position or task_goal_position
+    final_ee_position = _recorded_ee_position(final)
+    final_position_error_signed_mm = _recorded_position_error_signed(final)
+    if final_position_error_signed_mm is not None:
+        final_position_error_signed_mm = 1e3 * final_position_error_signed_mm
+    final_ee_rotation = _recorded_ee_rotation(final)
+    goal_rotation = _recorded_goal_rotation(final)
     agimus_state = _agimus_robot_state_summary(data)
     ros_control_diagnostics = _ros_control_diagnostics_summary(data)
     gripper_observability = _gripper_summary(data)
@@ -1688,16 +1787,48 @@ def summarize(run: AlignedRun, *, terminal_sec: float) -> dict[str, Any]:
         "recorded_goal_position_m": goal_position,
         "recorded_phase_goal_position_m": phase_goal_position,
         "recorded_task_goal_position_m": task_goal_position,
+        "final_ee_position_m": (
+            None if final_ee_position is None else final_ee_position.tolist()
+        ),
+        "final_ee_position_error_signed_mm": (
+            None
+            if final_position_error_signed_mm is None
+            else final_position_error_signed_mm.tolist()
+        ),
+        "final_ee_rotation_matrix": (
+            None
+            if final_ee_rotation is None
+            else final_ee_rotation.reshape(3, 3).tolist()
+        ),
+        "recorded_goal_rotation_matrix": (
+            None if goal_rotation is None else goal_rotation.reshape(3, 3).tolist()
+        ),
         "initial_q_minus_reference_rad": (run.q[0] - run.reference_q[0]).tolist(),
         "final_q_minus_reference_rad": (run.q[-1] - run.final_reference_q).tolist(),
         "final_q_minus_local_anchor_rad": local_anchor_q_error[-1].tolist(),
         "final_max_abs_q_error_rad": float(np.max(np.abs(q_error[-1]))),
         "position_error_mm": _stats(position_error_mm),
         "terminal_position_error_mm": _stats(position_error_mm[terminal_control]),
+        "ee_position_error_signed_mm_by_axis": {
+            axis: _stats(position_error_signed_mm[:, index])
+            for index, axis in enumerate(("x", "y", "z"))
+        },
+        "terminal_ee_position_error_signed_mm_by_axis": {
+            axis: _stats(position_error_signed_mm[terminal_control, index])
+            for index, axis in enumerate(("x", "y", "z"))
+        },
         "orientation_error_rad": _stats(orientation_error_rad),
         "terminal_orientation_error_rad": _stats(
             orientation_error_rad[terminal_control]
         ),
+        "gain_sampling": {
+            "ess": _stats(gain_ess),
+            "terminal_ess": _stats(gain_ess[terminal_control]),
+            "nominal_weight": _stats(gain_nominal_weight),
+            "terminal_nominal_weight": _stats(
+                gain_nominal_weight[terminal_control]
+            ),
+        },
         "terminal_detrended_q_rms_rad": np.sqrt(
             np.mean(terminal_q_detrended**2, axis=0)
         ).tolist(),
@@ -1823,6 +1954,14 @@ def _plot_task(run: AlignedRun, output: Path) -> str:
             for row in run.diagnostics
         ]
     )
+    position_error_signed = np.asarray(
+        [
+            np.full(3, np.nan) if value is None else 1e3 * value
+            for row in run.diagnostics
+            for value in [_recorded_position_error_signed(row)]
+        ]
+    )
+    has_signed_position = bool(np.any(np.isfinite(position_error_signed)))
     has_orientation = bool(np.any(np.isfinite(orientation_error)))
     phases = [_phase(row) for row in run.diagnostics]
     phase_names = list(dict.fromkeys(phases))
@@ -1834,7 +1973,16 @@ def _plot_task(run: AlignedRun, output: Path) -> str:
         figsize=(13, 13 if has_orientation else 11),
         sharex=True,
     )
-    axes[0].plot(run.time, position_error, color="black")
+    axes[0].plot(run.time, position_error, color="black", linewidth=2.0, label="norm")
+    if has_signed_position:
+        for index, axis_name in enumerate(("x", "y", "z")):
+            axes[0].plot(
+                run.time,
+                position_error_signed[:, index],
+                label=f"signed {axis_name}",
+            )
+        axes[0].axhline(0.0, color="black", linewidth=0.6)
+        axes[0].legend(ncol=4)
     axes[0].set_ylabel("recorded EE error [mm]")
     row = 1
     if has_orientation:
@@ -1911,7 +2059,24 @@ def _plot_controller(run: AlignedRun, output: Path) -> str:
     anchor_q_error = np.linalg.norm(run.q - run.data.control.anchor_q, axis=1)
     delta_ff = np.r_[np.nan, np.linalg.norm(np.diff(run.feedforward, axis=0), axis=1)]
     delta_output = np.r_[np.nan, np.linalg.norm(np.diff(run.output, axis=0), axis=1)]
-    fig, axes = plt.subplots(5, 1, figsize=(13, 14), sharex=True)
+    gain_ess = np.asarray(
+        [row.get("last_gain_ess", np.nan) for row in run.diagnostics],
+        dtype=np.float64,
+    )
+    gain_nominal_weight = np.asarray(
+        [row.get("last_gain_nominal_weight", np.nan) for row in run.diagnostics],
+        dtype=np.float64,
+    )
+    has_gain_health = bool(
+        np.any(np.isfinite(gain_ess)) or np.any(np.isfinite(gain_nominal_weight))
+    )
+    row_count = 6 if has_gain_health else 5
+    fig, axes = plt.subplots(
+        row_count,
+        1,
+        figsize=(13, 16 if has_gain_health else 14),
+        sharex=True,
+    )
     axes[0].plot(run.time, np.linalg.norm(run.feedforward, axis=1), label="feedforward")
     axes[0].plot(run.time, np.linalg.norm(run.output, axis=1), label="LFC output")
     axes[0].set_ylabel("torque norm [Nm]")
@@ -1932,11 +2097,32 @@ def _plot_controller(run: AlignedRun, output: Path) -> str:
     axes[2].set_ylabel("||K(anchor-current)|| [Nm]")
     axes[3].plot(run.time, gain_norm)
     axes[3].set_ylabel("Frobenius ||K||")
-    axes[4].plot(run.time, delta_ff, label="feedforward step")
-    axes[4].plot(run.time, delta_output, label="planner-aligned output step")
-    axes[4].set_ylabel("step norm [Nm]")
-    axes[4].set_xlabel("active-control time [s]")
-    axes[4].legend()
+    step_axis_index = 4
+    if has_gain_health:
+        gain_axis = axes[4]
+        gain_axis.plot(run.time, gain_ess, color="tab:blue", label="gain ESS")
+        gain_axis.set_ylabel("gain ESS", color="tab:blue")
+        weight_axis = gain_axis.twinx()
+        weight_axis.plot(
+            run.time,
+            gain_nominal_weight,
+            color="tab:orange",
+            label="nominal weight",
+        )
+        weight_axis.set_ylim(-0.02, 1.02)
+        weight_axis.set_ylabel("nominal weight", color="tab:orange")
+        gain_lines = gain_axis.get_lines() + weight_axis.get_lines()
+        gain_axis.legend(gain_lines, [line.get_label() for line in gain_lines])
+        step_axis_index = 5
+    axes[step_axis_index].plot(run.time, delta_ff, label="feedforward step")
+    axes[step_axis_index].plot(
+        run.time,
+        delta_output,
+        label="planner-aligned output step",
+    )
+    axes[step_axis_index].set_ylabel("step norm [Nm]")
+    axes[step_axis_index].set_xlabel("active-control time [s]")
+    axes[step_axis_index].legend()
     for axis in axes:
         axis.grid(alpha=0.25)
     fig.suptitle("Controller command and local feedback activity")
@@ -2653,11 +2839,26 @@ def _plot_mujoco_actuators(run: AlignedRun, output: Path) -> str | None:
     return _save(fig, output, "15_mujoco_actuators.png")
 
 
+_ROTATION_COMPONENTS = tuple(
+    f"r{row}{column}" for row in range(3) for column in range(3)
+)
+
+
 def _write_steps_csv(run: AlignedRun, output: Path) -> None:
     fields = (
         "time_sec",
         "phase",
         "ee_error_mm",
+        "ee_error_x_mm",
+        "ee_error_y_mm",
+        "ee_error_z_mm",
+        "ee_orientation_error_rad",
+        "ee_position_x_m",
+        "ee_position_y_m",
+        "ee_position_z_m",
+        "ee_goal_x_m",
+        "ee_goal_y_m",
+        "ee_goal_z_m",
         "q_error_norm_rad",
         "q_error_max_rad",
         "velocity_norm_rad_s",
@@ -2665,7 +2866,13 @@ def _write_steps_csv(run: AlignedRun, output: Path) -> None:
         "output_norm_nm",
         "feedback_norm_nm",
         "gain_norm",
+        "gain_ess",
+        "gain_nominal_weight",
         "planning_time_ms",
+    ) + tuple(
+        f"ee_rotation_{component}" for component in _ROTATION_COMPONENTS
+    ) + tuple(
+        f"goal_rotation_{component}" for component in _ROTATION_COMPONENTS
     )
     with (output / "controller_steps.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -2673,21 +2880,50 @@ def _write_steps_csv(run: AlignedRun, output: Path) -> None:
         for index, row in enumerate(run.diagnostics):
             q_error = run.q[index] - run.reference_q[index]
             ee_error = _recorded_position_error(row)
-            writer.writerow(
-                {
-                    "time_sec": run.time[index],
-                    "phase": _phase(row),
-                    "ee_error_mm": None if ee_error is None else 1e3 * ee_error,
-                    "q_error_norm_rad": np.linalg.norm(q_error),
-                    "q_error_max_rad": np.max(np.abs(q_error)),
-                    "velocity_norm_rad_s": np.linalg.norm(run.v[index]),
-                    "feedforward_norm_nm": np.linalg.norm(run.feedforward[index]),
-                    "output_norm_nm": np.linalg.norm(run.output[index]),
-                    "feedback_norm_nm": np.linalg.norm(run.feedback[index]),
-                    "gain_norm": np.linalg.norm(run.gain[index]),
-                    "planning_time_ms": row.get("last_planning_time_ms"),
-                }
-            )
+            ee_error_signed = _recorded_position_error_signed(row)
+            ee_position = _recorded_ee_position(row)
+            ee_goal = _recorded_goal_position(row)
+            ee_rotation = _recorded_ee_rotation(row)
+            goal_rotation = _recorded_goal_rotation(row)
+            record = {
+                "time_sec": run.time[index],
+                "phase": _phase(row),
+                "ee_error_mm": None if ee_error is None else 1e3 * ee_error,
+                "ee_orientation_error_rad": _recorded_orientation_error(row),
+                "q_error_norm_rad": np.linalg.norm(q_error),
+                "q_error_max_rad": np.max(np.abs(q_error)),
+                "velocity_norm_rad_s": np.linalg.norm(run.v[index]),
+                "feedforward_norm_nm": np.linalg.norm(run.feedforward[index]),
+                "output_norm_nm": np.linalg.norm(run.output[index]),
+                "feedback_norm_nm": np.linalg.norm(run.feedback[index]),
+                "gain_norm": np.linalg.norm(run.gain[index]),
+                "gain_ess": row.get("last_gain_ess"),
+                "gain_nominal_weight": row.get("last_gain_nominal_weight"),
+                "planning_time_ms": row.get("last_planning_time_ms"),
+            }
+            for component, value in zip(
+                ("x", "y", "z"),
+                np.full(3, np.nan)
+                if ee_error_signed is None
+                else 1e3 * ee_error_signed,
+            ):
+                record[f"ee_error_{component}_mm"] = value
+            for prefix, vector in (("ee_position", ee_position), ("ee_goal", ee_goal)):
+                for component, value in zip(
+                    ("x", "y", "z"),
+                    np.full(3, np.nan) if vector is None else vector,
+                ):
+                    record[f"{prefix}_{component}_m"] = value
+            for prefix, rotation in (
+                ("ee_rotation", ee_rotation),
+                ("goal_rotation", goal_rotation),
+            ):
+                for component, value in zip(
+                    _ROTATION_COMPONENTS,
+                    np.full(9, np.nan) if rotation is None else rotation,
+                ):
+                    record[f"{prefix}_{component}"] = value
+            writer.writerow(record)
 
 
 _JOINT_COMPONENTS = tuple(f"j{index}" for index in range(1, 8))

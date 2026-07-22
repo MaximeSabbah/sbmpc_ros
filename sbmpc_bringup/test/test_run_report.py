@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,9 @@ from sbmpc_bringup.run_report import (
     _plot_agimus_ee_wrench,
     _plot_agimus_joint_motor,
     _plot_agimus_robot_state,
+    _plot_controller,
     _plot_phase,
+    _plot_task,
     _plot_mujoco_actuators,
     _plot_simulation_ground_truth,
     _reconstruct_agimus_limiter,
@@ -30,6 +33,7 @@ from sbmpc_bringup.run_report import (
     _write_agimus_robot_state_csv,
     _write_controller_activity_csv,
     _write_controller_diagnostics_csv,
+    _write_steps_csv,
     _write_simulation_csvs,
     _windowed_clock_rtf,
     align_run,
@@ -58,6 +62,17 @@ def synthetic_run(*, phase_machine: bool = False) -> RunData:
     gain[:, 0, 0] = 2.0
     diagnostics = []
     for index, error in enumerate((0.1, 0.05, 0.02), start=1):
+        orientation_error = 0.04 - 0.01 * index
+        cosine = np.cos(orientation_error)
+        sine = np.sin(orientation_error)
+        goal_rotation = np.diag([1.0, -1.0, -1.0])
+        ee_rotation = goal_rotation @ np.asarray(
+            [
+                [cosine, -sine, 0.0],
+                [sine, cosine, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
         phase = None
         if phase_machine:
             phase = {
@@ -78,6 +93,13 @@ def synthetic_run(*, phase_machine: bool = False) -> RunData:
                 "last_reference_v": [0.0] * 7,
                 "last_goal_position": [0.5, 0.0, 0.18],
                 "last_position_error": error,
+                "last_position_error_signed": [-error, 0.0, 0.0],
+                "last_orientation_error": orientation_error,
+                "last_ee_position": [0.5 - error, 0.0, 0.18],
+                "last_ee_rotation": ee_rotation.reshape(-1).tolist(),
+                "last_goal_rotation": goal_rotation.reshape(-1).tolist(),
+                "last_gain_ess": 32.0 * index,
+                "last_gain_nominal_weight": 0.4 - 0.1 * index,
                 "last_planning_time_ms": 25.0,
                 "last_planner_step_wall_time_ms": 26.0,
                 "accepted_planner_output_count": index,
@@ -476,9 +498,29 @@ def test_summary_separates_bias_runtime_and_observability() -> None:
     summary = summarize(align_run(synthetic_run()), terminal_sec=1.0)
 
     assert summary["recorded_goal_position_m"] == [0.5, 0.0, 0.18]
+    assert summary["final_ee_position_m"] == pytest.approx([0.48, 0.0, 0.18])
+    assert summary["final_ee_position_error_signed_mm"] == pytest.approx(
+        [-20.0, 0.0, 0.0]
+    )
+    np.testing.assert_allclose(
+        summary["recorded_goal_rotation_matrix"],
+        np.diag([1.0, -1.0, -1.0]),
+    )
+    assert summary["final_ee_rotation_matrix"] is not None
     assert summary["final_q_minus_reference_rad"][0] == pytest.approx(0.02)
     assert summary["final_q_minus_local_anchor_rad"][0] == pytest.approx(0.02)
     assert summary["terminal_position_error_mm"]["median"] == pytest.approx(50.0)
+    assert summary["ee_position_error_signed_mm_by_axis"]["x"][
+        "median"
+    ] == pytest.approx(-50.0)
+    assert summary["terminal_ee_position_error_signed_mm_by_axis"]["z"][
+        "max"
+    ] == pytest.approx(0.0)
+    assert summary["orientation_error_rad"]["count"] == 3
+    assert summary["gain_sampling"]["ess"]["median"] == pytest.approx(64.0)
+    assert summary["gain_sampling"]["nominal_weight"]["median"] == pytest.approx(
+        0.2
+    )
     assert summary["control_period_ms"]["median"] == pytest.approx(40.0)
     assert summary["solve_anchor_age_ms"]["median"] == pytest.approx(40.0)
     assert summary["observability"]["post_rate_limit_tau_J_d_available"] is False
@@ -490,6 +532,12 @@ def test_summary_prefers_phase_goal_without_losing_task_goal() -> None:
     run = synthetic_run(phase_machine=True)
     for row in run.diagnostics.rows:
         row["phase_machine"]["ee_goal_position_m"] = [0.5, 0.0, 0.18]
+        row["phase_machine"]["ee_position_m"] = [0.501, 0.002, 0.183]
+        row["phase_machine"]["ee_position_error_signed_m"] = [
+            0.001,
+            0.002,
+            0.003,
+        ]
         row["last_goal_position"] = [0.65, 0.0, 0.105]
 
     summary = summarize(align_run(run), terminal_sec=1.0)
@@ -497,6 +545,58 @@ def test_summary_prefers_phase_goal_without_losing_task_goal() -> None:
     assert summary["recorded_goal_position_m"] == [0.5, 0.0, 0.18]
     assert summary["recorded_phase_goal_position_m"] == [0.5, 0.0, 0.18]
     assert summary["recorded_task_goal_position_m"] == [0.65, 0.0, 0.105]
+    assert summary["final_ee_position_m"] == pytest.approx([0.501, 0.002, 0.183])
+    assert summary["final_ee_position_error_signed_mm"] == pytest.approx(
+        [1.0, 2.0, 3.0]
+    )
+
+
+def test_task_controller_plots_and_steps_csv_include_pose_and_gain_health(
+    tmp_path: Path,
+) -> None:
+    run = align_run(synthetic_run())
+
+    assert _plot_task(run, tmp_path) == "01_task_tracking.png"
+    assert _plot_controller(run, tmp_path) == "04_controller.png"
+    _write_steps_csv(run, tmp_path)
+
+    assert (tmp_path / "01_task_tracking.png").is_file()
+    assert (tmp_path / "04_controller.png").is_file()
+    with (tmp_path / "controller_steps.csv").open(newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert float(rows[-1]["ee_error_x_mm"]) == pytest.approx(-20.0)
+    assert float(rows[-1]["ee_orientation_error_rad"]) == pytest.approx(0.01)
+    assert float(rows[-1]["ee_position_x_m"]) == pytest.approx(0.48)
+    assert float(rows[-1]["goal_rotation_r22"]) == pytest.approx(-1.0)
+    assert float(rows[-1]["gain_ess"]) == pytest.approx(96.0)
+    assert float(rows[-1]["gain_nominal_weight"]) == pytest.approx(0.1)
+
+
+def test_report_remains_compatible_with_diagnostics_recorded_before_pose_fields(
+    tmp_path: Path,
+) -> None:
+    data = synthetic_run()
+    new_fields = (
+        "last_position_error_signed",
+        "last_orientation_error",
+        "last_ee_position",
+        "last_ee_rotation",
+        "last_goal_rotation",
+        "last_gain_ess",
+        "last_gain_nominal_weight",
+    )
+    for row in data.diagnostics.rows:
+        for field in new_fields:
+            row.pop(field)
+    run = align_run(data)
+
+    summary = summarize(run, terminal_sec=1.0)
+    assert summary["final_ee_position_m"] is None
+    assert summary["final_ee_position_error_signed_mm"] is None
+    assert summary["orientation_error_rad"]["count"] == 0
+    assert summary["gain_sampling"]["ess"]["count"] == 0
+    assert _plot_task(run, tmp_path) == "01_task_tracking.png"
+    assert _plot_controller(run, tmp_path) == "04_controller.png"
 
 
 def test_phase_plot_is_automatic_only_when_phase_machine_is_recorded(
