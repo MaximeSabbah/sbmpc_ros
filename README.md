@@ -143,6 +143,33 @@ replay_sbmpc_trajectory /tmp/sbmpc_replay.json --dry-run
 replay_sbmpc_trajectory /tmp/sbmpc_replay.json
 ```
 
+### Report a recorded real run
+
+Generate the same offline diagnostic package after every hardware experiment:
+
+```bash
+RUN_DIR="$(< /tmp/sbmpc_real_run_path)"
+ros2 run sbmpc_bringup report_sbmpc_bag "$RUN_DIR"
+```
+
+The command accepts either the run directory or its `rosbag/` directory and
+writes `diagnostic_report/index.html`, `summary.json`, `controller_steps.csv`,
+and PNG panels for reference tracking, terminal stability, controller output,
+timing, the real torque path, state-stream consistency, and—when present—the
+pick/place phase gate and gripper timeline. It runs only after recording has
+stopped and therefore adds no work to the planner or 1 kHz control loops.
+
+The controller panel separates task-reference error from the local Riccati
+anchor error. The torque panel audits genuine 0.5–1.5 ms output intervals
+against the Agimus per-cycle component limit. When the Agimus robot-state
+broadcaster is populated, the report also plots post-limit `tau_J_d`, robot
+mode, command success, collision indicators, and FCI error/reflex flags.
+
+`/output_joint_effort` is labelled as the gravity-free LFC request before the
+Agimus hardware torque-rate limiter. The report does not equate it with the
+measured total `tau_J`, and explicitly reports when the Agimus robot-state
+broadcaster did not populate the post-limit `tau_J_d` and FCI state topics.
+
 ## Validate a live simulation
 
 `validate_sbmpc_sim` is a standalone tool (not part of the launch). Start the

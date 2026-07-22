@@ -19,7 +19,7 @@ sbmpc_lfc_bridge_node:
     #   pick_place -> hydrax/configs/pick_place.yaml (P2-certified sequence;
     #                 the planner phase machine also drives the gripper
     #                 through the bridge's GripperCommand action client)
-    planner_ocp: pick_place
+    planner_ocp: pregrasp
     # Gripper action goal values (actuator/deployment wiring, like the
     # controller yaml's max_effort — NOT task tuning). The action NAME and
     # the CLOSE position are backend-dependent and injected by the launch

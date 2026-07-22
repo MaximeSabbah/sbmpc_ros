@@ -321,6 +321,8 @@ def test_pick_place_config_matches_the_tuning_surface(pp_adapter):
     )
     # The diagnostics goal is the placement target, not a pregrasp pose
     np.testing.assert_allclose(pp_adapter._goal_pos, options.target_pos)
+    # Phase acceptance is a fixed task contract, never a YAML/controller knob.
+    assert not hasattr(options, "transition_ee_position_tolerance")
 
 
 def test_pick_place_diagnostics_expose_a_blocked_pregrasp_gate(pp_adapter):
@@ -332,8 +334,8 @@ def test_pick_place_diagnostics_expose_a_blocked_pregrasp_gate(pp_adapter):
     pm = pp_adapter._phase_machine
     pm.plan_time = float(task.segment_end_times[Phase.PREGRASP])
 
-    q = np.asarray(task.phase_goal_q[Phase.PREGRASP], dtype=np.float64).copy()
-    q[3] += 0.06
+    # The start state is intentionally far from the pregrasp EE goal.
+    q = np.asarray(task.start_q, dtype=np.float64).copy()
     v = np.zeros(7, dtype=np.float64)
     out = pp_adapter.step(_state_input(q, v))
 
@@ -341,22 +343,16 @@ def test_pick_place_diagnostics_expose_a_blocked_pregrasp_gate(pp_adapter):
     assert gate is not None
     assert out.phase == gate["phase"] == "PREGRASP"
     assert out.next_phase == gate["next_phase"] == "DESCEND"
-    assert gate["gate_type"] == "state"
+    assert gate["gate_type"] == "task_space"
     assert gate["at_boundary"] is True
-    assert gate["transition_status"] == "blocked_q"
+    assert gate["transition_status"].startswith("blocked_ee_position")
     assert gate["transition_blocked"] is True
-    assert gate["q_ok"] is False
-    assert gate["velocity_ok"] is True
-    assert gate["q_error_joint_index"] == 3
-    assert gate["q_error_max_rad"] == pytest.approx(0.06)
-    assert gate["q_error_signed_by_joint_rad"][3] == pytest.approx(0.06)
-    assert gate["q_tolerance_rad"] == pytest.approx(
-        task.options.transition_q_tolerance
-    )
+    assert "ee_position" in gate["transition_blockers"]
+    assert gate["ee_position_ok"] is False
+    assert gate["q_error_max_rad"] > 0.0
     assert gate["velocity_abs_max_rad_s"] == pytest.approx(0.0)
-    assert gate["velocity_tolerance_rad_s"] == pytest.approx(
-        task.options.transition_v_tolerance
-    )
+    assert gate["ee_linear_speed_m_s"] == pytest.approx(0.0)
+    assert gate["ee_angular_speed_rad_s"] == pytest.approx(0.0)
     assert gate["precision_hold"] is False
     assert gate["clock_paused"] is False
     assert gate["clock_pause_reason"] is None
@@ -373,6 +369,83 @@ def test_pick_place_diagnostics_expose_a_blocked_pregrasp_gate(pp_adapter):
     assert gate["ee_orientation_error_rad"] >= 0.0
     # This exact object is forwarded to BridgeDiagnostics.to_json().
     json.dumps(gate, allow_nan=False)
+
+
+def test_pick_place_real_q5_offset_advances_the_ee_gate(pp_adapter):
+    """Regression for the 2026-07-21 real PREGRASP deadlock."""
+    from hydrax.tasks.panda_pick_place import Phase
+
+    pp_adapter.reset_runtime_state_after_warmup()
+    task = pp_adapter._task
+    pm = pp_adapter._phase_machine
+    pm.plan_time = float(task.segment_end_times[Phase.PREGRASP])
+    q = np.asarray(task.phase_goal_q[Phase.PREGRASP], dtype=np.float64).copy()
+    q[4] += 0.0528
+    planner_input = _state_input(q, np.zeros(7, dtype=np.float64))
+
+    required = None
+    for index in range(5):
+        out = pp_adapter.step(planner_input)
+        gate = out.diagnostics.phase_machine
+        if index == 0:
+            required = gate["consecutive_required_cycles"]
+            assert required == 5
+            assert gate["q_error_max_rad"] == pytest.approx(0.0528)
+            assert gate["ee_position_error_norm_m"] < 0.004
+            assert gate["transition_blockers"] == ()
+        if index < 4:
+            assert pm.phase == Phase.PREGRASP
+
+    assert required == 5
+    assert pm.phase == Phase.DESCEND
+
+
+def test_pick_place_uses_one_cpu_kinematics_pass_per_step(
+    pp_adapter, monkeypatch
+):
+    pp_adapter.reset_runtime_state_after_warmup()
+    calls = {"forward": 0, "velocity": 0}
+    original_forward = pp_adapter._mujoco.mj_forward
+    original_velocity = pp_adapter._mujoco.mj_objectVelocity
+
+    def counted_forward(*args, **kwargs):
+        calls["forward"] += 1
+        return original_forward(*args, **kwargs)
+
+    def counted_velocity(*args, **kwargs):
+        calls["velocity"] += 1
+        return original_velocity(*args, **kwargs)
+
+    monkeypatch.setattr(pp_adapter._mujoco, "mj_forward", counted_forward)
+    monkeypatch.setattr(
+        pp_adapter._mujoco, "mj_objectVelocity", counted_velocity
+    )
+
+    planner_input = _converged_input(pp_adapter)
+    planner_input.v[:] = np.linspace(-0.03, 0.03, 7)
+    out = pp_adapter.step(planner_input)
+    assert calls == {"forward": 1, "velocity": 1}
+
+    # Pin MuJoCo's spatial-vector ordering: objectVelocity is angular then
+    # linear, while mj_jacSite exposes the same world-frame components as
+    # separate translational/rotational Jacobians.
+    model = pp_adapter._cpu_model
+    data = pp_adapter._mujoco.MjData(model)
+    data.qpos[:] = planner_input.q
+    data.qvel[:] = planner_input.v
+    original_forward(model, data)
+    jacp = np.zeros((3, model.nv))
+    jacr = np.zeros((3, model.nv))
+    pp_adapter._mujoco.mj_jacSite(
+        model, data, jacp, jacr, pp_adapter._site_id
+    )
+    gate = out.diagnostics.phase_machine
+    np.testing.assert_allclose(
+        gate["ee_linear_velocity_m_s"], jacp @ planner_input.v, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        gate["ee_angular_velocity_rad_s"], jacr @ planner_input.v, atol=1e-12
+    )
 
 
 def test_pick_place_walks_the_sequence_and_keeps_exact_feedback(pp_adapter):
@@ -394,7 +467,7 @@ def test_pick_place_walks_the_sequence_and_keeps_exact_feedback(pp_adapter):
     phases_seen: list[str] = []
     grip_flips: list[tuple[str, str, float]] = []  # (command, phase, t_in)
     last_command = None
-    max_steps = int(task.duration / task.dt) + 50
+    max_steps = int(task.duration / task.dt) + 100
     for _ in range(max_steps):
         out = pp_adapter.step(_converged_input(pp_adapter))
         phase = pm.phase
@@ -453,15 +526,21 @@ def test_pick_place_blocked_dwell_entry_keeps_exact_feedback(pp_adapter):
     pm.plan_time = float(task.segment_end_times[Phase.DESCEND])
 
     q = np.asarray(task.phase_goal_q[Phase.DESCEND], dtype=np.float64).copy()
-    q[6] += 0.03  # inside 0.05 ordinary tolerance, outside 0.02 precision gate
+    # Exact action pose but still moving in task space: the gripper must wait,
+    # while the selected exact-feedback law remains unchanged.
     v = np.zeros(7, dtype=np.float64)
+    v[0] = 1.0
     planner_input = _state_input(q, v)
     out = pp_adapter.step(planner_input)
 
     gate = out.diagnostics.phase_machine
     assert out.phase == gate["phase"] == "DESCEND"
     assert gate["at_boundary"] is True
-    assert gate["transition_status"] == "blocked_q"
+    assert gate["transition_status"].startswith("blocked_ee_")
+    assert any(
+        blocker in gate["transition_blockers"]
+        for blocker in ("ee_linear_speed", "ee_angular_speed")
+    )
     assert gate["precision_hold"] is True
     assert out.diagnostics.gain_mode == "exact_feedback"
 
@@ -478,22 +557,31 @@ def test_pick_place_blocked_dwell_entry_keeps_exact_feedback(pp_adapter):
     control = planner_output_to_control(out, planner_input)
     np.testing.assert_allclose(control.initial_state.joint_state.position, q)
     np.testing.assert_allclose(control.initial_state.joint_state.velocity, v)
-    assert not np.allclose(out.reference_q, q)
+    np.testing.assert_allclose(out.reference_q, q, atol=1e-6)
+    assert not np.allclose(out.reference_v, v)
 
 
 def test_pick_place_gripper_wait_freezes_the_clock(pp_adapter):
+    from hydrax.tasks.panda_pick_place import Phase
+
     pp_adapter.reset_runtime_state_after_warmup()
     pm = pp_adapter._phase_machine
+    pm.plan_time = float(
+        pp_adapter._task.segment_end_times[Phase.PREGRASP]
+    )
     planner_input = _converged_input(pp_adapter)
 
     out = pp_adapter.step(planner_input)
     t_after_first = pm.plan_time
     assert t_after_first > 0.0
+    eligible_after_first = pm._eligible_cycles
+    assert eligible_after_first == 1
 
     pp_adapter.set_gripper_wait(True)
     frozen_first = pp_adapter.step(planner_input)
     frozen_second = pp_adapter.step(planner_input)
     assert pm.plan_time == t_after_first  # the clock did not move
+    assert pm._eligible_cycles == eligible_after_first
     assert frozen_first.phase == frozen_second.phase == out.phase
     frozen_gate = frozen_second.diagnostics.phase_machine
     assert frozen_gate is not None
@@ -505,7 +593,8 @@ def test_pick_place_gripper_wait_freezes_the_clock(pp_adapter):
 
     pp_adapter.set_gripper_wait(False)
     resumed = pp_adapter.step(planner_input)
-    assert pm.plan_time > t_after_first
+    assert pm.plan_time == t_after_first  # still completing the fixed streak
+    assert pm._eligible_cycles == eligible_after_first + 1
     resumed_gate = resumed.diagnostics.phase_machine
     assert resumed_gate is not None
     assert resumed_gate["clock_paused"] is False

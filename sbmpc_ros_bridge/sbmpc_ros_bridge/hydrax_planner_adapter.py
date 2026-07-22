@@ -258,27 +258,17 @@ class HydraxPlannerAdapter:
         self._last_trace_sites = None
         self._last_costs = None
 
-        # CPU-side model for FK / gravity / state prediction (off hot path)
+        # CPU-side model shared by the one pick-place kinematics pass per
+        # planner tick and the lower-rate gravity/state diagnostic helpers.
         self._cpu_model = deepcopy(self._task.mj_model)
         self._cpu_model.opt.timestep = 0.001
         self._cpu_data = mujoco.MjData(self._cpu_model)
         self._site_id = mujoco.mj_name2id(
             self._cpu_model, mujoco.mjtObj.mjOBJ_SITE, "gripper"
         )
-        self._phase_goal_ee_positions = None
-        self._phase_goal_ee_rotations = None
-        if self._phase_machine is not None:
-            # Phase goals are constant. Cache their FK once so diagnostics do
-            # not add another mj_forward call to the 25 Hz control path.
-            phase_goal_poses = [
-                self._ee_pose(q) for q in self._task.phase_goal_q
-            ]
-            self._phase_goal_ee_positions = np.stack(
-                [pose[0] for pose in phase_goal_poses]
-            )
-            self._phase_goal_ee_rotations = np.stack(
-                [pose[1] for pose in phase_goal_poses]
-            )
+        # Reused output buffer for the one task-space velocity query made by
+        # each pick-and-place planner tick (angular first, then linear).
+        self._ee_spatial_velocity = np.empty(6, dtype=np.float64)
         self._started = False
 
     # --- lifecycle -----------------------------------------------------
@@ -347,20 +337,44 @@ class HydraxPlannerAdapter:
         v_host = np.asarray(v, dtype=np.float64).reshape(-1)
         phase_machine_diagnostics = None
         if self._phase_machine is None:
+            ee, ee_rotation = self._ee_pose(q_host)
             t = self._step_index * self._control_period
             i_ref = min(self._step_index, self._plan_q.shape[0] - 1)
         else:
+            # One mj_forward plus one cheap site-velocity query serves the
+            # gate, its diagnostics, and the top-level target metric. No JAX
+            # work, goal FK, or second measured-state FK is added.
+            (
+                ee,
+                ee_rotation,
+                ee_linear_velocity,
+                ee_angular_velocity,
+            ) = self._ee_kinematics(q_host, v_host)
             # Event-gated plan clock (Tier A ordering: update with the
             # measured state, then solve at pm.plan_time). The clock is
             # frozen while the bridge waits on a gripper action result.
             if advance_clock and not self._gripper_wait:
-                self._phase_machine.update(q_host, v_host)
+                self._phase_machine.update(
+                    q_host,
+                    v_host,
+                    ee,
+                    ee_rotation,
+                    ee_linear_velocity,
+                    ee_angular_velocity,
+                )
             t = self._phase_machine.plan_time
             i_ref = min(
                 int(t * self._task.reference_fps), self._plan_q.shape[0] - 1
             )
             phase_machine_diagnostics = asdict(
-                self._phase_machine.diagnostics_snapshot(q_host, v_host)
+                self._phase_machine.diagnostics_snapshot(
+                    q_host,
+                    v_host,
+                    ee,
+                    ee_rotation,
+                    ee_linear_velocity,
+                    ee_angular_velocity,
+                )
             )
             phase_machine_diagnostics.update(
                 clock_paused=bool(self._gripper_wait),
@@ -422,26 +436,10 @@ class HydraxPlannerAdapter:
                 "close" if self._phase_machine.gripper_closed else "open"
             )
 
-        # This reuses the single CPU FK that was already performed here for
-        # terminal-target diagnostics; reading site_xmat adds no FK call.
-        ee, ee_rotation = self._ee_pose(q_host)
         position_error = float(np.linalg.norm(ee - self._goal_pos))
         if phase_machine_diagnostics is not None:
-            phase = self._phase_machine.phase
-            goal_phase = min(phase, self._phase_enum.RETREAT)
-            phase_goal_ee = self._phase_goal_ee_positions[goal_phase]
-            phase_goal_rotation = self._phase_goal_ee_rotations[goal_phase]
-            ee_error = ee - phase_goal_ee
-            orientation_error = self._rotation_error_angle(
-                ee_rotation, phase_goal_rotation
-            )
             phase_machine_diagnostics.update(
                 ee_source="planning_model_fk",
-                ee_position_m=ee.tolist(),
-                ee_goal_position_m=phase_goal_ee.tolist(),
-                ee_position_error_signed_m=ee_error.tolist(),
-                ee_position_error_norm_m=float(np.linalg.norm(ee_error)),
-                ee_orientation_error_rad=orientation_error,
             )
 
         return HydraxPlannerOutput(
@@ -499,14 +497,29 @@ class HydraxPlannerAdapter:
             data.site_xmat[self._site_id].reshape(3, 3).copy(),
         )
 
-    @staticmethod
-    def _rotation_error_angle(
-        rotation: np.ndarray, goal_rotation: np.ndarray
-    ) -> float:
-        """Shortest orientation error angle between two rotation matrices."""
-        relative = goal_rotation.T @ rotation
-        cosine = np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0)
-        return float(np.arccos(cosine))
+    def _ee_kinematics(
+        self, q: np.ndarray, v: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return measured EE pose and world-frame linear/angular velocity."""
+        mujoco = self._mujoco
+        data = self._cpu_data
+        data.qpos[:] = np.asarray(q, dtype=np.float64).reshape(-1)
+        data.qvel[:] = np.asarray(v, dtype=np.float64).reshape(-1)
+        mujoco.mj_forward(self._cpu_model, data)
+        mujoco.mj_objectVelocity(
+            self._cpu_model,
+            data,
+            mujoco.mjtObj.mjOBJ_SITE,
+            self._site_id,
+            self._ee_spatial_velocity,
+            0,
+        )
+        return (
+            data.site_xpos[self._site_id].copy(),
+            data.site_xmat[self._site_id].reshape(3, 3).copy(),
+            self._ee_spatial_velocity[3:].copy(),
+            self._ee_spatial_velocity[:3].copy(),
+        )
 
     def ee_position(self, q: np.ndarray) -> np.ndarray | None:
         return self._ee_pose(q)[0]

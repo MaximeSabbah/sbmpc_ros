@@ -942,9 +942,9 @@ class SbMpcLfcBridgeNode(Node):
         """Log one line per planner solve with the time the controller spent.
 
         Runs on the planner worker thread (off the 25 Hz publish path) and is
-        called AFTER ``step_wall_sec`` is measured, so the optional EE-error FK
-        below never inflates ``planning_time_ms``, the reported wall time, or the
-        control publish path.
+        called AFTER ``step_wall_sec`` is measured. Pick-and-place reuses the
+        measured EE already present in its gate snapshot; other planners retain
+        the best-effort FK fallback.
         """
         diagnostics = getattr(planner_output, "diagnostics", None)
         budget_ms = 1000.0 * self._deadline_monitor.max_planning_duration_sec
@@ -971,11 +971,24 @@ class SbMpcLfcBridgeNode(Node):
         planner_input: PlannerInput,
         diagnostics: object,
     ) -> float | None:
-        """Distance from the measured EE to the goal (one jitted MJX FK).
+        """Distance from the measured EE to the terminal goal.
 
         Best-effort and never raises: a logging metric must not fault the loop.
         """
         goal = getattr(diagnostics, "goal_position", None)
+        phase_machine = getattr(diagnostics, "phase_machine", None)
+        if goal is not None and isinstance(phase_machine, dict):
+            measured = phase_machine.get("ee_position_m")
+            if measured is not None:
+                try:
+                    return float(
+                        np.linalg.norm(
+                            np.asarray(measured, dtype=np.float64)
+                            - np.asarray(goal, dtype=np.float64)
+                        )
+                    )
+                except Exception:
+                    return None
         ee_position = getattr(self._planner, "ee_position", None)
         if goal is None or not callable(ee_position):
             return None
@@ -1045,12 +1058,18 @@ class SbMpcLfcBridgeNode(Node):
                 f"t={fmt(snapshot.get('plan_time_sec'))}s "
                 f"elapsed={fmt(snapshot.get('phase_elapsed_sec'))}s "
                 f"gate={gate_type}:{status} "
-                f"q={fmt(snapshot.get('q_error_max_rad'))}/"
-                f"{fmt(snapshot.get('q_tolerance_rad'))}rad "
-                f"v={fmt(snapshot.get('velocity_abs_max_rad_s'))}/"
-                f"{fmt(snapshot.get('velocity_tolerance_rad_s'))}rad/s "
-                f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}m "
-                f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}rad "
+                f"q_diag={fmt(snapshot.get('q_error_max_rad'))}rad "
+                f"joint_v_diag={fmt(snapshot.get('velocity_abs_max_rad_s'))}rad/s "
+                f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}/"
+                f"{fmt(snapshot.get('ee_position_tolerance_m'), 4)}m "
+                f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}/"
+                f"{fmt(snapshot.get('ee_orientation_tolerance_rad'), 4)}rad "
+                f"ee_v={fmt(snapshot.get('ee_linear_speed_m_s'), 4)}/"
+                f"{fmt(snapshot.get('ee_linear_speed_tolerance_m_s'), 4)}m/s "
+                f"ee_w={fmt(snapshot.get('ee_angular_speed_rad_s'), 4)}/"
+                f"{fmt(snapshot.get('ee_angular_speed_tolerance_rad_s'), 4)}rad/s "
+                f"stable={snapshot.get('consecutive_eligible_cycles')}/"
+                f"{snapshot.get('consecutive_required_cycles')} "
                 f"precision_window={precision_window} law={gain_mode} "
                 f"gripper={gripper_command} "
                 f"paused={paused} {gain_summary()}"
@@ -1068,6 +1087,9 @@ class SbMpcLfcBridgeNode(Node):
             >= PHASE_GATE_LOG_PERIOD_SEC
         )
         if blocked and log_due:
+            settling = status == "settling" and not snapshot.get(
+                "transition_blockers"
+            )
             gripper_state = (
                 self._gripper_client.snapshot()
                 if self._gripper_client is not None
@@ -1081,23 +1103,38 @@ class SbMpcLfcBridgeNode(Node):
                     f"goals={gripper_state.get('goal_count')} "
                     f"failure={gripper_state.get('failure')!r}"
                 )
-            self.get_logger().warn(
-                "[pick_place gate] BLOCKED "
+            gate_message = (
+                "[pick_place gate] "
+                f"{'SETTLING' if settling else 'BLOCKED'} "
                 f"{phase}->{next_phase} reason={status} "
                 f"t={fmt(snapshot.get('plan_time_sec'))}/"
                 f"{fmt(snapshot.get('boundary_time_sec'))}s "
-                f"q_max={fmt(snapshot.get('q_error_max_rad'))}/"
-                f"{fmt(snapshot.get('q_tolerance_rad'))}rad@"
+                f"blockers={snapshot.get('transition_blockers')} "
+                f"q_diag={fmt(snapshot.get('q_error_max_rad'))}rad@"
                 f"{joint_label(snapshot.get('q_error_joint_index'))} "
-                f"v_max={fmt(snapshot.get('velocity_abs_max_rad_s'))}/"
-                f"{fmt(snapshot.get('velocity_tolerance_rad_s'))}rad/s@"
+                f"joint_v_diag={fmt(snapshot.get('velocity_abs_max_rad_s'))}rad/s@"
                 f"{joint_label(snapshot.get('velocity_joint_index'))} "
-                f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}m "
-                f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}rad "
+                f"ee={fmt(snapshot.get('ee_position_error_norm_m'), 4)}/"
+                f"{fmt(snapshot.get('ee_position_tolerance_m'), 4)}m "
+                f"rot={fmt(snapshot.get('ee_orientation_error_rad'), 4)}/"
+                f"{fmt(snapshot.get('ee_orientation_tolerance_rad'), 4)}rad "
+                f"ee_v={fmt(snapshot.get('ee_linear_speed_m_s'), 4)}/"
+                f"{fmt(snapshot.get('ee_linear_speed_tolerance_m_s'), 4)}m/s "
+                f"ee_w={fmt(snapshot.get('ee_angular_speed_rad_s'), 4)}/"
+                f"{fmt(snapshot.get('ee_angular_speed_tolerance_rad_s'), 4)}rad/s "
+                f"stable={snapshot.get('consecutive_eligible_cycles')}/"
+                f"{snapshot.get('consecutive_required_cycles')} "
                 f"precision_window={precision_window} law={gain_mode} "
                 f"gripper={gripper_command} "
                 f"action=({gripper_action}) paused={paused} {gain_summary()}"
             )
+            # rclpy binds a severity to each logging call site. Keep INFO and
+            # WARN on distinct lines so a SETTLING -> BLOCKED change cannot
+            # fault the planner worker merely by changing log severity.
+            if settling:
+                self.get_logger().info(gate_message)
+            else:
+                self.get_logger().warn(gate_message)
             self._last_phase_gate_log_wall_sec = now
             self._last_phase_gate_log_signature = signature
         elif not blocked and self._phase_gate_waiting:

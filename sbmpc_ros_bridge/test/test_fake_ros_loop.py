@@ -307,13 +307,13 @@ def test_bridge_diagnostics_preserve_phase_machine_json() -> None:
     gate: dict[str, object] = {
         "phase": "PREGRASP",
         "next_phase": "DESCEND",
-        "gate_type": "state",
+        "gate_type": "task_space",
         "plan_time_sec": 2.4,
         "phase_elapsed_sec": 2.4,
         "boundary_time_sec": 2.4,
         "time_to_boundary_sec": 0.0,
         "at_boundary": True,
-        "transition_status": "blocked_q",
+        "transition_status": "blocked_ee_linear_speed",
         "transition_blocked": True,
         "q_error_signed_by_joint_rad": [
             0.0,
@@ -326,13 +326,9 @@ def test_bridge_diagnostics_preserve_phase_machine_json() -> None:
         ],
         "q_error_max_rad": 0.061,
         "q_error_joint_index": 3,
-        "q_tolerance_rad": 0.05,
-        "q_ok": False,
         "velocity_by_joint_rad_s": [0.0] * 7,
         "velocity_abs_max_rad_s": 0.0,
         "velocity_joint_index": 0,
-        "velocity_tolerance_rad_s": 0.15,
-        "velocity_ok": True,
         "precision_hold": False,
         "gripper_command": "open",
         "clock_paused": False,
@@ -342,7 +338,23 @@ def test_bridge_diagnostics_preserve_phase_machine_json() -> None:
         "ee_goal_position_m": [0.5, 0.0, 0.1],
         "ee_position_error_signed_m": [0.0, 0.0, 0.01],
         "ee_position_error_norm_m": 0.01,
+        "ee_position_tolerance_m": 0.03,
+        "ee_position_ok": True,
         "ee_orientation_error_rad": 0.002,
+        "ee_orientation_tolerance_rad": 0.1,
+        "ee_orientation_ok": True,
+        "ee_linear_velocity_m_s": [0.061, 0.0, 0.0],
+        "ee_linear_speed_m_s": 0.061,
+        "ee_linear_speed_tolerance_m_s": 0.06,
+        "ee_linear_speed_ok": False,
+        "ee_angular_velocity_rad_s": [0.0, 0.0, 0.0],
+        "ee_angular_speed_rad_s": 0.0,
+        "ee_angular_speed_tolerance_rad_s": 0.2,
+        "ee_angular_speed_ok": True,
+        "transition_blockers": ["ee_linear_speed"],
+        "consecutive_eligible_cycles": 0,
+        "consecutive_required_cycles": 5,
+        "consecutive_ok": False,
     }
     planner = FakePlanner()
     bridge = SbMpcLfcBridgeNode(planner=planner, publish_period_sec=0.02)
@@ -359,7 +371,10 @@ def test_bridge_diagnostics_preserve_phase_machine_json() -> None:
         gate["transition_status"] = "ready"
         snapshot = bridge.diagnostics_snapshot()
         assert snapshot.phase_machine is not None
-        assert snapshot.phase_machine["transition_status"] == "blocked_q"
+        assert (
+            snapshot.phase_machine["transition_status"]
+            == "blocked_ee_linear_speed"
+        )
         assert snapshot.phase_machine["q_error_joint_index"] == 3
         assert snapshot.phase_machine[
             "ee_position_error_norm_m"

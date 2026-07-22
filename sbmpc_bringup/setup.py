@@ -41,6 +41,7 @@ setup(
             "sbmpc_pixi_supervisor = sbmpc_bringup.pixi_supervisor:main",
             "record_sbmpc_replay = sbmpc_bringup.replay:record_main",
             "replay_sbmpc_trajectory = sbmpc_bringup.replay:replay_main",
+            "report_sbmpc_bag = sbmpc_bringup.run_report:main",
             "validate_sbmpc_sim = sbmpc_bringup.validate_sim:main",
             "validate_pick_place = sbmpc_bringup.validate_pick_place:main",
             "wait_for_bridge_warmup = sbmpc_bringup.warmup_wait:main",
